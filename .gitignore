@@ -8,6 +8,7 @@ data/cik_map.json
 data/*.log
 data/latest_digest.txt
 dashboard.html
+site_data.json
 
 # Python
 __pycache__/

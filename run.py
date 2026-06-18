@@ -23,6 +23,16 @@ os.makedirs(CACHE, exist_ok=True)
 STATE_PATH = os.path.join(DATA, "state.json")
 OUT_HTML = os.path.join(HERE, "dashboard.html")
 OUT_DIGEST = os.path.join(DATA, "latest_digest.txt")
+OUT_SITEDATA = os.path.join(HERE, "site_data.json")  # 供交互机器人读取(会发布到 Pages/data.json)
+
+
+def _grp_brief(g):
+    u = (g.by_source.get("SEC") or {}).get("url", "") if g.etype == "filing" else ""
+    amt = next((v.get("amount") for v in g.by_source.values() if v.get("amount") is not None), None)
+    ratio = next((v.get("ratio") for v in g.by_source.values() if v.get("ratio")), None)
+    return {"ticker": g.ticker, "etype": g.etype, "date": g.anchor_date,
+            "note": g.note, "amount": amt, "ratio": ratio, "sec_url": u,
+            "conflicts": g.conflicts, "gaps": g.gaps}
 
 
 def load_state():
@@ -136,6 +146,20 @@ def build():
     digest = RP.build_text_digest(alerts, meta)
     with open(OUT_DIGEST, "w", encoding="utf-8") as f:
         f.write(digest)
+
+    # 发布给交互机器人读取的数据(随 Pages 一起部署为 data.json)
+    site_data = {
+        "generated": meta["generated"],
+        "counts": {"pending": len(pending), "new": len(new_events),
+                   "conflicts": len(conflicts), "gaps": len(gaps)},
+        "pending": pending,
+        "new": [_grp_brief(g) for g in new_events],
+        "conflicts": [_grp_brief(g) for g in conflicts],
+        "gaps": [_grp_brief(g) for g in gaps],
+    }
+    with open(OUT_SITEDATA, "w", encoding="utf-8") as f:
+        json.dump(site_data, f, ensure_ascii=False, indent=2)
+
     save_state(state)
 
     print("\n" + "=" * 50 + "\n" + digest + "\n" + "=" * 50)

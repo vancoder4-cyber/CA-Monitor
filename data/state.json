@@ -1008,7 +1008,8 @@
     "SPCX|filing|2026-06-15": "2026-06-18",
     "SPCX|dividend|2025-12-24": "2026-06-18",
     "SPCX|dividend|2025-12-16": "2026-06-18",
-    "GOOGL|dividend|2014-04-03": "2026-06-18"
+    "GOOGL|dividend|2014-04-03": "2026-06-18",
+    "AVGO|filing|2026-06-18": "2026-06-18"
   },
   "fired_rounds": {
     "MSFT|dividend|2026-08-20": [],

@@ -10,7 +10,9 @@
 """
 import os
 import re
+import sys
 import json
+import subprocess
 import requests
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import (
@@ -19,15 +21,31 @@ from lark_oapi.api.im.v1 import (
 )
 
 import cards
-from render import screenshot_calendar
 
 APP_ID = os.environ["LARK_APP_ID"]
 APP_SECRET = os.environ["LARK_APP_SECRET"]
 SITE_URL = os.environ.get("SITE_URL", "https://vancoder4-cyber.github.io/CA-Monitor/").rstrip("/") + "/"
 DATA_URL = SITE_URL + "data.json"
+HERE = os.path.dirname(os.path.abspath(__file__))
 
 client = lark.Client.builder().app_id(APP_ID).app_secret(APP_SECRET).domain(lark.LARK_DOMAIN).build()
-_seen = set()  # message_id 去重
+_seen = set()      # message_id 去重
+BOT_OPEN_ID = None  # 机器人自身 open_id(用于判断是否被 @)
+
+
+def get_bot_open_id():
+    """取机器人自身 open_id,用于在群里只回应被 @ 的消息。"""
+    try:
+        t = requests.post(
+            "https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal",
+            json={"app_id": APP_ID, "app_secret": APP_SECRET}, timeout=15
+        ).json().get("tenant_access_token")
+        r = requests.get("https://open.larksuite.com/open-apis/bot/v3/info",
+                         headers={"Authorization": f"Bearer {t}"}, timeout=15).json()
+        return (r.get("bot") or {}).get("open_id")
+    except Exception as e:
+        print("get_bot_open_id err:", e)
+        return None
 
 
 def fetch_data():
@@ -58,8 +76,18 @@ def send_text(chat_id, text):
 
 
 def send_calendar_image(chat_id, tab="cal"):
-    path = screenshot_calendar(tab=tab)
-    if not path or not os.path.exists(path):
+    # 子进程跑截图,避开 lark 回调线程的 asyncio 事件循环冲突
+    path = "/tmp/calendar.png"
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+        r = subprocess.run([sys.executable, os.path.join(HERE, "render.py"), path, tab],
+                           timeout=90, capture_output=True, text=True)
+        if r.returncode != 0:
+            print("screenshot subprocess failed:", r.stdout[-300:], r.stderr[-300:])
+    except Exception as e:
+        print("screenshot subprocess err:", e)
+    if not os.path.exists(path):
         return False
     try:
         with open(path, "rb") as f:
@@ -98,6 +126,21 @@ def on_message(data: P2ImMessageReceiveV1):
         if len(_seen) > 500:
             _seen.clear()
         chat_id = msg.chat_id
+        chat_type = getattr(msg, "chat_type", "") or ""
+
+        # 群聊里:只在被 @ 机器人时才响应(私聊则照常)
+        mentioned = False
+        mentions = getattr(msg, "mentions", None) or []
+        for m in mentions:
+            oid = getattr(getattr(m, "id", None), "open_id", None)
+            if BOT_OPEN_ID and oid == BOT_OPEN_ID:
+                mentioned = True
+        if chat_type == "group":
+            if BOT_OPEN_ID and not mentioned:
+                return
+            if not BOT_OPEN_ID and not mentions:  # 兜底:拿不到 open_id 时,至少要求有 @
+                return
+
         text = ""
         try:
             text = json.loads(msg.content or "{}").get("text", "")
@@ -121,10 +164,13 @@ def on_message(data: P2ImMessageReceiveV1):
 
 
 def main():
+    global BOT_OPEN_ID
+    BOT_OPEN_ID = get_bot_open_id()
+    print("bot open_id:", BOT_OPEN_ID)
     handler = (lark.EventDispatcherHandler.builder("", "")
                .register_p2_im_message_receive_v1(on_message).build())
     cli = lark.ws.Client(APP_ID, APP_SECRET, event_handler=handler, domain=lark.LARK_DOMAIN)
-    print("CA-Monitor Lark bot 启动,等待 @ 指令……")
+    print("CA-Monitor Lark bot 启动,只回应 @ 机器人 的指令……")
     cli.start()
 
 

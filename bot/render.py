@@ -29,3 +29,12 @@ def screenshot_calendar(out_path="/tmp/calendar.png", tab="cal"):
     except Exception as e:
         print("screenshot error:", e)
         return None
+
+
+if __name__ == "__main__":
+    # 作为独立子进程运行,避开 lark 回调线程里的 asyncio 事件循环冲突
+    import sys
+    _out = sys.argv[1] if len(sys.argv) > 1 else "/tmp/calendar.png"
+    _tab = sys.argv[2] if len(sys.argv) > 2 else "cal"
+    _p = screenshot_calendar(_out, _tab)
+    sys.exit(0 if _p else 1)

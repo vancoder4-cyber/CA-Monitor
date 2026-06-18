@@ -1,0 +1,16 @@
+# 密钥
+.env
+
+# 运行产物 / 缓存 / 状态
+data/cache/
+data/state.json
+data/cik_map.json
+data/*.log
+data/latest_digest.txt
+dashboard.html
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/

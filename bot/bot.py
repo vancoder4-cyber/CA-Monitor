@@ -75,18 +75,16 @@ def send_text(chat_id, text):
     _send(chat_id, "text", json.dumps({"text": text}, ensure_ascii=False))
 
 
-def send_calendar_image(chat_id, tab="cal"):
-    # 子进程跑截图,避开 lark 回调线程的 asyncio 事件循环冲突
+def send_calendar_image(chat_id, data):
+    # 用 Pillow 直接画当月月历(不再网页截图)
     path = "/tmp/calendar.png"
     try:
         if os.path.exists(path):
             os.remove(path)
-        r = subprocess.run([sys.executable, os.path.join(HERE, "render.py"), path, tab],
-                           timeout=90, capture_output=True, text=True)
-        if r.returncode != 0:
-            print("screenshot subprocess failed:", r.stdout[-300:], r.stderr[-300:])
+        from render import draw_month
+        draw_month(data.get("calendar", []), path)
     except Exception as e:
-        print("screenshot subprocess err:", e)
+        print("draw calendar err:", e)
     if not os.path.exists(path):
         return False
     try:
@@ -156,7 +154,7 @@ def on_message(data: P2ImMessageReceiveV1):
         d = fetch_data()
         if cmd == "calendar":
             send_card(chat_id, cards.calendar_card(d, SITE_URL))
-            send_calendar_image(chat_id, tab="cal")
+            send_calendar_image(chat_id, d)
         elif cmd == "alert":
             send_card(chat_id, cards.alert_card(d, SITE_URL))
     except Exception as e:

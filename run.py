@@ -147,6 +147,26 @@ def build():
     with open(OUT_DIGEST, "w", encoding="utf-8") as f:
         f.write(digest)
 
+    # 月历事件(供交互机器人画当月月历):近 45 天~未来 80 天内的分红/拆股/并购退市
+    cal_lo = (dt.date.today() - dt.timedelta(days=45)).isoformat()
+    cal_hi = (dt.date.today() + dt.timedelta(days=80)).isoformat()
+    calendar_events = []
+    for tk, groups in all_groups.items():
+        for g in groups:
+            ad = g.anchor_date or ""
+            if not (cal_lo <= ad <= cal_hi):
+                continue
+            if g.etype == "filing":
+                if not any(k in (g.note or "") for k in ("并购", "退市", "分拆", "证券变更", "要约")):
+                    continue
+            elif g.etype not in ("dividend", "split"):
+                continue
+            amt = next((v.get("amount") for v in g.by_source.values() if v.get("amount") is not None), None)
+            ratio = next((v.get("ratio") for v in g.by_source.values() if v.get("ratio")), None)
+            calendar_events.append({"ticker": g.ticker, "etype": g.etype, "date": ad,
+                                    "amount": amt, "ratio": ratio, "note": g.note,
+                                    "products": C.product_tags(g.ticker)})
+
     # 发布给交互机器人读取的数据(随 Pages 一起部署为 data.json)
     site_data = {
         "generated": meta["generated"],
@@ -156,6 +176,7 @@ def build():
         "new": [_grp_brief(g) for g in new_events],
         "conflicts": [_grp_brief(g) for g in conflicts],
         "gaps": [_grp_brief(g) for g in gaps],
+        "calendar": calendar_events,
     }
     with open(OUT_SITEDATA, "w", encoding="utf-8") as f:
         json.dump(site_data, f, ensure_ascii=False, indent=2)

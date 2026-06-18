@@ -58,10 +58,55 @@ DIV_COMPARE_FIELDS = ["ex_date", "record_date", "pay_date", "amount"]
 # 比对哪些字段(拆股)
 SPLIT_COMPARE_FIELDS = ["ex_date", "ratio"]
 
-# ---- 预警节奏(距关键日期天数,各触发一轮)----
+# ---- 预警节奏(距关键日期天数,各触发一轮"里程碑"提醒)----
 ALERT_ROUNDS = [30, 14, 7, 3, 1]
 # 以哪个日期作为预警基准
 ALERT_ANCHOR = "ex_date"
+# 已公告未执行的事件:是否每次跑都持续推送(直到执行)
+PENDING_ALWAYS_PUSH = True
+
+# ---- 产品归属(用于风控运营提示)----
+# 现货 = 全部 24 支。
+SPOT_TICKERS = set(TICKERS)
+# 合约 = 合约范围表里属于这 24 支的部分(商品/ETF/海外如 XAU/WTI/QQQ/SKHYNIX 不在监控范围)。
+# ⚠️ 截图在第 23 行被截断,下面是已确认可见的;若还有其它个股上了合约,补进来即可。
+CONTRACT_TICKERS = {
+    "MU", "SNDK", "MRVL", "INTC", "NVDA", "CRCL", "SPCX", "AMD", "MSTR", "TSLA", "GOOGL",
+}
+
+def product_tags(ticker):
+    tags = []
+    if ticker in SPOT_TICKERS:
+        tags.append("现货")
+    if ticker in CONTRACT_TICKERS:
+        tags.append("合约")
+    return tags
+
+# 风控运营提示:按 事件类型 × 产品 给默认动作(按你内部流程改)
+RISK_NOTES = {
+    "dividend": {
+        "contract": "合约:核对价格基准/资金费率是否需调整,除息日防价格跳空引发异常强平",
+        "spot": "现货:除息日成本基准调整,持仓与对账核对",
+    },
+    "split": {
+        "contract": "合约:调整合约乘数/持仓数量/委托价,重点防穿仓与挂单错位",
+        "spot": "现货:按比例调整持仓与未成交挂单,提前公告用户",
+    },
+    "filing": {
+        "contract": "合约:评估并购/退市影响,必要时暂停开仓、移仓或强制结算",
+        "spot": "现货:评估下架/暂停充提与交易,公告用户",
+    },
+}
+
+def risk_note(ticker, etype):
+    """按产品归属拼出风控运营提示。"""
+    notes = RISK_NOTES.get(etype, {})
+    out = []
+    if ticker in CONTRACT_TICKERS and notes.get("contract"):
+        out.append(notes["contract"])
+    if ticker in SPOT_TICKERS and notes.get("spot"):
+        out.append(notes["spot"])
+    return out
 
 # ---- 时间范围 ----
 LOOKBACK_DAYS = 200    # 回看多久(用于核对历史一致性)

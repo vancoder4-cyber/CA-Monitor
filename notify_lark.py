@@ -62,19 +62,41 @@ def _build_card(alerts, meta, dashboard_url=""):
     else:
         template = "green"
 
+    n_pending = len(alerts.get("pending", []))
     elements = [{
         "tag": "div",
         "text": {"tag": "lark_md",
-                 "content": f"🆕 新发现 **{n_new}**　⏰ 临近 **{n_round}**　❗冲突 **{n_conf}**　🕳 空缺 **{n_gap}**"}
+                 "content": f"⏳ 待执行 **{n_pending}**　🆕 新发现 **{n_new}**　❗冲突 **{n_conf}**　🕳 空缺 **{n_gap}**"}
     }, {"tag": "hr"}]
 
     def section(title, lines):
         if not lines:
             return
-        body = "\n".join(lines[:20])
-        more = f"\n…… 等共 {len(lines)} 条" if len(lines) > 20 else ""
+        body = "\n".join(lines[:30])
+        more = f"\n…… 等共 {len(lines)} 条" if len(lines) > 30 else ""
         elements.append({"tag": "div", "text": {"tag": "lark_md",
                         "content": f"**{title}**\n{body}{more}"}})
+
+    # ⏳ 待执行(已公告未发生)—— 每次跑都持续推送,直到执行
+    pl = []
+    for x in alerts.get("pending", []):
+        prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
+        val = ""
+        if x.get("amount") is not None:
+            val = f" ${x['amount']}"
+        elif x.get("ratio"):
+            val = f" {x['ratio']}"
+        dates = f"除息 {x['date']}"
+        if x.get("record"):
+            dates += f" · 登记 {x['record']}"
+        if x.get("pay"):
+            dates += f" · 派发 {x['pay']}"
+        line = (f"• {prod}**{x['ticker']}** {ETYPE_CN.get(x['etype'], x['etype'])}{val} — "
+                f"<font color='red'>还剩 {x['days']} 天</font>　{dates}")
+        for rn in x.get("risk", []):
+            line += f"\n　⚠️ {rn}"
+        pl.append(line)
+    section("⏳ 待执行(已公告未发生)", pl)
 
     # 临近预警(最重要,放最前)
     rl = []
@@ -142,7 +164,8 @@ def notify(alerts, meta):
     if not cfg["webhook"]:
         return False, "未配置 LARK_WEBHOOK,跳过推送"
 
-    total = len(alerts["new"]) + len(alerts["rounds"]) + len(alerts["conflicts"]) + len(alerts["gaps"])
+    total = (len(alerts["new"]) + len(alerts["rounds"]) + len(alerts["conflicts"])
+             + len(alerts["gaps"]) + len(alerts.get("pending", [])))
     if total == 0 and not cfg["notify_empty"]:
         return False, "无预警内容,跳过(设 LARK_NOTIFY_EMPTY=1 可强制推送)"
 

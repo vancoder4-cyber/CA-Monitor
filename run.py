@@ -87,7 +87,7 @@ def build():
     state = load_state()
     seen, fired = state["seen"], state["fired_rounds"]
     today = dt.date.today().isoformat()
-    new_events, round_alerts, conflicts, gaps = [], [], [], []
+    new_events, round_alerts, conflicts, gaps, pending = [], [], [], [], []
 
     for tk, groups in all_groups.items():
         for g in groups:
@@ -101,6 +101,12 @@ def build():
             if g.is_future and g.etype != "filing" and g.days_to is not None:
                 def _pk(f):
                     return next((v.get(f) for v in g.by_source.values() if v.get(f)), None)
+                # 持续推送:所有"已公告未执行"事件,每次跑都列出(带 D-天数 + 产品 + 风控提示)
+                pending.append({"ticker": g.ticker, "etype": g.etype, "date": g.anchor_date,
+                                "days": g.days_to, "status": g.status,
+                                "decl": _pk("declaration_date"), "record": _pk("record_date"),
+                                "pay": _pk("pay_date"), "amount": _pk("amount"), "ratio": _pk("ratio"),
+                                "products": C.product_tags(g.ticker), "risk": C.risk_note(g.ticker, g.etype)})
                 done = set(fired.get(s, []))
                 for rnd in C.ALERT_ROUNDS:
                     if g.days_to <= rnd and rnd not in done:
@@ -118,8 +124,10 @@ def build():
     round_alerts.sort(key=lambda x: x["days"])
     conflicts.sort(key=lambda g: g.anchor_date or "", reverse=True)
     gaps.sort(key=lambda g: g.anchor_date or "", reverse=True)
+    pending.sort(key=lambda x: x["days"])
 
-    alerts = {"new": new_events, "rounds": round_alerts, "conflicts": conflicts, "gaps": gaps}
+    alerts = {"new": new_events, "rounds": round_alerts, "conflicts": conflicts,
+              "gaps": gaps, "pending": pending}
     meta = {"generated": dt.datetime.now().strftime("%Y-%m-%d %H:%M")}
 
     # 单页站点:日历 + 预警面板(标签切换)

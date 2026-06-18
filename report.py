@@ -104,6 +104,24 @@ def build_dashboard(all_groups, source_health, alerts, meta):
             base += f" <a href='{html.escape(u)}' target='_blank' rel='noopener'>原文 ↗</a>"
         return base
     new_html = alert_block("🆕 新发现事件", alerts["new"], _new_render)
+
+    # ⏳ 待执行(已公告未发生)—— 持续展示,带产品标签 + 风控提示 + 倒计时
+    def _pending_render(x):
+        prod = ""
+        if x.get("products"):
+            prod = "<span style='background:#eef;color:#3538cd;border-radius:4px;padding:0 6px;font-size:12px'>" \
+                   + "+".join(x["products"]) + "</span> "
+        val = (f" ${x['amount']}" if x.get("amount") is not None
+               else (f" {x['ratio']}" if x.get("ratio") else ""))
+        dates = f"除息 {x['date']}"
+        if x.get("record"):
+            dates += f" · 登记 {x['record']}"
+        if x.get("pay"):
+            dates += f" · 派发 {x['pay']}"
+        risk = "".join(f"<br><span style='color:#9a6700'>⚠️ {html.escape(r)}</span>" for r in x.get("risk", []))
+        return (f"{prod}<b>{x['ticker']}</b> {ETYPE_CN.get(x['etype'], x['etype'])}{html.escape(val)} — "
+                f"<b style='color:#cf222e'>还剩 {x['days']} 天</b>　<span style='color:#555;font-size:12px'>{html.escape(dates)}</span>{risk}")
+    pending_html = alert_block("⏳ 待执行(已公告未发生,持续提醒)", alerts.get("pending", []), _pending_render)
     def _round_dates(x):
         bits = [f"除息 {x['date']}"]
         if x.get("record"): bits.append(f"登记 {x['record']}")
@@ -180,6 +198,7 @@ def build_dashboard(all_groups, source_health, alerts, meta):
   </table>
 
   <h2>报警</h2>
+  {pending_html}
   {new_html}
   {round_html}
   {conf_html}
@@ -204,6 +223,19 @@ def build_text_digest(alerts, meta):
         for x in items:
             L.append("  • " + fmt(x))
         L.append("")
+    def _pending_line(x):
+        prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
+        val = (f" ${x['amount']}" if x.get("amount") is not None
+               else (f" {x['ratio']}" if x.get("ratio") else ""))
+        s = f"{prod}{x['ticker']} {ETYPE_CN.get(x['etype'],x['etype'])}{val} 还剩{x['days']}天 · 除息 {x['date']}"
+        if x.get("record"):
+            s += f" 登记 {x['record']}"
+        if x.get("pay"):
+            s += f" 派发 {x['pay']}"
+        for r in x.get("risk", []):
+            s += f"\n      ⚠️ {r}"
+        return s
+    sec("待执行(已公告未发生,持续提醒)", alerts.get("pending", []), _pending_line)
     sec("新发现事件", alerts["new"],
         lambda g: f"{g.ticker} {ETYPE_CN.get(g.etype,g.etype)} {g.anchor_date} {(_strip(g))}")
     sec("临近预警", alerts["rounds"],

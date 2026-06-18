@@ -1,0 +1,72 @@
+name: CA Monitor
+
+# 定时(UTC)。美东 ET 夏令时=UTC-4:08:00 ET≈12:00 UTC,18:00 ET≈22:00 UTC。
+# 冬令时(EST=UTC-5)会各晚 1 小时,可按需把 12/22 改成 13/23。
+on:
+  schedule:
+    - cron: "0 12 * * 1-5"   # 盘前
+    - cron: "0 22 * * 1-5"   # 收盘后
+  workflow_dispatch: {}        # 允许手动触发
+
+permissions:
+  contents: write   # 提交 state.json(预警去重)
+  pages: write      # 部署 Pages
+  id-token: write
+
+concurrency:
+  group: ca-monitor
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 抓取 + 核对 + 生成面板 + 推 Lark
+        env:
+          ALPHAVANTAGE: ${{ secrets.ALPHAVANTAGE }}
+          FMP: ${{ secrets.FMP }}
+          FINNHUB: ${{ secrets.FINNHUB }}
+          TIINGO: ${{ secrets.TIINGO }}
+          ALPACA_KEY_ID: ${{ secrets.ALPACA_KEY_ID }}
+          ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
+          SEC_UA: ${{ secrets.SEC_UA }}
+          LARK_WEBHOOK: ${{ secrets.LARK_WEBHOOK }}
+          LARK_SECRET: ${{ secrets.LARK_SECRET }}
+          LARK_DASHBOARD_URL: ${{ vars.LARK_DASHBOARD_URL }}
+        run: python run.py
+
+      - name: 持久化预警状态(去重)
+        run: |
+          git config user.name "ca-monitor-bot"
+          git config user.email "ca-monitor-bot@users.noreply.github.com"
+          git add -f data/state.json || true
+          git commit -m "chore: update alert state [skip ci]" || echo "无变化"
+          git push || echo "push 跳过"
+
+      - name: 准备 Pages 站点
+        run: |
+          mkdir -p public
+          cp dashboard.html public/index.html
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -97,6 +97,22 @@ LARK_NOTIFY_EMPTY=0   # 1=没预警也推一条
 
 > 签名算法:以 `"{timestamp}\n{secret}"` 为 HMAC-SHA256 的 key、空消息体,base64;timestamp 需在服务器时间 1 小时内。
 
+## 云端托管:GitHub Actions + GitHub Pages
+
+`.github/workflows/monitor.yml` 已配好:盘前/收盘各跑一次,自动抓取 → 核对 → 推 Lark → 把 `dashboard.html` 部署到 GitHub Pages(在线网页,自动更新)。
+
+启用步骤(一次性):
+
+1. **加密钥**:repo → Settings → Secrets and variables → **Actions** → New repository secret,逐个加:
+   `ALPHAVANTAGE` `FMP` `FINNHUB` `TIINGO` `ALPACA_KEY_ID` `ALPACA_SECRET` `SEC_UA` `LARK_WEBHOOK`(开了签名校验再加 `LARK_SECRET`)。
+2. **启用 Pages**:repo → Settings → **Pages** → Source 选 **GitHub Actions**。
+3. (可选)加仓库变量 `LARK_DASHBOARD_URL` = 你的 Pages 网址(见下),Lark 卡片按钮就指向它。
+4. **手动触发一次**:repo → Actions → CA Monitor → Run workflow。跑完后网页地址为
+   `https://vancoder4-cyber.github.io/CA-Monitor/`。
+
+> 定时用 UTC;ET 夏令时已对应 12:00/22:00 UTC,冬令时改成 13:00/23:00。
+> ⚠️ 公开 Pages = 网址公开可见,持仓清单会公开。要私有请改用 Cloudflare Pages/Netlify 加访问控制。
+
 ## 免费源额度提醒(生产注意)
 
 - **Alpha Vantage** 免费 25 次/天:跑两次 ×24 支会远超额,代码已限量 + 限流自动标「不可用」。生产建议升级或仅作补充。

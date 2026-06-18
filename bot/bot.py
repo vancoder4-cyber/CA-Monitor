@@ -93,7 +93,7 @@ def send_calendar_image(chat_id, tab="cal"):
         with open(path, "rb") as f:
             req = CreateImageRequest.builder().request_body(
                 CreateImageRequestBody.builder().image_type("message").image(f).build()).build()
-        resp = client.im.v1.image.create(req)
+            resp = client.im.v1.image.create(req)   # 必须在 with 内,否则文件已关闭
         if not resp.success():
             print("image upload fail:", resp.code, resp.msg)
             return False

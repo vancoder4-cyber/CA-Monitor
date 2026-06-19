@@ -139,14 +139,18 @@ def build():
                                 "first": _pk("declaration_date") or seen.get(s),
                                 "products": C.product_tags(g.ticker), "risk": C.risk_note(g.ticker, g.etype)})
                 done = set(fired.get(s, []))
-                for rnd in C.ALERT_ROUNDS:
-                    if g.days_to <= rnd and rnd not in done:
-                        round_alerts.append({"ticker": g.ticker, "etype": g.etype,
-                                             "date": g.anchor_date, "days": g.days_to, "round": rnd,
-                                             "decl": _pk("declaration_date"), "record": _pk("record_date"),
-                                             "pay": _pk("pay_date"), "amount": _pk("amount"),
-                                             "ratio": _pk("ratio")})
-                        done.add(rnd)
+                # 只触发「最接近的一轮」:跨过的更大轮次一并标记,避免补推一堆
+                cands = [r for r in C.ALERT_ROUNDS if r >= g.days_to and r not in done]
+                if cands:
+                    rnd = min(cands)
+                    ops, risk_copy = C.round_copy(rnd)
+                    round_alerts.append({"ticker": g.ticker, "etype": g.etype,
+                                         "date": g.anchor_date, "days": g.days_to, "round": rnd,
+                                         "decl": _pk("declaration_date"), "record": _pk("record_date"),
+                                         "pay": _pk("pay_date"), "amount": _pk("amount"),
+                                         "ratio": _pk("ratio"), "products": C.product_tags(g.ticker),
+                                         "ops": ops, "risk_copy": risk_copy})
+                    done |= {r for r in C.ALERT_ROUNDS if r >= g.days_to}
                 fired[s] = sorted(done, reverse=True)
 
     # 统一「首发日」:分红宣告日(declaration date)→ 否则监控首次发现日
@@ -190,16 +194,30 @@ def build():
                     continue
             elif g.etype not in ("dividend", "split"):
                 continue
-            amt = next((v.get("amount") for v in g.by_source.values() if v.get("amount") is not None), None)
-            ratio = next((v.get("ratio") for v in g.by_source.values() if v.get("ratio")), None)
+            def _ck(f, _g=g):
+                return next((v.get(f) for v in _g.by_source.values() if v.get(f)), None)
             calendar_events.append({"ticker": g.ticker, "etype": g.etype, "date": ad,
-                                    "amount": amt, "ratio": ratio, "note": g.note,
+                                    "amount": _ck("amount"), "ratio": _ck("ratio"), "note": g.note,
+                                    "record": _ck("record_date"), "pay": _ck("pay_date"),
+                                    "decl": _ck("declaration_date"),
                                     "first": getattr(g, "first_announced", None),
+                                    "status": g.status, "risk": C.risk_note(g.ticker, g.etype),
+                                    "url": (g.by_source.get("SEC") or {}).get("url", "") if g.etype == "filing" else "",
                                     "products": C.product_tags(g.ticker)})
+
+    # 资产覆盖(现货/合约 × 标的类型 × 是否监控)
+    TYPE_CN = {"equity": "个股", "etf": "ETF", "commodity": "商品/外汇", "foreign": "海外股"}
+    coverage = []
+    for tk in C.ALL_ASSETS:
+        coverage.append({"ticker": tk, "name": C.NAMES.get(tk, ""),
+                         "spot": tk in C.SPOT_TICKERS, "contract": tk in C.CONTRACT_TICKERS,
+                         "type": C.asset_type(tk), "type_cn": TYPE_CN.get(C.asset_type(tk), C.asset_type(tk)),
+                         "monitored": C.is_monitored(tk)})
 
     # 发布给交互机器人读取的数据(随 Pages 一起部署为 data.json)
     site_data = {
         "generated": meta["generated"],
+        "coverage": coverage,
         "counts": {"pending": len(pending), "new": len(new_events),
                    "conflicts": len(conflicts), "gaps": len(gaps),
                    "announced": len(announced)},

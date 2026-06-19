@@ -79,9 +79,40 @@ def _build_card(alerts, meta, dashboard_url=""):
         elements.append({"tag": "div", "text": {"tag": "lark_md",
                         "content": f"**{title}**\n{body}{more}"}})
 
-    # 📣 新公告:刚扫到 declaration date 的事件(最时效,放最前)
+    # ⏰ 临近预警(运营催办)—— 最优先,放最前
+    rl = []
+    for x in alerts["rounds"]:
+        dates = f"除息 {x['date']}"
+        if x.get("record"):
+            dates += f" · 登记 {x['record']}"
+        if x.get("pay"):
+            dates += f" · 派发 {x['pay']}"
+        val = ""
+        if x.get("amount") is not None:
+            val = f" ${x['amount']}"
+        elif x.get("ratio"):
+            val = f" {x['ratio']}"
+        prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
+        line = (f"• {prod}**{x['ticker']}** {ETYPE_CN.get(x['etype'], x['etype'])}{val} — "
+                f"<font color='red'>D-{x['days']}</font>({x['round']}天轮)　{dates}")
+        if x.get("ops"):
+            line += f"\n　👉 {x['ops']}"
+        if x.get("risk_copy"):
+            line += f"\n　🛡 {x['risk_copy']}"
+        rl.append(line)
+    section("⏰ 临近预警(运营催办)", rl)
+
+    # 优先级互斥:已在催办里出现的事件,后面的区不再重复
+    def _sig(x):
+        return (x.get("ticker"), x.get("etype"), x.get("date"))
+    claimed = {_sig(x) for x in alerts.get("rounds", [])}
+
+    # 📣 新公告:刚扫到 declaration date 的事件(跳过已在催办的)
     al = []
     for x in alerts.get("announced", []):
+        if _sig(x) in claimed:
+            continue
+        claimed.add(_sig(x))
         prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
         val = ""
         if x.get("amount") is not None:
@@ -93,9 +124,11 @@ def _build_card(alerts, meta, dashboard_url=""):
                   f"宣告 {x.get('decl')} · 除息 {x['date']}{days}")
     section("📣 新公告(刚宣告)", al)
 
-    # ⏳ 待执行(已公告未发生)—— 每次跑都持续推送,直到执行
+    # ⏳ 待执行(已公告未发生)—— 跳过已在催办/新公告里出现的
     pl = []
     for x in alerts.get("pending", []):
+        if _sig(x) in claimed:
+            continue
         prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
         val = ""
         if x.get("amount") is not None:
@@ -113,23 +146,6 @@ def _build_card(alerts, meta, dashboard_url=""):
             line += f"\n　⚠️ {rn}"
         pl.append(line)
     section("⏳ 待执行(已公告未发生)", pl)
-
-    # 临近预警(最重要,放最前)
-    rl = []
-    for x in alerts["rounds"]:
-        dates = f"除息 {x['date']}"
-        if x.get("record"):
-            dates += f" · 登记 {x['record']}"
-        if x.get("pay"):
-            dates += f" · 派发 {x['pay']}"
-        val = ""
-        if x.get("amount") is not None:
-            val = f" ${x['amount']}"
-        elif x.get("ratio"):
-            val = f" {x['ratio']}"
-        rl.append(f"• **{x['ticker']}** {ETYPE_CN.get(x['etype'], x['etype'])}{val} — "
-                  f"<font color='red'>D-{x['days']}</font>({x['round']}天轮)　{dates}")
-    section("⏰ 临近预警", rl)
 
     # 字段冲突
     cl = [f"• **{g.ticker}** {ETYPE_CN.get(g.etype, g.etype)} {g.anchor_date}:"

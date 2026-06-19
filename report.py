@@ -137,14 +137,27 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         days = f" · <b style='color:#cf222e'>还剩 {x['days']} 天</b>" if x.get("days") is not None else ""
         return (f"{prod}<b>{x['ticker']}</b> {ETYPE_CN.get(x['etype'], x['etype'])}{html.escape(val)} — "
                 f"<span style='color:#0969da'>宣告 {x.get('decl')}</span> · 除息 {x['date']}{days}")
-    announced_html = alert_block("📣 新公告(刚宣告)", alerts.get("announced", []), _ann_render)
+    # 网页报警去重:已在「临近预警(催办)」里的事件,不在「新公告」重复;「待执行」整块由时间线覆盖,不再单列
+    _round_sigs = {(x.get("ticker"), x.get("etype"), x.get("date")) for x in alerts.get("rounds", [])}
+    _ann_web = [x for x in alerts.get("announced", [])
+                if (x.get("ticker"), x.get("etype"), x.get("date")) not in _round_sigs]
+    announced_html = alert_block("📣 新公告(刚宣告)", _ann_web, _ann_render)
     def _round_dates(x):
         bits = [f"除息 {x['date']}"]
         if x.get("record"): bits.append(f"登记 {x['record']}")
         if x.get("pay"): bits.append(f"派发 {x['pay']}")
         return " · ".join(html.escape(b) for b in bits)
-    round_html = alert_block("⏰ 临近预警", alerts["rounds"],
-        lambda x: f"<b>{x['ticker']}</b> {ETYPE_CN.get(x['etype'],x['etype'])} — <b style='color:#cf222e'>D-{x['days']}</b> ({x['round']}天轮)<br><span style='font-size:12px;color:#555'>{_round_dates(x)}</span>")
+    def _round_render(x):
+        prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
+        s = (f"{prod}<b>{x['ticker']}</b> {ETYPE_CN.get(x['etype'],x['etype'])} — "
+             f"<b style='color:#cf222e'>D-{x['days']}</b> ({x['round']}天轮)"
+             f"<br><span style='font-size:12px;color:#555'>{_round_dates(x)}</span>")
+        if x.get("ops"):
+            s += f"<br><span style='color:#0969da'>👉 {html.escape(x['ops'])}</span>"
+        if x.get("risk_copy"):
+            s += f"<br><span style='color:#9a6700'>🛡 {html.escape(x['risk_copy'])}</span>"
+        return s
+    round_html = alert_block("⏰ 临近预警(运营催办)", alerts["rounds"], _round_render)
     conf_html = alert_block("❗ 字段冲突(零容忍)", alerts["conflicts"],
         lambda g: f"<b>{g.ticker}</b> {ETYPE_CN.get(g.etype,g.etype)} {g.anchor_date}: " + "; ".join(html.escape(c) for c in g.conflicts))
     gap_html = alert_block("🕳 数据空缺", alerts["gaps"],
@@ -162,6 +175,26 @@ def build_dashboard(all_groups, source_health, alerts, meta):
             cells.append(f"<td style='text-align:center;color:{color}' title='{st}'>{mark}</td>")
         health_rows.append(f"<tr><td><b>{tk}</b></td>{''.join(cells)}</tr>")
     health_head = "".join(f"<th style='font-size:11px'>{s}</th>" for s in sources_order)
+
+    # 资产覆盖表
+    _TYPE_CN = {"equity": "个股", "etf": "ETF", "commodity": "商品/外汇", "foreign": "海外股"}
+    def _yn(b):
+        return "<span style='color:#1a7f37'>✓</span>" if b else "<span style='color:#ccc'>—</span>"
+    cov_rows = []
+    n_spot = n_contract = n_mon = 0
+    for tk in C.ALL_ASSETS:
+        spot = tk in C.SPOT_TICKERS; contract = tk in C.CONTRACT_TICKERS
+        mon = C.is_monitored(tk)
+        n_spot += spot; n_contract += contract; n_mon += mon
+        mon_cell = ("<span style='color:#1a7f37'>已监控</span>" if mon
+                    else "<span style='color:#9a6700'>不适用</span>")
+        cov_rows.append(
+            f"<tr><td><b>{html.escape(tk)}</b></td>"
+            f"<td style='color:#666;font-size:12px'>{html.escape(C.NAMES.get(tk,''))}</td>"
+            f"<td>{_yn(spot)}</td><td>{_yn(contract)}</td>"
+            f"<td style='font-size:12px'>{_TYPE_CN.get(C.asset_type(tk), C.asset_type(tk))}</td>"
+            f"<td style='font-size:12px'>{mon_cell}</td></tr>")
+    n_assets = len(C.ALL_ASSETS)
 
     # ---- SEC 原文(近期 filing 类公司行动文件)----
     today_s = dt.date.today().isoformat()
@@ -214,10 +247,9 @@ def build_dashboard(all_groups, source_health, alerts, meta):
   </table>
 
   <h2>报警</h2>
-  {announced_html}
-  {pending_html}
-  {new_html}
   {round_html}
+  {announced_html}
+  {new_html}
   {conf_html}
   {gap_html}
   {sec_table}
@@ -226,6 +258,13 @@ def build_dashboard(all_groups, source_health, alerts, meta):
   <table>
     <tr><th>标的</th>{health_head}</tr>
     {''.join(health_rows)}
+  </table>
+
+  <h2>资产覆盖(现货 / 合约)</h2>
+  <div class="sub2">现货 {n_spot} · 合约 {n_contract} · 共 {n_assets} 个资产(监控 {n_mon} · 不适用 {n_assets - n_mon})</div>
+  <table>
+    <tr><th>标的</th><th>名称</th><th>现货</th><th>合约</th><th>类型</th><th>监控</th></tr>
+    {''.join(cov_rows)}
   </table>"""
     return body
 
@@ -240,13 +279,34 @@ def build_text_digest(alerts, meta):
         for x in items:
             L.append("  • " + fmt(x))
         L.append("")
+    def _round_line(x):
+        prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
+        s = (f"{prod}{x['ticker']} {ETYPE_CN.get(x['etype'],x['etype'])} D-{x['days']} ({x['round']}天轮) | 除息 {x['date']}"
+             + (f" 登记 {x['record']}" if x.get('record') else "")
+             + (f" 派发 {x['pay']}" if x.get('pay') else ""))
+        if x.get("ops"):
+            s += f"\n      👉 {x['ops']}"
+        if x.get("risk_copy"):
+            s += f"\n      🛡 {x['risk_copy']}"
+        return s
+    sec("临近预警(运营催办)", alerts["rounds"], _round_line)
+
+    # 优先级互斥去重:催办 > 新公告 > 待执行
+    def _sig(x):
+        return (x.get("ticker"), x.get("etype"), x.get("date"))
+    _claimed = {_sig(x) for x in alerts.get("rounds", [])}
+    _ann = [x for x in alerts.get("announced", []) if _sig(x) not in _claimed]
+    for x in _ann:
+        _claimed.add(_sig(x))
+    _pend = [x for x in alerts.get("pending", []) if _sig(x) not in _claimed]
+
     def _ann_line(x):
         prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
         val = (f" ${x['amount']}" if x.get("amount") is not None
                else (f" {x['ratio']}" if x.get("ratio") else ""))
         d = f" 还剩{x['days']}天" if x.get("days") is not None else ""
         return f"{prod}{x['ticker']} {ETYPE_CN.get(x['etype'],x['etype'])}{val} 宣告 {x.get('decl')} · 除息 {x['date']}{d}"
-    sec("新公告(刚宣告)", alerts.get("announced", []), _ann_line)
+    sec("新公告(刚宣告)", _ann, _ann_line)
 
     def _pending_line(x):
         prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
@@ -260,13 +320,9 @@ def build_text_digest(alerts, meta):
         for r in x.get("risk", []):
             s += f"\n      ⚠️ {r}"
         return s
-    sec("待执行(已公告未发生,持续提醒)", alerts.get("pending", []), _pending_line)
+    sec("待执行(已公告未发生,持续提醒)", _pend, _pending_line)
     sec("新发现事件", alerts["new"],
         lambda g: f"{g.ticker} {ETYPE_CN.get(g.etype,g.etype)} {g.anchor_date} {(_strip(g))}")
-    sec("临近预警", alerts["rounds"],
-        lambda x: f"{x['ticker']} {ETYPE_CN.get(x['etype'],x['etype'])} D-{x['days']} ({x['round']}天轮) | 除息 {x['date']}"
-                  + (f" 登记 {x['record']}" if x.get('record') else "")
-                  + (f" 派发 {x['pay']}" if x.get('pay') else ""))
     sec("字段冲突(零容忍)", alerts["conflicts"],
         lambda g: f"{g.ticker} {ETYPE_CN.get(g.etype,g.etype)} {g.anchor_date}: " + "; ".join(g.conflicts))
     sec("数据空缺", alerts["gaps"],

@@ -20,12 +20,39 @@ def _load_dotenv():
 
 _load_dotenv()
 
-# ---- 标的清单(24 支)----
-TICKERS = [
+# ---- 业务范围 ----
+# 现货:24 支美股个股
+SPOT_TICKERS = {
     "MU", "SNDK", "NVDA", "TSLA", "AMD", "INTC", "MSFT", "AAPL",
     "AMZN", "GOOGL", "META", "AVGO", "MRVL", "PLTR", "LLY", "NBIS",
     "HOOD", "CRWV", "RKLB", "MSTR", "COIN", "CRCL", "HIMS", "SPCX",
-]
+}
+# 合约:22(截图 23 行去掉已下架的 SOXL)
+CONTRACT_TICKERS = {
+    "MU", "SNDK", "MRVL", "INTC", "NVDA", "CRCL", "SPCX", "AMD", "MSTR", "TSLA", "GOOGL",  # 个股
+    "QQQ", "EWY",                                                                           # ETF
+    "XAU", "WTI", "XAG", "BRENTOIL", "NATGAS", "XCU", "DRAM", "CBRS", "SKHYNIX",            # 商品/海外
+}
+
+# 标的类型:equity(个股) / etf / commodity(商品·外汇) / foreign(海外股)
+# 只有 equity 和 etf 抓公司行动;commodity/foreign 列入覆盖但标"不适用"
+ASSET_TYPE = {
+    "QQQ": "etf", "EWY": "etf",
+    "XAU": "commodity", "WTI": "commodity", "XAG": "commodity", "BRENTOIL": "commodity",
+    "NATGAS": "commodity", "XCU": "commodity", "DRAM": "commodity", "CBRS": "commodity",
+    "SKHYNIX": "foreign",
+}
+
+def asset_type(tk):
+    return ASSET_TYPE.get(tk, "equity")
+
+def is_monitored(tk):
+    return asset_type(tk) in ("equity", "etf")
+
+# 全部资产(现货 ∪ 合约),用于"资产覆盖"视图
+ALL_ASSETS = sorted(SPOT_TICKERS | CONTRACT_TICKERS)
+# 实际抓公司行动的标的 = 个股 + ETF(商品/海外不抓)
+TICKERS = sorted([t for t in ALL_ASSETS if is_monitored(t)])
 
 NAMES = {
     "MU": "美光科技", "SNDK": "闪迪", "NVDA": "英伟达", "TSLA": "特斯拉",
@@ -35,6 +62,10 @@ NAMES = {
     "HOOD": "Robinhood", "CRWV": "CoreWeave", "RKLB": "火箭实验室",
     "MSTR": "微策略", "COIN": "Coinbase", "CRCL": "Circle",
     "HIMS": "Hims & Hers", "SPCX": "SpaceX",
+    # 合约新增
+    "QQQ": "纳指100 ETF", "EWY": "韩国 ETF", "XAU": "黄金", "WTI": "WTI原油",
+    "XAG": "白银", "BRENTOIL": "布伦特原油", "NATGAS": "天然气", "XCU": "铜",
+    "DRAM": "内存", "CBRS": "(合约)", "SKHYNIX": "SK海力士",
 }
 
 # ---- API keys ----
@@ -58,22 +89,28 @@ DIV_COMPARE_FIELDS = ["ex_date", "record_date", "pay_date", "amount"]
 # 比对哪些字段(拆股)
 SPLIT_COMPARE_FIELDS = ["ex_date", "ratio"]
 
-# ---- 预警节奏(距关键日期天数,各触发一轮"里程碑"提醒)----
+# ---- 预警节奏(距除息日天数,临近时只触发"最接近的一轮")----
 ALERT_ROUNDS = [30, 14, 7, 3, 1]
 # 以哪个日期作为预警基准
 ALERT_ANCHOR = "ex_date"
 # 已公告未执行的事件:是否每次跑都持续推送(直到执行)
 PENDING_ALWAYS_PUSH = True
 
-# ---- 产品归属(用于风控运营提示)----
-# 现货 = 全部 24 支。
-SPOT_TICKERS = set(TICKERS)
-# 合约 = 合约范围表里属于这 24 支的部分(商品/ETF/海外如 XAU/WTI/QQQ/SKHYNIX 不在监控范围)。
-# ⚠️ 截图在第 23 行被截断,下面是已确认可见的;若还有其它个股上了合约,补进来即可。
-CONTRACT_TICKERS = {
-    "MU", "SNDK", "MRVL", "INTC", "NVDA", "CRCL", "SPCX", "AMD", "MSTR", "TSLA", "GOOGL",
+# 各轮「运营」操作文案(随天数升级:30/14 仅知会,7/3/1 升级为催办)
+ROUND_OPS = {
+    30: "提前知会:距除息约 30 天,请运营留意并排入计划。",
+    14: "提前知会:距除息约 14 天,请运营确认本次活动安排。",
+    7:  "⏱ 催办:距除息 7 天 —— 请运营开始准备相关文案,并明确「具体哪天」执行各项操作、完成排期。",
+    3:  "⏱ 催办·收尾:距除息 3 天 —— 请确保相关文案全部写完。",
+    1:  "⏱ 最后确认:距除息仅 1 天 —— 确保运营文案已就绪,并备好定时发送事宜。",
 }
+# 风控文案:待风控团队明确(占位,各轮都带)
+ROUND_RISK_TBD = "风控提醒:待风控团队明确(占位)"
 
+def round_copy(rnd):
+    return ROUND_OPS.get(rnd, ""), ROUND_RISK_TBD
+
+# ---- 产品归属(用于风控运营提示;SPOT_TICKERS / CONTRACT_TICKERS 见文件上方业务范围)----
 def product_tags(ticker):
     tags = []
     if ticker in SPOT_TICKERS:

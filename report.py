@@ -43,17 +43,17 @@ def _fmt_key_dates(g):
     ex = g.anchor_date
     rec = _pick(g, "record_date")
     pay = _pick(g, "pay_date")
+    first = getattr(g, "first_announced", None)
 
     def cell(label, val, color="#1f2328"):
         v = html.escape(str(val)) if val else "<span style='color:#bbb'>—</span>"
         return f"<span style='font-size:11px;color:#888'>{label}</span> <span style='color:{color}'>{v}</span>"
 
-    return "<br>".join([
-        cell("宣告", decl),
-        cell("除息/除权", ex, "#cf222e"),
-        cell("登记", rec),
-        cell("派发", pay),
-    ])
+    rows = [cell("首发(公告)", first, "#0969da")]
+    if not decl or decl != first:
+        rows.append(cell("宣告", decl))
+    rows += [cell("除息/除权", ex, "#cf222e"), cell("登记", rec), cell("派发", pay)]
+    return "<br>".join(rows)
 
 
 def build_dashboard(all_groups, source_health, alerts, meta):
@@ -113,7 +113,10 @@ def build_dashboard(all_groups, source_health, alerts, meta):
                    + "+".join(x["products"]) + "</span> "
         val = (f" ${x['amount']}" if x.get("amount") is not None
                else (f" {x['ratio']}" if x.get("ratio") else ""))
-        dates = f"除息 {x['date']}"
+        dates = ""
+        if x.get("first"):
+            dates += f"<span style='color:#0969da'>首发 {x['first']}</span> · "
+        dates += f"除息 {x['date']}"
         if x.get("record"):
             dates += f" · 登记 {x['record']}"
         if x.get("pay"):
@@ -292,8 +295,9 @@ def _collect_calendar_marks(all_groups, start, end):
             ratio = _pick(g, "ratio")
             ex, rec, pay = g.anchor_date, _pick(g, "record_date"), _pick(g, "pay_date")
             decl = _pick(g, "declaration_date")
+            first = getattr(g, "first_announced", None)
             val = (f"${amt}" if amt is not None else "") + (f" {ratio}" if ratio else "")
-            tip = f"{g.ticker} {CAL_TYPE[g.etype]['label']} {val} | 宣告 {decl or '—'} · 除息 {ex or '—'} · 登记 {rec or '—'} · 派发 {pay or '—'} | {STATUS_CN.get(g.status)}"
+            tip = f"{g.ticker} {CAL_TYPE[g.etype]['label']} {val} | 首发 {first or '—'} · 宣告 {decl or '—'} · 除息 {ex or '—'} · 登记 {rec or '—'} · 派发 {pay or '—'} | {STATUS_CN.get(g.status)}"
             add(ex, {"tk": g.ticker, "kind": "ex", "etype": g.etype, "status": g.status,
                      "text": f"{val}", "tip": tip})
             add(rec, {"tk": g.ticker, "kind": "record", "etype": g.etype, "status": g.status,

@@ -116,6 +116,7 @@ def build():
                                 "days": g.days_to, "status": g.status,
                                 "decl": _pk("declaration_date"), "record": _pk("record_date"),
                                 "pay": _pk("pay_date"), "amount": _pk("amount"), "ratio": _pk("ratio"),
+                                "first": _pk("declaration_date") or seen.get(s),
                                 "products": C.product_tags(g.ticker), "risk": C.risk_note(g.ticker, g.etype)})
                 done = set(fired.get(s, []))
                 for rnd in C.ALERT_ROUNDS:
@@ -127,6 +128,13 @@ def build():
                                              "ratio": _pk("ratio")})
                         done.add(rnd)
                 fired[s] = sorted(done, reverse=True)
+
+    # 统一「首发日」:分红宣告日(declaration date)→ 否则监控首次发现日
+    for tk, groups in all_groups.items():
+        for g in groups:
+            decl = next((v.get("declaration_date") for v in g.by_source.values()
+                         if v.get("declaration_date")), None)
+            g.first_announced = decl or seen.get(sig(g))
 
     cutoff = (dt.date.today() - dt.timedelta(days=30)).isoformat()
     new_events = [g for g in new_events if (g.anchor_date or "") >= cutoff]
@@ -165,6 +173,7 @@ def build():
             ratio = next((v.get("ratio") for v in g.by_source.values() if v.get("ratio")), None)
             calendar_events.append({"ticker": g.ticker, "etype": g.etype, "date": ad,
                                     "amount": amt, "ratio": ratio, "note": g.note,
+                                    "first": getattr(g, "first_announced", None),
                                     "products": C.product_tags(g.ticker)})
 
     # 发布给交互机器人读取的数据(随 Pages 一起部署为 data.json)

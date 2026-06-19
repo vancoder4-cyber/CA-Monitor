@@ -64,8 +64,8 @@ class EventGroup:
 
 def _fields_of(ev, etype):
     if etype == "dividend":
-        return {"ex_date": ev.ex_date, "record_date": ev.record_date,
-                "pay_date": ev.pay_date, "amount": ev.amount}
+        return {"ex_date": ev.ex_date, "declaration_date": ev.declaration_date,
+                "record_date": ev.record_date, "pay_date": ev.pay_date, "amount": ev.amount}
     if etype == "split":
         return {"ex_date": ev.ex_date, "ratio": ev.ratio}
     return {"ex_date": ev.ex_date, "note": ev.note}

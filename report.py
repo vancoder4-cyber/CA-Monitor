@@ -125,6 +125,19 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         return (f"{prod}<b>{x['ticker']}</b> {ETYPE_CN.get(x['etype'], x['etype'])}{html.escape(val)} — "
                 f"<b style='color:#cf222e'>还剩 {x['days']} 天</b>　<span style='color:#555;font-size:12px'>{html.escape(dates)}</span>{risk}")
     pending_html = alert_block("⏳ 待执行(已公告未发生,持续提醒)", alerts.get("pending", []), _pending_render)
+
+    # 📣 新公告(刚扫到 declaration date)
+    def _ann_render(x):
+        prod = ""
+        if x.get("products"):
+            prod = "<span style='background:#eef;color:#3538cd;border-radius:4px;padding:0 6px;font-size:12px'>" \
+                   + "+".join(x["products"]) + "</span> "
+        val = (f" ${x['amount']}" if x.get("amount") is not None
+               else (f" {x['ratio']}" if x.get("ratio") else ""))
+        days = f" · <b style='color:#cf222e'>还剩 {x['days']} 天</b>" if x.get("days") is not None else ""
+        return (f"{prod}<b>{x['ticker']}</b> {ETYPE_CN.get(x['etype'], x['etype'])}{html.escape(val)} — "
+                f"<span style='color:#0969da'>宣告 {x.get('decl')}</span> · 除息 {x['date']}{days}")
+    announced_html = alert_block("📣 新公告(刚宣告)", alerts.get("announced", []), _ann_render)
     def _round_dates(x):
         bits = [f"除息 {x['date']}"]
         if x.get("record"): bits.append(f"登记 {x['record']}")
@@ -201,6 +214,7 @@ def build_dashboard(all_groups, source_health, alerts, meta):
   </table>
 
   <h2>报警</h2>
+  {announced_html}
   {pending_html}
   {new_html}
   {round_html}
@@ -226,6 +240,14 @@ def build_text_digest(alerts, meta):
         for x in items:
             L.append("  • " + fmt(x))
         L.append("")
+    def _ann_line(x):
+        prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
+        val = (f" ${x['amount']}" if x.get("amount") is not None
+               else (f" {x['ratio']}" if x.get("ratio") else ""))
+        d = f" 还剩{x['days']}天" if x.get("days") is not None else ""
+        return f"{prod}{x['ticker']} {ETYPE_CN.get(x['etype'],x['etype'])}{val} 宣告 {x.get('decl')} · 除息 {x['date']}{d}"
+    sec("新公告(刚宣告)", alerts.get("announced", []), _ann_line)
+
     def _pending_line(x):
         prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
         val = (f" ${x['amount']}" if x.get("amount") is not None

@@ -63,10 +63,12 @@ def _build_card(alerts, meta, dashboard_url=""):
         template = "green"
 
     n_pending = len(alerts.get("pending", []))
+    n_ann = len(alerts.get("announced", []))
     elements = [{
         "tag": "div",
         "text": {"tag": "lark_md",
-                 "content": f"⏳ 待执行 **{n_pending}**　🆕 新发现 **{n_new}**　❗冲突 **{n_conf}**　🕳 空缺 **{n_gap}**"}
+                 "content": f"📣 新公告 **{n_ann}**　⏳ 待执行 **{n_pending}**　🆕 新发现 **{n_new}**"
+                            f"　❗冲突 **{n_conf}**　🕳 空缺 **{n_gap}**"}
     }, {"tag": "hr"}]
 
     def section(title, lines):
@@ -76,6 +78,20 @@ def _build_card(alerts, meta, dashboard_url=""):
         more = f"\n…… 等共 {len(lines)} 条" if len(lines) > 30 else ""
         elements.append({"tag": "div", "text": {"tag": "lark_md",
                         "content": f"**{title}**\n{body}{more}"}})
+
+    # 📣 新公告:刚扫到 declaration date 的事件(最时效,放最前)
+    al = []
+    for x in alerts.get("announced", []):
+        prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
+        val = ""
+        if x.get("amount") is not None:
+            val = f" ${x['amount']}"
+        elif x.get("ratio"):
+            val = f" {x['ratio']}"
+        days = f" · <font color='red'>还剩 {x['days']} 天</font>" if x.get("days") is not None else ""
+        al.append(f"• {prod}**{x['ticker']}** {ETYPE_CN.get(x['etype'], x['etype'])}{val} —— "
+                  f"宣告 {x.get('decl')} · 除息 {x['date']}{days}")
+    section("📣 新公告(刚宣告)", al)
 
     # ⏳ 待执行(已公告未发生)—— 每次跑都持续推送,直到执行
     pl = []
@@ -165,7 +181,7 @@ def notify(alerts, meta):
         return False, "未配置 LARK_WEBHOOK,跳过推送"
 
     total = (len(alerts["new"]) + len(alerts["rounds"]) + len(alerts["conflicts"])
-             + len(alerts["gaps"]) + len(alerts.get("pending", [])))
+             + len(alerts["gaps"]) + len(alerts.get("pending", [])) + len(alerts.get("announced", [])))
     if total == 0 and not cfg["notify_empty"]:
         return False, "无预警内容,跳过(设 LARK_NOTIFY_EMPTY=1 可强制推送)"
 

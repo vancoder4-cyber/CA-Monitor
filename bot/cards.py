@@ -56,7 +56,7 @@ def alert_card(data, site_url):
     gen = data.get("generated", "")
     template = "red" if (c.get("conflicts") or c.get("gaps")) else "blue"
     elems = [{"tag": "div", "text": {"tag": "lark_md",
-              "content": f"⏳ 待执行 **{c.get('pending',0)}**　🆕 新发现 **{c.get('new',0)}**"
+              "content": f"📣 新公告 **{c.get('announced',0)}**　⏳ 待执行 **{c.get('pending',0)}**　🆕 新发现 **{c.get('new',0)}**"
                          f"　❗冲突 **{c.get('conflicts',0)}**　🕳 空缺 **{c.get('gaps',0)}**"}},
              {"tag": "hr"}]
 
@@ -64,6 +64,13 @@ def alert_card(data, site_url):
         if lines:
             elems.append({"tag": "div", "text": {"tag": "lark_md",
                          "content": f"**{title}**\n" + "\n".join(lines[:20])}})
+
+    ann = []
+    for x in data.get("announced", []):
+        prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
+        d = f" · <font color='red'>还剩 {x['days']} 天</font>" if x.get("days") is not None else ""
+        ann.append(f"• {prod}**{x['ticker']}** {ETYPE_CN.get(x['etype'],x['etype'])}{_val(x)} —— 宣告 {x.get('decl')} · 除息 {x['date']}{d}")
+    sec("📣 新公告(刚宣告)", ann)
 
     pend = []
     for x in data.get("pending", []):

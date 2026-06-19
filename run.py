@@ -38,8 +38,12 @@ def _grp_brief(g):
 def load_state():
     if os.path.exists(STATE_PATH):
         with open(STATE_PATH, encoding="utf-8") as f:
-            return json.load(f)
-    return {"seen": {}, "fired_rounds": {}}
+            st = json.load(f)
+            st.setdefault("seen", {})
+            st.setdefault("fired_rounds", {})
+            st.setdefault("declared", {})   # sig -> 已推送过的宣告日
+            return st
+    return {"seen": {}, "fired_rounds": {}, "declared": {}}
 
 
 def save_state(st):
@@ -95,9 +99,10 @@ def build():
         source_health[tk] = d["health"]
 
     state = load_state()
-    seen, fired = state["seen"], state["fired_rounds"]
+    seen, fired, declared = state["seen"], state["fired_rounds"], state["declared"]
     today = dt.date.today().isoformat()
-    new_events, round_alerts, conflicts, gaps, pending = [], [], [], [], []
+    cutoff30 = (dt.date.today() - dt.timedelta(days=30)).isoformat()
+    new_events, round_alerts, conflicts, gaps, pending, announced = [], [], [], [], [], []
 
     for tk, groups in all_groups.items():
         for g in groups:
@@ -108,9 +113,24 @@ def build():
                 conflicts.append(g)
             if g.gaps:
                 gaps.append(g)
+
+            def _pk(f, _g=g):
+                return next((v.get(f) for v in _g.by_source.values() if v.get(f)), None)
+
+            # 📣 新公告:首次出现 declaration date 即推送(即使之前见过其预估)
+            decl = _pk("declaration_date")
+            if decl and declared.get(s) != decl:
+                declared[s] = decl
+                # 只推近窗口(避免首跑回填历史):宣告日近 30 天内,或事件未来/刚过
+                near = g.is_future or ((g.anchor_date or "") >= cutoff30)
+                if decl >= cutoff30 and near:
+                    announced.append({"ticker": g.ticker, "etype": g.etype, "date": g.anchor_date,
+                                      "decl": decl, "days": g.days_to,
+                                      "record": _pk("record_date"), "pay": _pk("pay_date"),
+                                      "amount": _pk("amount"), "ratio": _pk("ratio"),
+                                      "products": C.product_tags(g.ticker)})
+
             if g.is_future and g.etype != "filing" and g.days_to is not None:
-                def _pk(f):
-                    return next((v.get(f) for v in g.by_source.values() if v.get(f)), None)
                 # 持续推送:所有"已公告未执行"事件,每次跑都列出(带 D-天数 + 产品 + 风控提示)
                 pending.append({"ticker": g.ticker, "etype": g.etype, "date": g.anchor_date,
                                 "days": g.days_to, "status": g.status,
@@ -143,9 +163,10 @@ def build():
     conflicts.sort(key=lambda g: g.anchor_date or "", reverse=True)
     gaps.sort(key=lambda g: g.anchor_date or "", reverse=True)
     pending.sort(key=lambda x: x["days"])
+    announced.sort(key=lambda x: x.get("decl") or "", reverse=True)
 
     alerts = {"new": new_events, "rounds": round_alerts, "conflicts": conflicts,
-              "gaps": gaps, "pending": pending}
+              "gaps": gaps, "pending": pending, "announced": announced}
     meta = {"generated": dt.datetime.now().strftime("%Y-%m-%d %H:%M")}
 
     # 单页站点:日历 + 预警面板(标签切换)
@@ -180,7 +201,9 @@ def build():
     site_data = {
         "generated": meta["generated"],
         "counts": {"pending": len(pending), "new": len(new_events),
-                   "conflicts": len(conflicts), "gaps": len(gaps)},
+                   "conflicts": len(conflicts), "gaps": len(gaps),
+                   "announced": len(announced)},
+        "announced": announced,
         "pending": pending,
         "new": [_grp_brief(g) for g in new_events],
         "conflicts": [_grp_brief(g) for g in conflicts],

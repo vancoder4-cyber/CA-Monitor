@@ -3,6 +3,33 @@
 import datetime as dt
 ETYPE_CN = {"dividend": "分红", "split": "拆股", "filing": "并购/公告"}
 
+# ===== 指令唯一来源(改指令只改这里;HELP_TEXT / 关于卡片 / parse_command 都由它生成)=====
+# 顺序即匹配优先级。key 必须在 bot.py 的 on_message 里有对应 dispatch 分支。
+COMMANDS = [
+    # —— 上手/元信息 ——
+    {"key": "about",    "kw": ["关于", "介绍", "about"],                 "name": "关于",   "desc": "这是什么、数据源、规则、更新时点"},
+    {"key": "help",     "kw": ["帮助", "help"],                          "name": "帮助",   "desc": "显示指令说明"},
+    {"key": "changelog","kw": ["最近更新", "更新日志", "更新", "changelog", "版本"], "name": "最近更新", "desc": "最近 3 次版本更新(更多见网页)"},
+    # —— 按紧迫度:高 → 低 ——
+    {"key": "risk",     "kw": ["风险", "风控", "risk"],                  "name": "风险",   "desc": "当日风控清单(拆股/并购退市/冲突 + 风控动作)"},
+    {"key": "today",    "kw": ["今日", "今天", "today"],                 "name": "今日",   "desc": "今天要处理的关键日(除息/登记/派发/宣告)"},
+    {"key": "announce", "kw": ["新公告", "公告", "announce"],            "name": "新公告", "desc": "最新刚宣告(declaration date)的事件"},
+    {"key": "week",     "kw": ["本周", "week"],                          "name": "本周",   "desc": "未来 7 天的公司行动"},
+    {"key": "calendar", "kw": ["日历", "calendar", "cal"],              "name": "日历",   "desc": "当月公司行动月历(图)"},
+    {"key": "alert",    "kw": ["预警", "面板", "alert", "dashboard"],    "name": "预警",   "desc": "当日总览(计数 + 冲突/空缺)+ 面板链接"},
+    {"key": "coverage", "kw": ["覆盖", "资产", "标的", "coverage"],      "name": "覆盖",   "desc": "各标的在现货/合约的覆盖情况"},
+]
+# 注:顺序即匹配优先级 + 展示顺序。帮助不含 "?"(无匹配时默认即回帮助),避免「…?」误判。
+
+def parse_command(text):
+    """按 COMMANDS 顺序匹配关键词,返回 key;无匹配返回 help。bot.py 复用此函数。"""
+    import re
+    t = re.sub(r"@_user_\d+|@_all", "", text or "").strip().lower()
+    for c in COMMANDS:
+        if any(k.lower() in t for k in c["kw"]):
+            return c["key"]
+    return "help"
+
 
 def _val(x):
     if x.get("amount") is not None:
@@ -79,17 +106,12 @@ def alert_card(data, site_url):
     return _card(f"🔔 当日总览 · {gen}", template, elems, site_url, "打开预警面板")
 
 
-HELP_TEXT = (
-    "可用指令(@我 + 关键词):\n"
-    "• **关于** —— 这是什么、数据源、规则、更新时点\n"
-    "• **风险** —— 当日风控清单(拆股/并购退市/冲突 + 风控动作)\n"
-    "• **今日** / **本周** —— 今天要处理的 / 未来 7 天\n"
-    "• **新公告** —— 最新刚宣告的事件\n"
-    "• **覆盖** / **资产** —— 各标的在现货/合约的覆盖情况\n"
-    "• **日历** —— 当月公司行动月历(图)\n"
-    "• **预警** —— 当日总览(计数 + 冲突/空缺)+ 面板链接\n"
-    "• **帮助** —— 显示本说明"
-)
+# 由 COMMANDS 自动生成(勿手改)
+HELP_TEXT = "可用指令(@我 + 关键词):\n" + "\n".join(
+    f"• **{c['name']}** —— {c['desc']}" for c in COMMANDS)
+
+# 关于卡片里的指令名清单(由 COMMANDS 生成)
+COMMAND_NAMES = " · ".join(c["name"] for c in COMMANDS)
 
 
 # ---------------- 关于 / 介绍 ----------------
@@ -106,7 +128,7 @@ def about_card(data, site_url):
         "**更新**:每交易日 3 次 —— 开盘后 9:35 / 盘中 12:45 / 收盘后 16:05(美东)。\n\n"
         "**提前预警(运营催办)**:以除息日为准,距 **30/14** 天提前知会;**7** 天开始准备文案并明确排期;"
         "**3** 天确保文案全部写完;**1** 天确认文案就绪并备好定时发送。每条标明现货/合约;临近时只推最接近的一轮(风控提醒待定)。\n\n"
-        "**指令**(@我 + 关键词):关于 · 风险 · 今日 · 本周 · 新公告 · 日历 · 预警 · 帮助\n\n"
+        f"**指令**(@我 + 关键词):{COMMAND_NAMES}\n\n"
         f"_数据更新于 {gen}_"
     )
     return _card("ℹ️ 关于 CA问答助手", "blue",
@@ -209,6 +231,24 @@ def announce_card(data, site_url):
     return _card("📣 新公告(刚宣告)", "blue",
                  [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}],
                  site_url, "打开预警面板")
+
+
+def changelog_card(data, site_url):
+    chg = data.get("changelog", [])
+    if not chg:
+        return _card("🆕 最近更新", "blue",
+                     [{"tag": "div", "text": {"tag": "lark_md", "content": "暂无更新记录。"}}],
+                     site_url, "打开网页面板")
+    parts = []
+    for e in chg[:3]:
+        items = "\n".join(f"　• {i}" for i in e["items"][:6])
+        parts.append(f"**{e['head']}**\n{items}")
+    content = "\n\n".join(parts)
+    if len(chg) > 3:
+        content += f"\n\n…… 共 {len(chg)} 次更新,更多见网页"
+    return _card("🆕 最近更新", "blue",
+                 [{"tag": "div", "text": {"tag": "lark_md", "content": content}}],
+                 site_url, "查看完整更新日志")
 
 
 def coverage_card(data, site_url):

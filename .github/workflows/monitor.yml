@@ -29,6 +29,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: 指令一致性检查(COMMANDS / bot / HELP / README)
+        run: python tools/check_commands.py
+
       - name: 安装依赖
         run: pip install -r requirements.txt
 

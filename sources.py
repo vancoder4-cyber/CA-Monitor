@@ -286,7 +286,12 @@ def fetch_sec(ticker: str, lookback_days: int) -> SourceResult:
         dates = recent.get("filingDate", [])
         accns = recent.get("accessionNumber", [])
         docs = recent.get("primaryDocument", [])
+        items_all = recent.get("items", [])
+        accepted_all = recent.get("acceptanceDateTime", [])
         cutoff = (dt.date.today() - dt.timedelta(days=lookback_days)).isoformat()
+        # 非 8-K 的关注表格本身就与公司行动相关
+        _form_relevant = {"25", "25-NSE", "425", "S-4", "DEFM14A", "8-K12B", "15-12B",
+                          "SC TO-I", "SC 14D9"}
         evs = []
         for i, form in enumerate(forms):
             if form not in C.SEC_FORMS_OF_INTEREST:
@@ -297,9 +302,18 @@ def fetch_sec(ticker: str, lookback_days: int) -> SourceResult:
             accn = accns[i].replace("-", "") if i < len(accns) else ""
             doc = docs[i] if i < len(docs) else ""
             url = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{accn}/{doc}" if accn else ""
-            evs.append(Event(ticker, "filing", "SEC", ex_date=fdate,
-                             note=f"{form} · {C.SEC_FORMS_OF_INTEREST[form]}",
-                             raw={"form": form, "url": url}))
+            items_str = items_all[i] if i < len(items_all) else ""
+            accepted = (accepted_all[i] if i < len(accepted_all) else "") or ""
+            accepted = accepted.replace("T", " ")[:16]   # 'YYYY-MM-DD HH:MM'
+            if form == "8-K":
+                descs, relevant = C.describe_8k(items_str)
+                note = "8-K · " + ("、".join(descs) if descs else "重大事件")
+            else:
+                note = f"{form} · {C.SEC_FORMS_OF_INTEREST[form]}"
+                relevant = form in _form_relevant
+            evs.append(Event(ticker, "filing", "SEC", ex_date=fdate, note=note,
+                             raw={"form": form, "url": url, "items": items_str,
+                                  "relevant": relevant, "accepted": accepted}))
         return SourceResult("SEC", ticker, "ok", evs)
     except Exception as e:
         return SourceResult("SEC", ticker, "unavailable", detail=f"{e}")

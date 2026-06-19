@@ -119,6 +119,8 @@ def reconcile_ticker(results) -> List[EventGroup]:
                 if etype == "filing":
                     g.note = e.note
                     g.by_source[e.source]["url"] = e.raw.get("url", "")
+                    g.by_source[e.source]["relevant"] = e.raw.get("relevant", False)
+                    g.by_source[e.source]["accepted"] = e.raw.get("accepted", "")
             _evaluate(g, etype)
             groups.append(g)
 

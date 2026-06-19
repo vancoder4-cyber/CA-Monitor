@@ -104,26 +104,8 @@ def send_calendar_image(chat_id, data):
 
 
 def parse_command(text):
-    t = re.sub(r"@_user_\d+|@_all", "", text or "").strip().lower()
-    if any(k in t for k in ("关于", "介绍", "about")):
-        return "about"
-    if any(k in t for k in ("风险", "风控", "risk")):
-        return "risk"
-    if any(k in t for k in ("新公告", "公告", "announce")):
-        return "announce"
-    if any(k in t for k in ("覆盖", "资产", "标的", "coverage")):
-        return "coverage"
-    if any(k in t for k in ("今日", "今天", "today")):
-        return "today"
-    if any(k in t for k in ("本周", "week")):
-        return "week"
-    if any(k in t for k in ("日历", "calendar", "cal")):
-        return "calendar"
-    if any(k in t for k in ("预警", "面板", "alert", "dashboard")):
-        return "alert"
-    if any(k in t for k in ("帮助", "help", "?", "？")):
-        return "help"
-    return "help"
+    # 指令唯一来源在 cards.COMMANDS
+    return cards.parse_command(text)
 
 
 def on_message(data: P2ImMessageReceiveV1):
@@ -176,6 +158,8 @@ def on_message(data: P2ImMessageReceiveV1):
             send_card(chat_id, cards.announce_card(d, SITE_URL))
         elif cmd == "coverage":
             send_card(chat_id, cards.coverage_card(d, SITE_URL))
+        elif cmd == "changelog":
+            send_card(chat_id, cards.changelog_card(d, SITE_URL))
         elif cmd == "calendar":
             send_card(chat_id, cards.calendar_card(d, SITE_URL))
             send_calendar_image(chat_id, d)

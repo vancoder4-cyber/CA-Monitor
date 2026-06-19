@@ -1,9 +1,29 @@
 # -*- coding: utf-8 -*-
 """生成 HTML 面板 + 文本预警 digest + 月历视图。"""
+import os
 import html
 import calendar as _cal
 import datetime as dt
 import config as C
+
+
+def load_changelog():
+    """解析 CHANGELOG.md -> [{head, items:[...]}, ...](最新在前)。"""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "CHANGELOG.md")
+    if not os.path.exists(path):
+        return []
+    entries, cur = [], None
+    for line in open(path, encoding="utf-8"):
+        s = line.rstrip()
+        if s.startswith("## "):
+            if cur:
+                entries.append(cur)
+            cur = {"head": s[3:].strip(), "items": []}
+        elif s.startswith("- ") and cur is not None:
+            cur["items"].append(s[2:].strip())
+    if cur:
+        entries.append(cur)
+    return entries
 
 STATUS_CN = {"confirmed": "已确认", "single": "单源待核实", "conflict": "有冲突"}
 STATUS_COLOR = {"confirmed": "#1a7f37", "single": "#9a6700", "conflict": "#cf222e"}
@@ -196,6 +216,14 @@ def build_dashboard(all_groups, source_health, alerts, meta):
             f"<td style='font-size:12px'>{mon_cell}</td></tr>")
     n_assets = len(C.ALL_ASSETS)
 
+    # 更新日志
+    chg = load_changelog()
+    chg_parts = []
+    for e in chg:
+        items = "".join(f"<li>{html.escape(i)}</li>" for i in e["items"])
+        chg_parts.append(f"<h3 style='margin:14px 0 4px'>{html.escape(e['head'])}</h3><ul>{items}</ul>")
+    chg_html = "".join(chg_parts) if chg_parts else "<p style='color:#888'>暂无</p>"
+
     # ---- SEC 原文(近期 filing 类公司行动文件)----
     today_s = dt.date.today().isoformat()
     cutoff_s = (dt.date.today() - dt.timedelta(days=90)).isoformat()
@@ -205,21 +233,39 @@ def build_dashboard(all_groups, source_health, alerts, meta):
             if g.etype == "filing" and (g.anchor_date or "") >= cutoff_s:
                 filings.append(g)
     filings.sort(key=lambda g: g.anchor_date or "", reverse=True)
+    PER_PAGE = 30
     sec_rows = []
-    for g in filings:
-        u = _sec_url(g)
+    for idx, g in enumerate(filings):
+        sec = g.by_source.get("SEC") or {}
+        u = sec.get("url", "") or _sec_url(g)
+        accepted = sec.get("accepted", "")
+        relevant = sec.get("relevant", False)
         link = (f"<a href='{html.escape(u)}' target='_blank' rel='noopener'>查看原文 ↗</a>"
                 if u else "<span style='color:#bbb'>—</span>")
+        rel_cell = ("<span style='background:#fff1f0;color:#cf222e;border-radius:4px;padding:1px 6px'>公司行动相关</span>"
+                    if relevant else "<span style='color:#999'>一般</span>")
+        acc = f"<br><span style='color:#aaa;font-size:11px'>{html.escape(accepted)}</span>" if accepted else ""
+        hide = " style='display:none'" if idx >= PER_PAGE else ""
         sec_rows.append(
-            f"<tr><td>{g.anchor_date}</td><td><b>{html.escape(g.ticker)}</b> "
+            f"<tr class='secrow'{hide}><td>{g.anchor_date}{acc}</td>"
+            f"<td><b>{html.escape(g.ticker)}</b> "
             f"<span style='color:#888;font-size:12px'>{html.escape(C.NAMES.get(g.ticker,''))}</span></td>"
-            f"<td>{html.escape(g.note or '')}</td><td>{link}</td></tr>")
+            f"<td>{html.escape(g.note or '')}</td><td>{rel_cell}</td><td>{link}</td></tr>")
+    n_filings = len(filings)
+    n_pages = max(1, (n_filings + PER_PAGE - 1) // PER_PAGE)
+    pager = (f"""<div id="sec-pager" style="margin-top:10px;font-size:13px">
+      <button onclick="secPage(-1)" class="pgbtn">上一页</button>
+      <span id="sec-pageinfo" style="margin:0 10px">第 1 / {n_pages} 页(共 {n_filings} 条)</span>
+      <button onclick="secPage(1)" class="pgbtn">下一页</button>
+    </div>""" if n_pages > 1 else "")
     sec_table = (f"""
   <h2>📄 SEC 原文(近 90 天公司行动文件)</h2>
-  <table>
-    <tr><th>申报日</th><th>标的</th><th>表格 · 类型</th><th>原文</th></tr>
+  <div class="sub2">「事件」来自 8-K 的 Item 细分;标「公司行动相关」的多与并购/退市/分红等需发公告事项有关。</div>
+  <table id="sec-table">
+    <tr><th>申报日 / 时刻</th><th>标的</th><th>事件(8-K Item)</th><th>相关</th><th>原文</th></tr>
     {''.join(sec_rows)}
-  </table>""" if sec_rows else "")
+  </table>
+  {pager}""" if sec_rows else "")
 
     n_conf = len(alerts["conflicts"]); n_gap = len(alerts["gaps"])
     n_new = len(alerts["new"]); n_round = len(alerts["rounds"])
@@ -265,7 +311,10 @@ def build_dashboard(all_groups, source_health, alerts, meta):
   <table>
     <tr><th>标的</th><th>名称</th><th>现货</th><th>合约</th><th>类型</th><th>监控</th></tr>
     {''.join(cov_rows)}
-  </table>"""
+  </table>
+
+  <h2>🆕 更新日志</h2>
+  {chg_html}"""
     return body
 
 
@@ -501,6 +550,8 @@ def _site_shell(meta, dash_body, cal_body):
     .legend .c{display:inline-block;padding:1px 7px;border-radius:4px;margin:0 3px;font-weight:600}
     .legend .rb{display:inline-block;padding:1px 7px;border-radius:4px;margin:0 3px}
     .dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px;vertical-align:middle}
+    .pgbtn{padding:4px 12px;border:1px solid #d0d7de;border-radius:6px;background:#fff;cursor:pointer;font-size:13px}
+    .pgbtn:hover{background:#f3f4f6}
     /* 日历 */
     .month{margin-bottom:26px}.month h3{font-size:16px;margin:0 0 8px}
     table.cal{width:100%;border-collapse:collapse;background:#fff;border:1px solid #d0d7de;border-radius:10px;overflow:hidden;table-layout:fixed}
@@ -526,6 +577,16 @@ def _site_shell(meta, dash_body, cal_body):
       document.getElementById('tab-'+t).classList.add('active');
       document.getElementById('panel-'+t).classList.add('active');
     }
+    var secCur=1, secPer=30;
+    function secRender(){
+      var rows=document.querySelectorAll('#sec-table tr.secrow');
+      var total=rows.length, pages=Math.max(1, Math.ceil(total/secPer));
+      if(secCur<1)secCur=1; if(secCur>pages)secCur=pages;
+      rows.forEach(function(r,i){ r.style.display=(i>=(secCur-1)*secPer && i<secCur*secPer)?'':'none'; });
+      var info=document.getElementById('sec-pageinfo');
+      if(info) info.textContent='第 '+secCur+' / '+pages+' 页(共 '+total+' 条)';
+    }
+    function secPage(d){ secCur+=d; secRender(); }
     """
     return f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">

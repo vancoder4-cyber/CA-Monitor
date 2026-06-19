@@ -26,6 +26,25 @@ OUT_DIGEST = os.path.join(DATA, "latest_digest.txt")
 OUT_SITEDATA = os.path.join(HERE, "site_data.json")  # 供交互机器人读取(会发布到 Pages/data.json)
 
 
+def load_changelog():
+    """解析 CHANGELOG.md -> [{head, items:[...]}, ...](最新在前)。"""
+    path = os.path.join(HERE, "CHANGELOG.md")
+    if not os.path.exists(path):
+        return []
+    entries, cur = [], None
+    for line in open(path, encoding="utf-8"):
+        s = line.rstrip()
+        if s.startswith("## "):
+            if cur:
+                entries.append(cur)
+            cur = {"head": s[3:].strip(), "items": []}
+        elif s.startswith("- ") and cur is not None:
+            cur["items"].append(s[2:].strip())
+    if cur:
+        entries.append(cur)
+    return entries
+
+
 def _grp_brief(g):
     u = (g.by_source.get("SEC") or {}).get("url", "") if g.etype == "filing" else ""
     amt = next((v.get("amount") for v in g.by_source.values() if v.get("amount") is not None), None)
@@ -217,6 +236,7 @@ def build():
     # 发布给交互机器人读取的数据(随 Pages 一起部署为 data.json)
     site_data = {
         "generated": meta["generated"],
+        "changelog": load_changelog(),
         "coverage": coverage,
         "counts": {"pending": len(pending), "new": len(new_events),
                    "conflicts": len(conflicts), "gaps": len(gaps),

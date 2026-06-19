@@ -11,7 +11,7 @@ on:
   workflow_dispatch: {}        # 允许手动触发
 
 permissions:
-  contents: write   # 提交 state.json(预警去重)
+  contents: read    # 只读;state 用缓存持久化,不再提交到仓库(避免和你手动推送抢分支)
   pages: write      # 部署 Pages
   id-token: write
 
@@ -32,6 +32,17 @@ jobs:
       - name: 安装依赖
         run: pip install -r requirements.txt
 
+      # 跨运行持久化预警去重状态(用缓存,不提交到仓库)
+      - name: 恢复 state 缓存
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/state.json
+            data/cik_map.json
+          key: ca-state-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ca-state-
+
       - name: 抓取 + 核对 + 生成面板 + 推 Lark
         env:
           ALPHAVANTAGE: ${{ secrets.ALPHAVANTAGE }}
@@ -45,14 +56,6 @@ jobs:
           LARK_SECRET: ${{ secrets.LARK_SECRET }}
           LARK_DASHBOARD_URL: ${{ vars.LARK_DASHBOARD_URL }}
         run: python run.py
-
-      - name: 持久化预警状态(去重)
-        run: |
-          git config user.name "ca-monitor-bot"
-          git config user.email "ca-monitor-bot@users.noreply.github.com"
-          git add -f data/state.json || true
-          git commit -m "chore: update alert state [skip ci]" || echo "无变化"
-          git push || echo "push 跳过"
 
       - name: 准备 Pages 站点
         run: |

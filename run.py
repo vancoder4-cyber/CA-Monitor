@@ -247,6 +247,32 @@ def build():
                          "type": C.asset_type(tk), "type_cn": TYPE_CN.get(C.asset_type(tk), C.asset_type(tk)),
                          "monitored": C.is_monitored(tk)})
 
+    # 最近宣告(declaration)的事件:取最新 5 个,已派发完的标 ended
+    today_iso = dt.date.today().isoformat()
+    recent_declares = []
+    for tk, groups in all_groups.items():
+        for g in groups:
+            decl = next((v.get("declaration_date") for v in g.by_source.values()
+                         if v.get("declaration_date")), None)
+            if not decl:
+                continue
+            def _dk(f, _g=g):
+                return next((v.get(f) for v in _g.by_source.values() if v.get(f)), None)
+            pay = _dk("pay_date")
+            end_date = pay or g.anchor_date or ""
+            ended = bool(end_date) and end_date < today_iso
+            try:
+                days = (dt.date.fromisoformat(g.anchor_date) - dt.date.today()).days if g.anchor_date else None
+            except Exception:
+                days = None
+            recent_declares.append({"ticker": g.ticker, "etype": g.etype, "date": g.anchor_date,
+                                    "decl": decl, "record": _dk("record_date"), "pay": pay,
+                                    "amount": _dk("amount"), "ratio": _dk("ratio"),
+                                    "days": days, "ended": ended,
+                                    "products": C.product_tags(g.ticker)})
+    recent_declares.sort(key=lambda x: x.get("decl") or "", reverse=True)
+    recent_declares = recent_declares[:5]
+
     # 发布给交互机器人读取的数据(随 Pages 一起部署为 data.json)
     site_data = {
         "generated": meta["generated"],
@@ -256,6 +282,7 @@ def build():
                    "conflicts": len(conflicts), "gaps": len(gaps),
                    "announced": len(announced)},
         "announced": announced,
+        "recent_declares": recent_declares,
         "pending": pending,
         "new": [_grp_brief(g) for g in new_events],
         "conflicts": [_grp_brief(g) for g in conflicts],

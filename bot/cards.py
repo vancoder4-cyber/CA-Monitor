@@ -12,11 +12,10 @@ COMMANDS = [
     {"key": "changelog","kw": ["最近更新", "更新日志", "更新", "changelog", "版本"], "name": "最近更新", "desc": "最近 3 次版本更新(更多见网页)"},
     # —— 按紧迫度:高 → 低 ——
     {"key": "risk",     "kw": ["风险", "风控", "risk"],                  "name": "风险",   "desc": "当日风控清单(拆股/并购退市/冲突 + 风控动作)"},
-    {"key": "today",    "kw": ["今日", "今天", "today"],                 "name": "今日",   "desc": "今天要处理的关键日(除息/登记/派发/宣告)"},
-    {"key": "announce", "kw": ["新公告", "公告", "announce"],            "name": "新公告", "desc": "最新刚宣告(declaration date)的事件"},
+    {"key": "today",    "kw": ["今日", "今天", "today"],                 "name": "今日",   "desc": "T0 前后24小时的关键日(除息/登记/派发/宣告)"},
+    {"key": "announce", "kw": ["新公告", "公告", "announce"],            "name": "新公告", "desc": "最近 5 个宣告的事件(已派发完标『已结束』)"},
     {"key": "week",     "kw": ["本周", "week"],                          "name": "本周",   "desc": "未来 7 天的公司行动"},
     {"key": "calendar", "kw": ["日历", "calendar", "cal"],              "name": "日历",   "desc": "当月公司行动月历(图)"},
-    {"key": "alert",    "kw": ["预警", "面板", "alert", "dashboard"],    "name": "预警",   "desc": "当日总览(计数 + 冲突/空缺)+ 面板链接"},
     {"key": "coverage", "kw": ["覆盖", "资产", "标的", "coverage"],      "name": "覆盖",   "desc": "各标的在现货/合约的覆盖情况"},
 ]
 # 注:顺序即匹配优先级 + 展示顺序。帮助不含 "?"(无匹配时默认即回帮助),避免「…?」误判。
@@ -187,18 +186,18 @@ def risk_card(data, site_url):
 
 
 # ---------------- 今日 / 本周 ----------------
-def _window_card(data, site_url, days, title):
+def _window_card(data, site_url, lo_days, hi_days, title):
     today = dt.date.today()
-    hi = (today + dt.timedelta(days=days)).isoformat()
-    today_s = today.isoformat()
+    lo = (today + dt.timedelta(days=lo_days)).isoformat()
+    hi = (today + dt.timedelta(days=hi_days)).isoformat()
     cal = data.get("calendar", [])
     hits = []
     for e in cal:
-        # 命中:除息/生效/公告(date)、登记、派发、宣告 任一落在窗口内
+        # 命中:除息/生效/公告(date)、登记、派发、宣告 任一落在 [lo, hi] 窗口内
         keys = {"除息/生效": e.get("date"), "登记": e.get("record"),
                 "派发": e.get("pay"), "宣告": e.get("decl")}
         for label, d in keys.items():
-            if d and today_s <= d <= hi:
+            if d and lo <= d <= hi:
                 hits.append((d, label, e))
     hits.sort(key=lambda x: x[0])
     if not hits:
@@ -208,35 +207,42 @@ def _window_card(data, site_url, days, title):
     lines = []
     for d, label, e in hits[:40]:
         prod = ("[" + "+".join(e["products"]) + "] ") if e.get("products") else ""
-        tag = "" if days == 0 else f"{d} "
-        lines.append(f"• {tag}{prod}**{e['ticker']}** {ETYPE_CN.get(e['etype'], e['etype'])}{_val(e)} —— **{label}日**")
+        flag = "🔴 今天 " if d == today.isoformat() else ""
+        lines.append(f"• {flag}{d} {prod}**{e['ticker']}** {ETYPE_CN.get(e['etype'], e['etype'])}{_val(e)} —— **{label}日**")
     elems = [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}]
     return _card(f"🗓 {title}", "blue", elems, site_url, "打开网页日历")
 
 
 def today_card(data, site_url):
-    return _window_card(data, site_url, 0, "今日")
+    # T0 ±24 小时:昨天/今天/明天 的关键日
+    return _window_card(data, site_url, -1, 1, "今日(前后24小时)")
 
 
 def week_card(data, site_url):
-    return _window_card(data, site_url, 7, "本周(未来7天)")
+    return _window_card(data, site_url, 0, 7, "本周(未来7天)")
 
 
 def announce_card(data, site_url):
-    ann = data.get("announced", [])
+    # 最近 5 个被宣告(declaration date)的事件;已派发完的标「已结束」
+    ann = data.get("recent_declares") or data.get("announced", [])
     if not ann:
         return _card("📣 新公告", "green",
-                     [{"tag": "div", "text": {"tag": "lark_md", "content": "近期暂无新宣告事件。"}}],
-                     site_url, "打开预警面板")
+                     [{"tag": "div", "text": {"tag": "lark_md", "content": "近期暂无宣告事件。"}}],
+                     site_url, "打开网页面板")
     lines = []
-    for x in ann[:30]:
+    for x in ann[:5]:
         prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
-        d = f" · 还剩 {x['days']} 天" if x.get("days") is not None else ""
+        if x.get("ended"):
+            status = " · ✅ 已结束"
+        elif x.get("days") is not None and x["days"] >= 0:
+            status = f" · 还剩 {x['days']} 天"
+        else:
+            status = ""
         lines.append(f"• {prod}**{x['ticker']}** {ETYPE_CN.get(x['etype'], x['etype'])}{_val(x)} —— "
-                     f"宣告 {x.get('decl')} · 除息 {x['date']}{d}")
-    return _card("📣 新公告(刚宣告)", "blue",
+                     f"宣告 {x.get('decl')} · 除息 {x['date']}{status}")
+    return _card("📣 新公告(最近 5 个宣告)", "blue",
                  [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}],
-                 site_url, "打开预警面板")
+                 site_url, "打开网页面板")
 
 
 def changelog_card(data, site_url):

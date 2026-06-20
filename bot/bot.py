@@ -163,8 +163,6 @@ def on_message(data: P2ImMessageReceiveV1):
         elif cmd == "calendar":
             send_card(chat_id, cards.calendar_card(d, SITE_URL))
             send_calendar_image(chat_id, d)
-        elif cmd == "alert":
-            send_card(chat_id, cards.alert_card(d, SITE_URL))
     except Exception as e:
         print("on_message error:", e)
 

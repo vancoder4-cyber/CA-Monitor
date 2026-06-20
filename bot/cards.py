@@ -17,6 +17,7 @@ COMMANDS = [
     {"key": "week",     "kw": ["本周", "week"],                          "name": "本周",   "desc": "未来 7 天的公司行动"},
     {"key": "calendar", "kw": ["日历", "calendar", "cal"],              "name": "日历",   "desc": "当月公司行动月历(图)"},
     {"key": "coverage", "kw": ["覆盖", "资产", "标的", "coverage"],      "name": "覆盖",   "desc": "各标的在现货/合约的覆盖情况"},
+    {"key": "lookup",   "kw": ["查", "查代码", "查询", "lookup"],         "name": "查代码", "desc": "查单个标的:@我 发代码(如 AVGO)或「查 AVGO」"},
 ]
 # 注:顺序即匹配优先级 + 展示顺序。帮助不含 "?"(无匹配时默认即回帮助),避免「…?」误判。
 
@@ -287,3 +288,125 @@ def coverage_card(data, site_url):
     return _card("📋 资产覆盖(现货/合约)", "blue",
                  [{"tag": "div", "text": {"tag": "lark_md", "content": content}}],
                  site_url, "打开网页面板")
+
+
+# ---------------- 查代码(单标的)----------------
+def find_ticker(text, data):
+    """从消息里抽出一个『已覆盖』的标的代码(忽略 @、指令词)。无则 None。"""
+    import re
+    known = {c["ticker"] for c in data.get("coverage", [])}
+    toks = re.findall(r"[A-Za-z]{1,6}", (text or "").upper())
+    for t in toks:
+        if t in known:
+            return t
+    return None
+
+
+def _sec_company_url(ticker):
+    # EDGAR 的 CIK 参数可直接用代码解析到公司,列出该标的全部备案
+    return ("https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany"
+            f"&CIK={ticker}&type=&dateb=&owner=include&count=40")
+
+
+def _days_str(d):
+    if not d:
+        return ""
+    try:
+        n = (dt.date.fromisoformat(d) - dt.date.today()).days
+    except Exception:
+        return d
+    rel = "今天" if n == 0 else (f"{n}天后" if n > 0 else f"{-n}天前")
+    return f"{d}({rel})"
+
+
+def _ops_hint(days):
+    """按距除息/生效天数给运营公告处理提醒(与预警节奏 30/14/7/3/1 一致)。"""
+    if days is None or days < 0:
+        return ""
+    if days <= 1:
+        return "运营:最后确认 —— 公告文案就绪、定时发送已设置"
+    if days <= 3:
+        return "运营·催办:确保公告文案全部写完"
+    if days <= 7:
+        return "运营·催办:开始准备公告文案,明确各项执行的具体日期/排期"
+    if days <= 14:
+        return "运营:提前知会,确认本次活动安排"
+    if days <= 30:
+        return "运营:提前知会,留意并排入计划"
+    return ""
+
+
+def lookup_card(data, ticker, site_url):
+    if not ticker:
+        return _card("🔎 查代码", "blue",
+                     [{"tag": "div", "text": {"tag": "lark_md",
+                       "content": "用法:@我 + 空格 + 代码,例如 **查 AVGO** 或直接发 **AVGO**。"}}],
+                     site_url, "打开网页面板")
+    cov = next((c for c in data.get("coverage", []) if c["ticker"] == ticker), None)
+    cal = [e for e in data.get("calendar", []) if e["ticker"] == ticker]
+    name = (cov or {}).get("name", "")
+    tags = []
+    if cov and cov.get("spot"):
+        tags.append("现货")
+    if cov and cov.get("contract"):
+        tags.append("合约")
+    prod = ("[" + "+".join(tags) + "]") if tags else "[未在覆盖范围]"
+    if cov and not cov.get("monitored"):
+        head_extra = f"\n类型:{cov.get('type_cn','')} —— 商品/海外,无公司行动,仅列入覆盖。"
+    elif cov:
+        head_extra = f"\n类型:{cov.get('type_cn','')} · 监控中"
+    else:
+        head_extra = ""
+    elems = [{"tag": "div", "text": {"tag": "lark_md",
+              "content": f"**{ticker}** {name} {prod}{head_extra}"}}]
+
+    divsplit = [e for e in cal if e["etype"] in ("dividend", "split")]
+    filings = [e for e in cal if e["etype"] == "filing"]
+    divsplit.sort(key=lambda e: e.get("date") or "")
+    filings.sort(key=lambda e: e.get("date") or "", reverse=True)
+
+    def ev_block(e):
+        kind = ETYPE_CN.get(e["etype"], e["etype"])
+        icon = "💰" if e["etype"] == "dividend" else "✂️"
+        lines = [f"**{icon} {kind}{_val(e)}** {('[' + '+'.join(e['products']) + ']') if e.get('products') else ''}"]
+        chain = []
+        if e.get("decl"):
+            chain.append(f"宣告 {_days_str(e['decl'])}")
+        if e.get("record"):
+            chain.append(f"登记 {_days_str(e['record'])}")
+        if e.get("date"):
+            chain.append(f"{'除息' if e['etype'] == 'dividend' else '生效'} {_days_str(e['date'])}")
+        if e.get("pay"):
+            chain.append(f"派发 {_days_str(e['pay'])}")
+        lines.append("　" + " · ".join(chain))
+        for r in e.get("risk", []):
+            lines.append(f"　⚠️ {r}")
+        try:
+            days = (dt.date.fromisoformat(e["date"]) - dt.date.today()).days if e.get("date") else None
+        except Exception:
+            days = None
+        hint = _ops_hint(days)
+        if hint:
+            lines.append(f"　📌 {hint}")
+        return "\n".join(lines)
+
+    if divsplit:
+        elems.append({"tag": "div", "text": {"tag": "lark_md", "content": "**—— 分红 / 拆股(关键日)——**"}})
+        elems.append({"tag": "div", "text": {"tag": "lark_md", "content": "\n\n".join(ev_block(e) for e in divsplit)}})
+    if filings:
+        fl = []
+        for e in filings:
+            s = f"**🏛 {e.get('note') or '重大事件'}** {('[' + '+'.join(e['products']) + ']') if e.get('products') else ''} · 申报 {_days_str(e.get('date'))}"
+            for r in e.get("risk", []):
+                s += f"\n　⚠️ {r}"
+            if e.get("url"):
+                s += f"\n　📄 [SEC原文]({e['url']})"
+            fl.append(s)
+        elems.append({"tag": "div", "text": {"tag": "lark_md", "content": "**—— 重大事件(并购/退市/分拆/要约)——**"}})
+        elems.append({"tag": "div", "text": {"tag": "lark_md", "content": "\n\n".join(fl)}})
+    if not divsplit and not filings:
+        elems.append({"tag": "div", "text": {"tag": "lark_md", "content": "近窗口内暂无公司行动记录。"}})
+
+    elems.append({"tag": "div", "text": {"tag": "lark_md",
+                  "content": f"📄 [该标的全部 SEC 备案(EDGAR)]({_sec_company_url(ticker)})"}})
+    return _card(f"🔎 {ticker} 公司行动", "blue", elems, site_url, "打开网页面板")

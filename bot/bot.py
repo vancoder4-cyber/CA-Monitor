@@ -139,13 +139,19 @@ def on_message(data: P2ImMessageReceiveV1):
         except Exception:
             pass
         cmd = parse_command(text)
+        d = fetch_data()
+        ticker = cards.find_ticker(text, d)
+        # 查代码:显式『查』指令,或直接发了一个已覆盖的代码(未命中其它指令时)
+        if cmd == "lookup" or (ticker and cmd == "help"):
+            print(f"[msg] chat={chat_id} text={text!r} -> lookup {ticker}")
+            send_card(chat_id, cards.lookup_card(d, ticker, SITE_URL))
+            return
         print(f"[msg] chat={chat_id} text={text!r} -> {cmd}")
 
         if cmd == "help":
             send_text(chat_id, cards.HELP_TEXT.replace("**", ""))
             return
 
-        d = fetch_data()
         if cmd == "about":
             send_card(chat_id, cards.about_card(d, SITE_URL))
         elif cmd == "risk":

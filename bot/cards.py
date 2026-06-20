@@ -397,6 +397,8 @@ def lookup_card(data, ticker, site_url):
         hint = _ops_hint(days)
         if hint:
             lines.append(f"　📌 {hint}")
+        if e.get("etype") == "dividend":
+            lines.append(f"　🔗 [Nasdaq 分红记录](https://www.nasdaq.com/market-activity/stocks/{e['ticker'].lower()}/dividend-history)")
         return "\n".join(lines)
 
     if divsplit:
@@ -416,8 +418,6 @@ def lookup_card(data, ticker, site_url):
     if not divsplit and not filings:
         elems.append({"tag": "div", "text": {"tag": "lark_md", "content": "近窗口内暂无公司行动记录。"}})
 
-    elems.append({"tag": "div", "text": {"tag": "lark_md",
-                  "content": f"📄 [该标的全部 SEC 备案(EDGAR)]({_sec_company_url(ticker)})"}})
     return _card(f"🔎 {ticker} 公司行动", "blue", elems, site_url, "打开网页面板")
 
 

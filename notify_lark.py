@@ -47,18 +47,20 @@ def _sec_url(g):
     return (g.by_source.get("SEC") or {}).get("url", "")
 
 
+def _nasdaq_div(ticker):
+    return f"https://www.nasdaq.com/market-activity/stocks/{ticker.lower()}/dividend-history"
+
+
 def _refs(ticker, etype, g=None):
-    """给每条事件附『核对』链接:SEC 原文(filing 有则用)+ 该标的 EDGAR 备案 + 分红的 Nasdaq 历史。"""
-    parts = []
+    """核对链接:指向『对应那一条公司行动』本身,而非整列表。
+       filing → 该 filing 的 SEC 原文文件;dividend → 该标的的 Nasdaq 分红记录(可核对金额/日期)。"""
     if g is not None:
         u = _sec_url(g)
         if u:
-            parts.append(f"[SEC原文]({u})")
-    parts.append("[SEC备案](https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany"
-                 f"&CIK={ticker}&type=&dateb=&owner=include&count=40)")
+            return f"\n　📄 [SEC原文(本事件)]({u})"
     if etype == "dividend":
-        parts.append(f"[Nasdaq分红](https://www.nasdaq.com/market-activity/stocks/{ticker.lower()}/dividend-history)")
-    return "\n　🔗 核对:" + " · ".join(parts)
+        return f"\n　🔗 [Nasdaq 分红记录]({_nasdaq_div(ticker)})"
+    return ""
 
 
 def _md_escape(s):

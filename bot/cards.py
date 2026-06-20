@@ -120,7 +120,7 @@ def about_card(data, site_url):
     content = (
         "**CA问答助手** —— 公司行动(Corporate Actions)监控\n"
         "盯 **现货(24 支美股)+ 合约范围(22 个)**标的的:分红 / 拆股·合股 / 并购 / 分拆 / 退市·代码变更。"
-        "合约里的 ETF(QQQ/EWY)监控分红;商品/海外(XAU/WTI/SKHYNIX 等)无公司行动,仅列入覆盖。\n\n"
+        "合约里的 ETF(QQQ/EWY/DRAM)监控分红;商品/海外(XAU/WTI/SKHYNIX 等)无公司行动,仅列入覆盖。\n\n"
         "**数据源(7,多源交叉核对·零容忍)**\n"
         "yfinance · FMP · Alpha Vantage · Nasdaq · Tiingo · Alpaca · SEC EDGAR\n\n"
         "**核对规则**:同一事件多源比对,字段(除息/登记/派发/金额/比例)不一致或某源缺失即告警;"
@@ -138,11 +138,17 @@ def about_card(data, site_url):
 
 def _line(e, with_days=True, with_risk=False):
     prod = ("[" + "+".join(e["products"]) + "] ") if e.get("products") else ""
-    s = f"• {prod}**{e['ticker']}** {ETYPE_CN.get(e['etype'], e['etype'])}{_val(e)}"
+    d = e.get("date") or ""
     if e.get("etype") == "filing" and e.get("note"):
-        s = f"• {prod}**{e['ticker']}** {e['note']}"
+        # filing 的 date = SEC 申报日(非执行日),显式标出以免「无日期」误以为紧急
+        datestr = f" · 申报 {d}" if d else ""
+        s = f"• {prod}**{e['ticker']}** {e['note']}{datestr}"
         if e.get("url"):
             s += f" [SEC原文]({e['url']})"
+    else:
+        label = "除息" if e.get("etype") == "dividend" else "生效"
+        datestr = f" · {label} {d}" if d else ""
+        s = f"• {prod}**{e['ticker']}** {ETYPE_CN.get(e['etype'], e['etype'])}{_val(e)}{datestr}"
     if with_risk:
         for r in e.get("risk", []):
             s += f"\n　⚠️ {r}"

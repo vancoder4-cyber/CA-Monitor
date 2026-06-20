@@ -30,16 +30,16 @@ SPOT_TICKERS = {
 # 合约:22(截图 23 行去掉已下架的 SOXL)
 CONTRACT_TICKERS = {
     "MU", "SNDK", "MRVL", "INTC", "NVDA", "CRCL", "SPCX", "AMD", "MSTR", "TSLA", "GOOGL",  # 个股
-    "QQQ", "EWY",                                                                           # ETF
-    "XAU", "WTI", "XAG", "BRENTOIL", "NATGAS", "XCU", "DRAM", "CBRS", "SKHYNIX",            # 商品/海外
+    "QQQ", "EWY", "DRAM",                                                                   # ETF
+    "XAU", "WTI", "XAG", "BRENTOIL", "NATGAS", "XCU", "CBRS", "SKHYNIX",                    # 商品/海外
 }
 
 # 标的类型:equity(个股) / etf / commodity(商品·外汇) / foreign(海外股)
 # 只有 equity 和 etf 抓公司行动;commodity/foreign 列入覆盖但标"不适用"
 ASSET_TYPE = {
-    "QQQ": "etf", "EWY": "etf",
+    "QQQ": "etf", "EWY": "etf", "DRAM": "etf",
     "XAU": "commodity", "WTI": "commodity", "XAG": "commodity", "BRENTOIL": "commodity",
-    "NATGAS": "commodity", "XCU": "commodity", "DRAM": "commodity", "CBRS": "commodity",
+    "NATGAS": "commodity", "XCU": "commodity", "CBRS": "commodity",
     "SKHYNIX": "foreign",
 }
 
@@ -65,7 +65,7 @@ NAMES = {
     # 合约新增
     "QQQ": "纳指100 ETF", "EWY": "韩国 ETF", "XAU": "黄金", "WTI": "WTI原油",
     "XAG": "白银", "BRENTOIL": "布伦特原油", "NATGAS": "天然气", "XCU": "铜",
-    "DRAM": "内存", "CBRS": "(合约)", "SKHYNIX": "SK海力士",
+    "DRAM": "内存 ETF", "CBRS": "(合约)", "SKHYNIX": "SK海力士",
 }
 
 # ---- API keys ----

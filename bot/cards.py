@@ -17,7 +17,7 @@ COMMANDS = [
     {"key": "week",     "kw": ["本周", "week"],                          "name": "本周",   "desc": "未来 7 天的公司行动"},
     {"key": "calendar", "kw": ["日历", "calendar", "cal"],              "name": "日历",   "desc": "当月公司行动月历(图)"},
     {"key": "coverage", "kw": ["覆盖", "资产", "标的", "coverage"],      "name": "覆盖",   "desc": "各标的在现货/合约的覆盖情况"},
-    {"key": "lookup",   "kw": ["查", "查代码", "查询", "lookup"],         "name": "查代码", "desc": "查单个标的:@我 发代码(如 AVGO)或「查 AVGO」"},
+    {"key": "lookup",   "kw": ["查代码", "查询", "代码", "查", "ticker", "lookup"], "name": "查代码", "desc": "@我 + 代码(如 AVGO)弹出该标的公司行动;只发『查代码』看用法"},
     {"key": "confirm",  "kw": ["确认", "confirm", "已核对"],              "name": "确认",   "desc": "人工确认冲突:确认 CODE [正确值],停报警 + 网页 finalize"},
 ]
 # 注:顺序即匹配优先级 + 展示顺序。帮助不含 "?"(无匹配时默认即回帮助),避免「…?」误判。
@@ -339,9 +339,17 @@ def _ops_hint(days):
 
 def lookup_card(data, ticker, site_url):
     if not ticker:
-        return _card("🔎 查代码", "blue",
-                     [{"tag": "div", "text": {"tag": "lark_md",
-                       "content": "用法:@我 + 空格 + 代码,例如 **查 AVGO** 或直接发 **AVGO**。"}}],
+        content = (
+            "**用法:@CA问答助手 + 空格 + 标的代码**,即可弹出该标的的公司行动信息。\n\n"
+            "例如:**@CA问答助手 AVGO**(或 `查 AVGO`)\n\n"
+            "弹出内容:\n"
+            "• 分红/拆股关键日:宣告 · 登记 · 除息 · 派发(各带距今天数)\n"
+            "• 并购/退市/分拆等重大事件 + SEC 原文链接\n"
+            "• 现货/合约风控动作 + 运营公告处理提醒\n\n"
+            "可查的代码 = 覆盖范围内的标的(发『覆盖』看全部)。"
+        )
+        return _card("🔎 查代码 用法", "blue",
+                     [{"tag": "div", "text": {"tag": "lark_md", "content": content}}],
                      site_url, "打开网页面板")
     cov = next((c for c in data.get("coverage", []) if c["ticker"] == ticker), None)
     cal = [e for e in data.get("calendar", []) if e["ticker"] == ticker]

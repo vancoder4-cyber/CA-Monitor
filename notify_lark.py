@@ -51,14 +51,18 @@ def _nasdaq_div(ticker):
     return f"https://www.nasdaq.com/market-activity/stocks/{ticker.lower()}/dividend-history"
 
 
-def _refs(ticker, etype, g=None):
+def _refs(ticker, etype, g=None, decl_url=None):
     """核对链接:指向『对应那一条公司行动』本身,而非整列表。
-       filing → 该 filing 的 SEC 原文文件;dividend → 该标的的 Nasdaq 分红记录(可核对金额/日期)。"""
+       filing → 该 filing 的 SEC 原文文件;
+       dividend → 优先该次分红的宣告 8-K(精确匹配),匹配不到回退 Nasdaq 分红记录。"""
     if g is not None:
         u = _sec_url(g)
         if u:
             return f"\n　📄 [SEC原文(本事件)]({u})"
+        decl_url = decl_url or getattr(g, "decl_url", "")
     if etype == "dividend":
+        if decl_url:
+            return f"\n　📄 [宣告 8-K(本次分红)]({decl_url})"
         return f"\n　🔗 [Nasdaq 分红记录]({_nasdaq_div(ticker)})"
     return ""
 
@@ -160,7 +164,7 @@ def _build_card(alerts, meta, dashboard_url=""):
                 f"<font color='red'>还剩 {x['days']} 天</font>　{dates}")
         for rn in x.get("risk", []):
             line += f"\n　⚠️ {rn}"
-        line += _refs(x["ticker"], x["etype"])
+        line += _refs(x["ticker"], x["etype"], decl_url=x.get("decl_url"))
         pl.append(line)
     section("⏳ 待执行(已公告未发生)", pl)
 

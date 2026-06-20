@@ -121,6 +121,8 @@ def reconcile_ticker(results) -> List[EventGroup]:
                     g.by_source[e.source]["url"] = e.raw.get("url", "")
                     g.by_source[e.source]["relevant"] = e.raw.get("relevant", False)
                     g.by_source[e.source]["accepted"] = e.raw.get("accepted", "")
+                    g.by_source[e.source]["form"] = e.raw.get("form", "")
+                    g.by_source[e.source]["items"] = e.raw.get("items", "")
             _evaluate(g, etype)
             groups.append(g)
 

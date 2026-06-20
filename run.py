@@ -79,6 +79,42 @@ def _ack_match(acks, ticker, date):
     return None
 
 
+def build_sec8k_index(all_groups):
+    """每个标的的 8-K 索引:ticker -> [(filing_date, url, items), ...]。"""
+    idx = {}
+    for tk, groups in all_groups.items():
+        for g in groups:
+            if g.etype == "filing" and (g.note or "").startswith("8-K"):
+                sec = g.by_source.get("SEC") or {}
+                if sec.get("url"):
+                    idx.setdefault(tk, []).append((g.anchor_date, sec.get("url", ""), sec.get("items", "")))
+    return idx
+
+
+def match_decl_8k(idx, ticker, decl_date):
+    """按宣告日匹配该标的的宣告 8-K:窗口 ±3 天,优先含 Item 8.01/7.01(其它重大事件/FD),取最近。无则 ''。"""
+    if not decl_date:
+        return ""
+    try:
+        D = dt.date.fromisoformat(decl_date)
+    except Exception:
+        return ""
+    best = None  # (priority, distance, url)
+    for d, url, items in idx.get(ticker, []):
+        try:
+            fd = dt.date.fromisoformat(d)
+        except Exception:
+            continue
+        dist = abs((fd - D).days)
+        if dist > 3:
+            continue
+        has_decl_item = ("8.01" in (items or "")) or ("7.01" in (items or ""))
+        cand = (0 if has_decl_item else 1, dist, url)
+        if best is None or cand < best:
+            best = cand
+    return best[2] if best else ""
+
+
 def _grp_brief(g):
     u = (g.by_source.get("SEC") or {}).get("url", "") if g.etype == "filing" else ""
     amt = next((v.get("amount") for v in g.by_source.values() if v.get("amount") is not None), None)
@@ -320,6 +356,17 @@ def build():
                                     "products": C.product_tags(g.ticker)})
     recent_declares.sort(key=lambda x: x.get("decl") or "", reverse=True)
     recent_declares = recent_declares[:5]
+
+    # 分红 → 宣告 8-K 精确匹配:给每条分红挂上那份 8-K 的 SEC 链接(匹配不到则为空,前端回退 Nasdaq)
+    sec8k = build_sec8k_index(all_groups)
+    for lst in (pending, calendar_events, recent_declares):
+        for e in lst:
+            if e.get("etype") == "dividend":
+                e["decl_url"] = match_decl_8k(sec8k, e["ticker"], e.get("decl"))
+    for g in conflicts:  # 冲突组(供 notify_lark 推送用)
+        if g.etype == "dividend":
+            decl = next((v.get("declaration_date") for v in g.by_source.values() if v.get("declaration_date")), None)
+            g.decl_url = match_decl_8k(sec8k, g.ticker, decl)
 
     # 发布给交互机器人读取的数据(随 Pages 一起部署为 data.json)
     site_data = {

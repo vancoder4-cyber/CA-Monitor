@@ -18,6 +18,7 @@ COMMANDS = [
     {"key": "calendar", "kw": ["日历", "calendar", "cal"],              "name": "日历",   "desc": "当月公司行动月历(图)"},
     {"key": "coverage", "kw": ["覆盖", "资产", "标的", "coverage"],      "name": "覆盖",   "desc": "各标的在现货/合约的覆盖情况"},
     {"key": "lookup",   "kw": ["查", "查代码", "查询", "lookup"],         "name": "查代码", "desc": "查单个标的:@我 发代码(如 AVGO)或「查 AVGO」"},
+    {"key": "confirm",  "kw": ["确认", "confirm", "已核对"],              "name": "确认",   "desc": "人工确认冲突:确认 CODE [正确值],停报警 + 网页 finalize"},
 ]
 # 注:顺序即匹配优先级 + 展示顺序。帮助不含 "?"(无匹配时默认即回帮助),避免「…?」误判。
 
@@ -410,3 +411,18 @@ def lookup_card(data, ticker, site_url):
     elems.append({"tag": "div", "text": {"tag": "lark_md",
                   "content": f"📄 [该标的全部 SEC 备案(EDGAR)]({_sec_company_url(ticker)})"}})
     return _card(f"🔎 {ticker} 公司行动", "blue", elems, site_url, "打开网页面板")
+
+
+# ---------------- 确认(人工 finalize)----------------
+def confirm_card(ok, msg, ticker=None, value=None, site_url=""):
+    if ok:
+        v = f",以 **{value}** 为准" if value is not None else ""
+        content = (f"✅ 已记录确认:**{ticker}**{v}。\n"
+                   "该冲突将停止报警;网页在下次刷新(或手动触发 Action)后标记为「已人工确认」。")
+        tpl = "green"
+    else:
+        content = f"⚠️ 确认未成功:{msg}"
+        tpl = "red"
+    return _card("✅ 人工确认", tpl,
+                 [{"tag": "div", "text": {"tag": "lark_md", "content": content}}],
+                 site_url, "打开网页面板")

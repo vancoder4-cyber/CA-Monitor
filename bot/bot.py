@@ -21,6 +21,7 @@ from lark_oapi.api.im.v1 import (
 )
 
 import cards
+import ack
 
 APP_ID = os.environ["LARK_APP_ID"]
 APP_SECRET = os.environ["LARK_APP_SECRET"]
@@ -142,6 +143,22 @@ def on_message(data: P2ImMessageReceiveV1):
         d = fetch_data()
         ticker = cards.find_ticker(text, d)
         # 查代码:显式『查』指令,或直接发了一个已覆盖的代码(未命中其它指令时)
+        if cmd == "confirm":
+            clean = re.sub(r"@_user_\d+|@_all", "", text or "")  # 去掉 @ 占位符再取数值,避免误读
+            mval = re.search(r"\d+(?:\.\d+)?", clean)
+            value = mval.group(0) if mval else None
+            etype = date = None
+            for c in d.get("conflicts", []):
+                if c.get("ticker") == ticker:
+                    etype, date = c.get("etype"), c.get("date")
+                    break
+            print(f"[msg] chat={chat_id} text={text!r} -> confirm {ticker} {value}")
+            if not ticker:
+                send_card(chat_id, cards.confirm_card(False, "没认出代码,用法:确认 META 0.525", site_url=SITE_URL))
+                return
+            ok, msg = ack.add_ack(ticker, value, etype, date)
+            send_card(chat_id, cards.confirm_card(ok, msg, ticker, value, SITE_URL))
+            return
         if cmd == "lookup" or (ticker and cmd == "help"):
             print(f"[msg] chat={chat_id} text={text!r} -> lookup {ticker}")
             send_card(chat_id, cards.lookup_card(d, ticker, SITE_URL))

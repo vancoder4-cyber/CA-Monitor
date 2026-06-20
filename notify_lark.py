@@ -47,6 +47,20 @@ def _sec_url(g):
     return (g.by_source.get("SEC") or {}).get("url", "")
 
 
+def _refs(ticker, etype, g=None):
+    """给每条事件附『核对』链接:SEC 原文(filing 有则用)+ 该标的 EDGAR 备案 + 分红的 Nasdaq 历史。"""
+    parts = []
+    if g is not None:
+        u = _sec_url(g)
+        if u:
+            parts.append(f"[SEC原文]({u})")
+    parts.append("[SEC备案](https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany"
+                 f"&CIK={ticker}&type=&dateb=&owner=include&count=40)")
+    if etype == "dividend":
+        parts.append(f"[Nasdaq分红](https://www.nasdaq.com/market-activity/stocks/{ticker.lower()}/dividend-history)")
+    return "\n　🔗 核对:" + " · ".join(parts)
+
+
 def _md_escape(s):
     return str(s).replace("[", "［").replace("]", "］")
 
@@ -144,12 +158,13 @@ def _build_card(alerts, meta, dashboard_url=""):
                 f"<font color='red'>还剩 {x['days']} 天</font>　{dates}")
         for rn in x.get("risk", []):
             line += f"\n　⚠️ {rn}"
+        line += _refs(x["ticker"], x["etype"])
         pl.append(line)
     section("⏳ 待执行(已公告未发生)", pl)
 
     # 字段冲突
     cl = [f"• **{g.ticker}** {ETYPE_CN.get(g.etype, g.etype)} {g.anchor_date}:"
-          f" {_md_escape('; '.join(g.conflicts))}" for g in alerts["conflicts"]]
+          f" {_md_escape('; '.join(g.conflicts))}{_refs(g.ticker, g.etype, g)}" for g in alerts["conflicts"]]
     section("❗ 字段冲突(零容忍)", cl)
 
     # 数据空缺

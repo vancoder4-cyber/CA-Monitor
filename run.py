@@ -59,6 +59,26 @@ def load_changelog():
     return entries
 
 
+def load_acknowledged():
+    """读取人工确认 data/acknowledged.json -> [{ticker, value, etype, date, by, at}, ...]。"""
+    path = os.path.join(DATA, "acknowledged.json")
+    if not os.path.exists(path):
+        return []
+    try:
+        data = json.load(open(path, encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _ack_match(acks, ticker, date):
+    """找到匹配的确认条目(同标的;确认未记日期则不限日期)。"""
+    for a in acks:
+        if a.get("ticker") == ticker and (not a.get("date") or a.get("date") == date):
+            return a
+    return None
+
+
 def _grp_brief(g):
     u = (g.by_source.get("SEC") or {}).get("url", "") if g.etype == "filing" else ""
     amt = next((v.get("amount") for v in g.by_source.values() if v.get("amount") is not None), None)
@@ -202,6 +222,21 @@ def build():
     pending.sort(key=lambda x: x["days"])
     announced.sort(key=lambda x: x.get("decl") or "", reverse=True)
 
+    # 人工确认:把已确认的冲突从报警里剔除(停推+网页 finalize),记入 resolved
+    acks = load_acknowledged()
+    resolved = []
+    if acks:
+        _active = []
+        for g in conflicts:
+            a = _ack_match(acks, g.ticker, g.anchor_date)
+            if a:
+                resolved.append({"ticker": g.ticker, "etype": g.etype, "date": g.anchor_date,
+                                 "value": a.get("value"), "by": a.get("by"), "at": a.get("at"),
+                                 "detail": "; ".join(g.conflicts)})
+            else:
+                _active.append(g)
+        conflicts = _active
+
     alerts = {"new": new_events, "rounds": round_alerts, "conflicts": conflicts,
               "gaps": gaps, "pending": pending, "announced": announced}
     meta = {"generated": _now_label()}
@@ -237,6 +272,19 @@ def build():
                                     "status": g.status, "risk": C.risk_note(g.ticker, g.etype),
                                     "url": (g.by_source.get("SEC") or {}).get("url", "") if g.etype == "filing" else "",
                                     "products": C.product_tags(g.ticker)})
+
+    # 人工确认带「正确值」时,用确认值覆盖该标的事件的金额(网页/卡片显示 finalize 后的值)
+    for a in acks:
+        if a.get("value") in (None, ""):
+            continue
+        try:
+            v = float(a["value"])
+        except Exception:
+            continue
+        for e in calendar_events + pending:
+            if e["ticker"] == a["ticker"] and (not a.get("date") or e.get("date") == a.get("date")):
+                if e.get("etype") == "dividend":
+                    e["amount"] = v
 
     # 资产覆盖(现货/合约 × 标的类型 × 是否监控)
     TYPE_CN = {"equity": "个股", "etf": "ETF", "commodity": "商品/外汇", "foreign": "海外股"}
@@ -283,6 +331,7 @@ def build():
                    "announced": len(announced)},
         "announced": announced,
         "recent_declares": recent_declares,
+        "resolved": resolved,
         "pending": pending,
         "new": [_grp_brief(g) for g in new_events],
         "conflicts": [_grp_brief(g) for g in conflicts],

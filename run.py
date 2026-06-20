@@ -18,6 +18,20 @@ import notify_lark
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "data")
+
+
+def _now_label():
+    """带时区标注的生成时间:美东(ET) + 北京。GitHub 服务器是 UTC,直接 now() 会显示 UTC 造成误解。"""
+    now_utc = dt.datetime.now(dt.timezone.utc)
+    try:
+        from zoneinfo import ZoneInfo
+        et = now_utc.astimezone(ZoneInfo("America/New_York"))
+        bj = now_utc.astimezone(ZoneInfo("Asia/Shanghai"))
+    except Exception:
+        # 退化:无 tzdata 时按夏令时 EDT(-4)/ 北京(+8)近似
+        et = now_utc.astimezone(dt.timezone(dt.timedelta(hours=-4)))
+        bj = now_utc.astimezone(dt.timezone(dt.timedelta(hours=8)))
+    return f"{et.strftime('%Y-%m-%d %H:%M')} ET / {bj.strftime('%H:%M')} 北京"
 CACHE = os.path.join(DATA, "cache")
 os.makedirs(CACHE, exist_ok=True)
 STATE_PATH = os.path.join(DATA, "state.json")
@@ -190,7 +204,7 @@ def build():
 
     alerts = {"new": new_events, "rounds": round_alerts, "conflicts": conflicts,
               "gaps": gaps, "pending": pending, "announced": announced}
-    meta = {"generated": dt.datetime.now().strftime("%Y-%m-%d %H:%M")}
+    meta = {"generated": _now_label()}
 
     # 单页站点:日历 + 预警面板(标签切换)
     with open(OUT_HTML, "w", encoding="utf-8") as f:

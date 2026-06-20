@@ -3,7 +3,7 @@
   "_维护方法": "把对应标的的官方 IR『分红/股息历史』页 URL 填进 ir_dividend;不确定就留空。建议填前先在浏览器打开确认页面真的有分红表。",
   "ir_dividend": {
     "AAPL": "https://investor.apple.com/dividend-history/default.aspx",
-    "MSFT": "",
+    "MSFT": "https://www.microsoft.com/en-us/investor/dividends-and-stock-history",
     "NVDA": "",
     "AVGO": "",
     "GOOGL": "",

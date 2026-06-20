@@ -1,0 +1,15 @@
+{
+  "_说明": "参考链接维护台。分红核对链接优先级 = 宣告8-K(自动匹配) > 此处 ir_dividend 链接 > Nasdaq(自动回退)。改完这一个文件提交即可:run.py 会读取,机器人卡片与网页『参考链接』板块都会用。URL 留空表示未维护(自动回退 Nasdaq)。",
+  "_维护方法": "把对应标的的官方 IR『分红/股息历史』页 URL 填进 ir_dividend;不确定就留空。建议填前先在浏览器打开确认页面真的有分红表。",
+  "ir_dividend": {
+    "AAPL": "https://investor.apple.com/dividend-history/default.aspx",
+    "MSFT": "",
+    "NVDA": "",
+    "AVGO": "",
+    "GOOGL": "",
+    "META": "",
+    "LLY": "",
+    "MU": "",
+    "INTC": ""
+  }
+}

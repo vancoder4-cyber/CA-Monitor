@@ -71,6 +71,17 @@ def load_acknowledged():
         return []
 
 
+def load_refs():
+    """读取参考链接维护台 refs.json(每标的 IR 分红页等)。"""
+    p = os.path.join(HERE, "refs.json")
+    if not os.path.exists(p):
+        return {}
+    try:
+        return json.load(open(p, encoding="utf-8"))
+    except Exception:
+        return {}
+
+
 def _ack_match(acks, ticker, date):
     """找到匹配的确认条目(同标的;确认未记日期则不限日期)。"""
     for a in acks:
@@ -91,28 +102,51 @@ def build_sec8k_index(all_groups):
     return idx
 
 
+_DIV_PAT = re.compile(
+    r"dividend[^$]{0,80}\$\s?\d+(?:\.\d+)?\s*(?:per\s+share|a\s+share|/\s?sh)"
+    r"|\$\s?\d+(?:\.\d+)?\s*per\s+share[^.]{0,40}dividend", re.I)
+
+
+def _is_dividend_8k(url):
+    """抓 8-K 正文校验:确含『$X.XX per share … dividend』这类每股分红措辞才算数。失败/不含则 False。"""
+    if not url:
+        return False
+    try:
+        r = requests.get(url, headers={"User-Agent": C.SEC_UA}, timeout=20)
+        if r.status_code != 200:
+            return False
+        text = re.sub(r"<[^>]+>", " ", r.text)  # 去标签
+        return bool(_DIV_PAT.search(text))
+    except Exception:
+        return False
+
+
 def match_decl_8k(idx, ticker, decl_date):
-    """按宣告日匹配该标的的宣告 8-K:窗口 ±3 天,优先含 Item 8.01/7.01(其它重大事件/FD),取最近。无则 ''。"""
+    """匹配该标的的『宣告分红 8-K』:窗口 ±3 天、优先 Item 8.01/7.01,且正文必须确含每股分红措辞。
+    逐个候选校验,返回第一个通过的 url;都不通过返回 ''(前端回退 Nasdaq)。"""
     if not decl_date:
         return ""
     try:
         D = dt.date.fromisoformat(decl_date)
     except Exception:
         return ""
-    best = None  # (priority, distance, url)
+    cands = []
     for d, url, items in idx.get(ticker, []):
+        if not url:
+            continue
         try:
-            fd = dt.date.fromisoformat(d)
+            dist = abs((dt.date.fromisoformat(d) - D).days)
         except Exception:
             continue
-        dist = abs((fd - D).days)
         if dist > 3:
             continue
         has_decl_item = ("8.01" in (items or "")) or ("7.01" in (items or ""))
-        cand = (0 if has_decl_item else 1, dist, url)
-        if best is None or cand < best:
-            best = cand
-    return best[2] if best else ""
+        cands.append((0 if has_decl_item else 1, dist, url))
+    cands.sort()
+    for _, _, url in cands[:4]:   # 限制最多校验 4 个候选,控制网络开销
+        if _is_dividend_8k(url):
+            return url
+    return ""
 
 
 def _grp_brief(g):
@@ -358,15 +392,18 @@ def build():
     recent_declares = recent_declares[:5]
 
     # 分红 → 宣告 8-K 精确匹配:给每条分红挂上那份 8-K 的 SEC 链接(匹配不到则为空,前端回退 Nasdaq)
+    ir_map = load_refs().get("ir_dividend", {})
     sec8k = build_sec8k_index(all_groups)
     for lst in (pending, calendar_events, recent_declares):
         for e in lst:
             if e.get("etype") == "dividend":
                 e["decl_url"] = match_decl_8k(sec8k, e["ticker"], e.get("decl"))
+                e["ir_url"] = ir_map.get(e["ticker"], "")
     for g in conflicts:  # 冲突组(供 notify_lark 推送用)
         if g.etype == "dividend":
             decl = next((v.get("declaration_date") for v in g.by_source.values() if v.get("declaration_date")), None)
             g.decl_url = match_decl_8k(sec8k, g.ticker, decl)
+            g.ir_url = ir_map.get(g.ticker, "")
 
     # 发布给交互机器人读取的数据(随 Pages 一起部署为 data.json)
     site_data = {
@@ -379,6 +416,7 @@ def build():
         "announced": announced,
         "recent_declares": recent_declares,
         "resolved": resolved,
+        "refs": ir_map,
         "pending": pending,
         "new": [_grp_brief(g) for g in new_events],
         "conflicts": [_grp_brief(g) for g in conflicts],

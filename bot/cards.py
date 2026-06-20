@@ -400,6 +400,8 @@ def lookup_card(data, ticker, site_url):
         if e.get("etype") == "dividend":
             if e.get("decl_url"):
                 lines.append(f"　📄 [宣告 8-K(本次分红)]({e['decl_url']})")
+            elif e.get("ir_url"):
+                lines.append(f"　🏛 [公司IR 分红页]({e['ir_url']})")
             else:
                 lines.append(f"　🔗 [Nasdaq 分红记录](https://www.nasdaq.com/market-activity/stocks/{e['ticker'].lower()}/dividend-history)")
         return "\n".join(lines)

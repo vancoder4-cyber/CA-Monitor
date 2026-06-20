@@ -25,6 +25,18 @@ def load_changelog():
         entries.append(cur)
     return entries
 
+def load_refs():
+    """读取参考链接维护台 refs.json 的 ir_dividend 映射。"""
+    import json
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "refs.json")
+    if not os.path.exists(path):
+        return {}
+    try:
+        return json.load(open(path, encoding="utf-8")).get("ir_dividend", {})
+    except Exception:
+        return {}
+
+
 STATUS_CN = {"confirmed": "已确认", "single": "单源待核实", "conflict": "有冲突"}
 STATUS_COLOR = {"confirmed": "#1a7f37", "single": "#9a6700", "conflict": "#cf222e"}
 STATUS_BG = {"confirmed": "#e8f5e9", "single": "#fff8e1", "conflict": "#ffebee"}
@@ -224,6 +236,17 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         chg_parts.append(f"<h3 style='margin:14px 0 4px'>{html.escape(e['head'])}</h3><ul>{items}</ul>")
     chg_html = "".join(chg_parts) if chg_parts else "<p style='color:#888'>暂无</p>"
 
+    # 参考链接维护台(refs.json 的 ir_dividend):分红核对链接的人工维护源
+    _refs_ir = load_refs()
+    ref_rows = []
+    for tk in sorted(_refs_ir):
+        u = _refs_ir.get(tk) or ""
+        cell = (f"<a href='{html.escape(u)}' target='_blank' rel='noopener'>IR 分红页 ↗</a>"
+                if u else "<span style='color:#9a6700'>未维护 → 回退 Nasdaq</span>")
+        ref_rows.append(f"<tr><td><b>{html.escape(tk)}</b></td><td>{cell}</td></tr>")
+    ref_html = ("".join(ref_rows) if ref_rows
+                else "<tr><td colspan='2' style='color:#888'>refs.json 暂无条目</td></tr>")
+
     # ---- SEC 原文(近期 filing 类公司行动文件)----
     today_s = dt.date.today().isoformat()
     cutoff_s = (dt.date.today() - dt.timedelta(days=90)).isoformat()
@@ -311,6 +334,13 @@ def build_dashboard(all_groups, source_health, alerts, meta):
   <table>
     <tr><th>标的</th><th>名称</th><th>现货</th><th>合约</th><th>类型</th><th>监控</th></tr>
     {''.join(cov_rows)}
+  </table>
+
+  <h2>🔗 参考链接维护台</h2>
+  <div class="sub2">分红核对链接优先级:宣告 8-K(自动匹配)→ 下表 IR 分红页 → Nasdaq(自动回退)。维护方法:编辑仓库根目录 <code>refs.json</code> 的 <code>ir_dividend</code>,提交即可。</div>
+  <table>
+    <tr><th>标的</th><th>IR 分红页</th></tr>
+    {ref_html}
   </table>
 
   <h2>🆕 更新日志</h2>

@@ -8,7 +8,8 @@
 
 状态文件 data/state.json:已见事件签名(新发现判定)+ 已触发预警轮次(去重)。
 """
-import os, sys, json, datetime as dt
+import os, sys, json, re, datetime as dt
+import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import config as C
 import sources as S
@@ -102,37 +103,19 @@ def build_sec8k_index(all_groups):
     return idx
 
 
-_DIV_PAT = re.compile(
-    r"dividend[^$]{0,80}\$\s?\d+(?:\.\d+)?\s*(?:per\s+share|a\s+share|/\s?sh)"
-    r"|\$\s?\d+(?:\.\d+)?\s*per\s+share[^.]{0,40}dividend", re.I)
-
-
-def _is_dividend_8k(url):
-    """抓 8-K 正文校验:确含『$X.XX per share … dividend』这类每股分红措辞才算数。失败/不含则 False。"""
-    if not url:
-        return False
-    try:
-        r = requests.get(url, headers={"User-Agent": C.SEC_UA}, timeout=20)
-        if r.status_code != 200:
-            return False
-        text = re.sub(r"<[^>]+>", " ", r.text)  # 去标签
-        return bool(_DIV_PAT.search(text))
-    except Exception:
-        return False
-
-
 def match_decl_8k(idx, ticker, decl_date):
-    """匹配该标的的『宣告分红 8-K』:窗口 ±3 天、优先 Item 8.01/7.01,且正文必须确含每股分红措辞。
-    逐个候选校验,返回第一个通过的 url;都不通过返回 ''(前端回退 Nasdaq)。"""
+    """匹配该标的的『宣告分红 8-K』:仅认 Item 8.01(宣告分红的标准载体),窗口 ±3 天取最近。
+    用元数据(item 代码)判定,不抓正文——既根治误挂(如投票结果 Item 5.07 被排除),又不依赖网络。
+    匹配不到返回 ''(前端回退 IR / Nasdaq)。宁可少挂,也不挂错。"""
     if not decl_date:
         return ""
     try:
         D = dt.date.fromisoformat(decl_date)
     except Exception:
         return ""
-    cands = []
+    best = None  # (distance, url)
     for d, url, items in idx.get(ticker, []):
-        if not url:
+        if not url or "8.01" not in (items or ""):   # 必须含 Item 8.01
             continue
         try:
             dist = abs((dt.date.fromisoformat(d) - D).days)
@@ -140,13 +123,9 @@ def match_decl_8k(idx, ticker, decl_date):
             continue
         if dist > 3:
             continue
-        has_decl_item = ("8.01" in (items or "")) or ("7.01" in (items or ""))
-        cands.append((0 if has_decl_item else 1, dist, url))
-    cands.sort()
-    for _, _, url in cands[:4]:   # 限制最多校验 4 个候选,控制网络开销
-        if _is_dividend_8k(url):
-            return url
-    return ""
+        if best is None or dist < best[0]:
+            best = (dist, url)
+    return best[1] if best else ""
 
 
 def _grp_brief(g):

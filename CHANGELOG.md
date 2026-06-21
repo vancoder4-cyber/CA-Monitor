@@ -2,6 +2,10 @@
 
 > 规则:每次 push 前在最上面加一条,格式 `## 日期 · 标题` + 几条 `- 要点`。保持简洁。
 
+## 2026-06-19 · 关于补充近期能力 + 更新检查清单
+- 关于卡片正文补上「核实与确认」:每条带核对链接(SEC/8-K/IR/Nasdaq)、冲突可发『确认 代码 值』finalize
+- 新增 UPDATE_CHECKLIST.md:每次改完按它过一遍(同步四处 + CHANGELOG + 关于、真 import 验证、推后触发 Action)
+
 ## 2026-06-19 · 修复 Action 崩溃 + 8-K 改用 Item 8.01 判定
 - 修 run.py 漏 import re/requests 导致每次 Action 失败(NameError)
 - 分红 8-K 匹配改用元数据:仅认 Item 8.01(宣告分红标准载体)、±3 天最近;不再抓正文

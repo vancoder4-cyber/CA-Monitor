@@ -121,6 +121,14 @@ def on_message(data: P2ImMessageReceiveV1):
         chat_id = msg.chat_id
         chat_type = getattr(msg, "chat_type", "") or ""
 
+        # 打印发送人 open_id(用于维护 @ 联系人表:让对方 @ 一次机器人,从日志取 open_id)
+        sender_oid = None
+        try:
+            sender_oid = data.event.sender.sender_id.open_id
+        except Exception:
+            pass
+        print(f"[sender] chat={chat_id} open_id={sender_oid}")
+
         # 群聊里:只在被 @ 机器人时才响应(私聊则照常)
         mentioned = False
         mentions = getattr(msg, "mentions", None) or []

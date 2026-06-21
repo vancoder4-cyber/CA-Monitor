@@ -154,8 +154,17 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         if x.get("pay"):
             dates += f" · 派发 {x['pay']}"
         risk = "".join(f"<br><span style='color:#9a6700'>⚠️ {html.escape(r)}</span>" for r in x.get("risk", []))
+        ref = ""
+        if x.get("etype") == "dividend":
+            if x.get("decl_url"):
+                ref = f"<br><a href='{html.escape(x['decl_url'])}' target='_blank' rel='noopener'>📄 宣告 8-K ↗</a>"
+            elif x.get("ir_url"):
+                ref = f"<br><a href='{html.escape(x['ir_url'])}' target='_blank' rel='noopener'>🏛 公司IR 分红页 ↗</a>"
+            else:
+                ref = (f"<br><a href='https://www.nasdaq.com/market-activity/stocks/{x['ticker'].lower()}/dividend-history'"
+                       f" target='_blank' rel='noopener'>🔗 Nasdaq 分红记录 ↗</a>")
         return (f"{prod}<b>{x['ticker']}</b> {ETYPE_CN.get(x['etype'], x['etype'])}{html.escape(val)} — "
-                f"<b style='color:#cf222e'>还剩 {x['days']} 天</b>　<span style='color:#555;font-size:12px'>{html.escape(dates)}</span>{risk}")
+                f"<b style='color:#cf222e'>还剩 {x['days']} 天</b>　<span style='color:#555;font-size:12px'>{html.escape(dates)}</span>{risk}{ref}")
     pending_html = alert_block("⏳ 待执行(已公告未发生,持续提醒)", alerts.get("pending", []), _pending_render)
 
     # 📣 新公告(刚扫到 declaration date)
@@ -194,6 +203,18 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         lambda g: f"<b>{g.ticker}</b> {ETYPE_CN.get(g.etype,g.etype)} {g.anchor_date}: " + "; ".join(html.escape(c) for c in g.conflicts))
     gap_html = alert_block("🕳 数据空缺", alerts["gaps"],
         lambda g: f"<b>{g.ticker}</b> {ETYPE_CN.get(g.etype,g.etype)} {g.anchor_date}: " + "; ".join(html.escape(x) for x in g.gaps))
+
+    def _resolved_render(r):
+        v = f" · 以 <b>{html.escape(str(r['value']))}</b> 为准" if r.get("value") else ""
+        meta_line = f"原冲突:{html.escape(r.get('detail',''))}"
+        if r.get("at"):
+            meta_line += f" · 确认于 {html.escape(str(r['at']))}"
+        return (f"<b>{html.escape(r['ticker'])}</b> {ETYPE_CN.get(r['etype'],r['etype'])} {r['date']}{v}"
+                f"<br><span style='font-size:12px;color:#555'>{meta_line}</span>")
+    resolved_items = alerts.get("resolved", [])
+    resolved_html = (f"<h3>✅ 已人工确认(finalize) <span style='color:#1a7f37'>· {len(resolved_items)}</span></h3>"
+                     + "<ul>" + "".join(f"<li>{_resolved_render(r)}</li>" for r in resolved_items) + "</ul>"
+                     ) if resolved_items else ""
 
     # 源健康矩阵
     sources_order = ["yfinance", "FMP", "AlphaVantage", "Nasdaq", "Tiingo", "Alpaca", "SEC"]
@@ -318,8 +339,10 @@ def build_dashboard(all_groups, source_health, alerts, meta):
   <h2>报警</h2>
   {round_html}
   {announced_html}
+  {pending_html}
   {new_html}
   {conf_html}
+  {resolved_html}
   {gap_html}
   {sec_table}
 

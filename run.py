@@ -286,8 +286,16 @@ def build():
                 _active.append(g)
         conflicts = _active
 
+    # 给「待执行」分红预挂核对链接(供网页预警面板显示):8-K(Item8.01) / IR(refs) / 否则前端回退 Nasdaq
+    _ir_map = load_refs().get("ir_dividend", {})
+    _sec8k = build_sec8k_index(all_groups)
+    for e in pending:
+        if e.get("etype") == "dividend":
+            e["decl_url"] = match_decl_8k(_sec8k, e["ticker"], e.get("decl"))
+            e["ir_url"] = _ir_map.get(e["ticker"], "")
+
     alerts = {"new": new_events, "rounds": round_alerts, "conflicts": conflicts,
-              "gaps": gaps, "pending": pending, "announced": announced}
+              "gaps": gaps, "pending": pending, "announced": announced, "resolved": resolved}
     meta = {"generated": _now_label()}
 
     # 单页站点:日历 + 预警面板(标签切换)
@@ -373,7 +381,7 @@ def build():
     # 分红 → 宣告 8-K 精确匹配:给每条分红挂上那份 8-K 的 SEC 链接(匹配不到则为空,前端回退 Nasdaq)
     ir_map = load_refs().get("ir_dividend", {})
     sec8k = build_sec8k_index(all_groups)
-    for lst in (pending, calendar_events, recent_declares):
+    for lst in (calendar_events, recent_declares):  # pending 已在 build_site 前预挂
         for e in lst:
             if e.get("etype") == "dividend":
                 e["decl_url"] = match_decl_8k(sec8k, e["ticker"], e.get("decl"))

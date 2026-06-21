@@ -661,6 +661,11 @@ def _site_shell(meta, dash_body, cal_body, log_body):
       if(info) info.textContent='第 '+secCur+' / '+pages+' 页(共 '+total+' 条)';
     }
     function secPage(d){ secCur+=d; secRender(); }
+    // 支持用 ?tab=log 或 #log 直接打开某个标签页(供「最近更新」按钮跳转)
+    (function(){
+      var p = new URLSearchParams(location.search).get('tab') || (location.hash||'').replace('#','');
+      if(p && document.getElementById('tab-'+p)) showTab(p);
+    })();
     """
     return f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">

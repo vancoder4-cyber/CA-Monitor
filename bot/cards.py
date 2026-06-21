@@ -262,9 +262,10 @@ def changelog_card(data, site_url):
     content = "\n\n".join(parts)
     if len(chg) > 3:
         content += f"\n\n…… 共 {len(chg)} 次更新,更多见网页"
+    log_url = (site_url + "?tab=log") if site_url else site_url   # 直接跳网页「更新日志」标签页
     return _card("🆕 最近更新", "blue",
                  [{"tag": "div", "text": {"tag": "lark_md", "content": content}}],
-                 site_url, "查看完整更新日志")
+                 log_url, "查看完整更新日志")
 
 
 def coverage_card(data, site_url):

@@ -357,18 +357,39 @@ def build_dashboard(all_groups, source_health, alerts, meta):
   <table>
     <tr><th>标的</th><th>名称</th><th>现货</th><th>合约</th><th>类型</th><th>监控</th></tr>
     {''.join(cov_rows)}
-  </table>
+  </table>"""
+    return body
+
+
+def build_changelog_panel(meta):
+    """独立「更新日志」面板:更新日志 + 参考链接维护台。"""
+    chg = load_changelog()
+    chg_parts = []
+    for e in chg:
+        items = "".join(f"<li>{html.escape(i)}</li>" for i in e["items"])
+        chg_parts.append(f"<h3 style='margin:14px 0 4px'>{html.escape(e['head'])}</h3><ul>{items}</ul>")
+    chg_html = "".join(chg_parts) if chg_parts else "<p style='color:#888'>暂无</p>"
+
+    refs = load_refs()
+    ref_rows = []
+    for tk in sorted(refs):
+        u = refs.get(tk) or ""
+        cell = (f"<a href='{html.escape(u)}' target='_blank' rel='noopener'>IR 分红页 ↗</a>"
+                if u else "<span style='color:#9a6700'>未维护 → 回退 Nasdaq</span>")
+        ref_rows.append(f"<tr><td><b>{html.escape(tk)}</b></td><td>{cell}</td></tr>")
+    ref_html = "".join(ref_rows) if ref_rows else "<tr><td colspan='2' style='color:#888'>refs.json 暂无条目</td></tr>"
+
+    return f"""
+  <h2>🆕 更新日志</h2>
+  <div class="sub2">每次发版的改动记录(最新在前)。来源:仓库 CHANGELOG.md。</div>
+  {chg_html}
 
   <h2>🔗 参考链接维护台</h2>
-  <div class="sub2">分红核对链接优先级:宣告 8-K(自动匹配)→ 下表 IR 分红页 → Nasdaq(自动回退)。维护方法:编辑仓库根目录 <code>refs.json</code> 的 <code>ir_dividend</code>,提交即可。</div>
+  <div class="sub2">分红核对链接优先级:宣告 8-K(自动)→ 下表 IR 分红页 → Nasdaq(回退)。维护:编辑仓库根目录 <code>refs.json</code> 的 <code>ir_dividend</code>,提交即可。</div>
   <table>
     <tr><th>标的</th><th>IR 分红页</th></tr>
     {ref_html}
-  </table>
-
-  <h2>🆕 更新日志</h2>
-  {chg_html}"""
-    return body
+  </table>"""
 
 
 def build_text_digest(alerts, meta):
@@ -579,7 +600,7 @@ def build_calendar(all_groups, meta, months_ahead=3, lookback_days=15):
 
 
 # ==================== 合并站点(预警面板 + 日历,标签切换)====================
-def _site_shell(meta, dash_body, cal_body):
+def _site_shell(meta, dash_body, cal_body, log_body):
     css = """
     body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:0;background:#f6f8fa;color:#1f2328}
     .wrap{max-width:1180px;margin:0 auto;padding:24px}
@@ -650,9 +671,11 @@ def _site_shell(meta, dash_body, cal_body):
   <div class="tabs">
     <button class="tab active" id="tab-cal" onclick="showTab('cal')">📅 公司行动日历</button>
     <button class="tab" id="tab-dash" onclick="showTab('dash')">🔔 预警面板</button>
+    <button class="tab" id="tab-log" onclick="showTab('log')">🆕 更新日志</button>
   </div>
   <div class="panel active" id="panel-cal">{cal_body}</div>
   <div class="panel" id="panel-dash">{dash_body}</div>
+  <div class="panel" id="panel-log">{log_body}</div>
   <script>{js}</script>
 </div></body></html>"""
 
@@ -660,4 +683,5 @@ def _site_shell(meta, dash_body, cal_body):
 def build_site(all_groups, source_health, alerts, meta):
     dash_body = build_dashboard(all_groups, source_health, alerts, meta)
     cal_body = build_calendar(all_groups, meta)
-    return _site_shell(meta, dash_body, cal_body)
+    log_body = build_changelog_panel(meta)
+    return _site_shell(meta, dash_body, cal_body, log_body)

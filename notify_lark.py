@@ -47,6 +47,21 @@ def _sec_url(g):
     return (g.by_source.get("SEC") or {}).get("url", "")
 
 
+def _load_mentions():
+    """从 refs.json 读 alert_mention_open_ids:催办推送要 @ 的 open_id 列表('all'=@所有人)。"""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "refs.json")
+    try:
+        ids = json.load(open(path, encoding="utf-8")).get("alert_mention_open_ids") or []
+        return [str(x).strip() for x in ids if str(x).strip()]
+    except Exception:
+        return []
+
+
+def _at_tags(open_ids):
+    """生成 Lark 卡片 @ 标签:open_id → <at id=ou_xxx></at>;'all' → @所有人。"""
+    return "".join(f"<at id={oid}></at>" for oid in open_ids)
+
+
 def _nasdaq_div(ticker):
     return f"https://www.nasdaq.com/market-activity/stocks/{ticker.lower()}/dividend-history"
 
@@ -123,6 +138,11 @@ def _build_card(alerts, meta, dashboard_url=""):
         if x.get("risk_copy"):
             line += f"\n　🛡 {x['risk_copy']}"
         rl.append(line)
+    # 轮询预警 @:有催办事项且配置了名单时,在催办区顶部 @ 对应的人
+    _mentions = _load_mentions()
+    if rl and _mentions:
+        elements.append({"tag": "div", "text": {"tag": "lark_md",
+                        "content": _at_tags(_mentions) + " ⏰ 有临近催办事项,请及时处理"}})
     section("⏰ 临近预警(运营催办)", rl)
 
     # 优先级互斥:已在催办里出现的事件,后面的区不再重复

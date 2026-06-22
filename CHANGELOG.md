@@ -2,6 +2,12 @@
 
 > 规则:每次 push 前在最上面加一条,格式 `## 日期 · 标题` + 几条 `- 要点`。日期用**真实当天日期**(可 `date +%F` 确认),别照抄上一条。保持简洁。
 
+## 2026-06-22 · 新增第 8 源 FINX(TRKD-HS)
+- 接入 FINX 静态数据 API:JWT 认证(`/auth/token` 换 token,其余带 `x-auth-token`),抓分红/拆股/并购
+- 用 RIC 寻址(如 `TSLA.O`),映射表 `config.FINX_RIC`(默认 `.O`,可按实际上市所调)
+- 凭证只走环境变量 `FINX_USER`/`FINX_PASS`(`FINX_BASE` 可切 UAT);**未配置即静默跳过,不影响其它源**
+- 注:供方接口仍在调整(约 2 周、demo 阶段),字段做了防御式解析;稳定后再核对 RIC/字段
+
 ## 2026-06-21 · README 查漏补缺
 - 标的数订正:监控 24 → 27(现货 24 个股 + QQQ/EWY/DRAM 三个 ETF)
 - 补充 GH_TOKEN 说明 + 可维护文件索引(refs.json / CHANGELOG / UPDATE_CHECKLIST / requests.md)

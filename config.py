@@ -71,10 +71,34 @@ NAMES = {
 # ---- API keys ----
 # 全部从环境变量 / .env 读取,代码里不留明文(避免提交到 GitHub)。
 # 本地用:复制 .env.example 为 .env 并填入你的 key(.env 已在 .gitignore)。
-_KEY_NAMES = ["ALPHAVANTAGE", "FMP", "FINNHUB", "TIINGO", "ALPACA_KEY_ID", "ALPACA_SECRET"]
+_KEY_NAMES = ["ALPHAVANTAGE", "FMP", "FINNHUB", "TIINGO", "ALPACA_KEY_ID", "ALPACA_SECRET",
+              "FINX_USER", "FINX_PASS", "FINX_BASE"]
 
 def get_keys():
     return {k: os.environ.get(k, "") for k in _KEY_NAMES}
+
+# ---- FINX (TRKD-HS) 静态数据 API ----
+# 第 8 源,JWT 认证。凭证只走环境变量(FINX_USER/FINX_PASS),代码里不留明文。
+# 接口仍在调整中(供方告知约 2 周、且基于 demo),故:未配置凭证 → 该源静默跳过,不影响其它源。
+# 正式环境 base 默认如下;UAT 用 FINX_BASE 覆盖为 https://finx.uat.platform.trkd-hs.com/finx-api
+FINX_BASE_DEFAULT = "https://finx.platform.trkd-hs.com/finx-api"
+
+# FINX 用 RIC(路透代码,如 TSLA.O)。多数标的在 Nasdaq(.O),个别在 NYSE(.N)/NYSE Arca(.K)。
+# 下面是按上市所给的覆盖表;拿不到准确 RIC 的留作默认 .O。接口稳定后按实际可调。
+FINX_RIC = {
+    # NYSE(.N)
+    "LLY": "LLY.N", "CRCL": "CRCL.N", "RKLB": "RKLB.O", "HOOD": "HOOD.O",
+    # NYSE Arca ETF(.K / .P,先按 .K)
+    "EWY": "EWY.K",
+    # 其余默认 .O(Nasdaq):MU/SNDK/NVDA/TSLA/AMD/INTC/MSFT/AAPL/AMZN/GOOGL/META/
+    #   AVGO/MRVL/PLTR/NBIS/CRWV/MSTR/COIN/HIMS/QQQ/DRAM
+}
+
+def finx_ric(ticker):
+    """ticker -> FINX RIC。商品/海外不抓(返回 None);其余按覆盖表或默认 .O。"""
+    if not is_monitored(ticker):
+        return None
+    return FINX_RIC.get(ticker, f"{ticker}.O")
 
 # SEC 要求 User-Agent 带联系邮箱
 SEC_UA = os.environ.get("SEC_UA", "ca-monitor vancoder4@gmail.com")

@@ -482,6 +482,129 @@ def fetch_alpaca(ticker: str) -> List[SourceResult]:
     return out
 
 
+# ---------------- 8) FINX / TRKD-HS(静态数据 API,JWT,凭证缺失即跳过)----------------
+# 接口仍在调整中(供方告知约 2 周、demo 阶段),字段以 ReDoc 文档为准、做防御式解析。
+# 认证:POST {base}/auth/token {username,password} -> {token};其余请求带 header x-auth-token: <token>。
+_FINX_TOKEN = None          # 进程级缓存,避免每只票都登一次
+_FINX_AUTH_FAILED = False    # 登录失败就别再重试(凭证错/接口未就绪)
+
+
+def _finx_token(user, pwd, base):
+    global _FINX_TOKEN, _FINX_AUTH_FAILED
+    if _FINX_TOKEN:
+        return _FINX_TOKEN
+    if _FINX_AUTH_FAILED:
+        return None
+    try:
+        r = requests.post(f"{base}/auth/token",
+                          json={"username": user, "password": pwd}, timeout=25)
+        if r.status_code == 200:
+            tok = (r.json() or {}).get("token")
+            if tok:
+                _FINX_TOKEN = tok
+                return tok
+        _FINX_AUTH_FAILED = True
+    except Exception:
+        _FINX_AUTH_FAILED = True
+    return None
+
+
+def _finx_get(path, token, base, params=None):
+    r = requests.get(f"{base}{path}", headers={"x-auth-token": token},
+                     params=params, timeout=25)
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code}")
+    j = r.json()
+    return j if isinstance(j, list) else (j.get("data") if isinstance(j, dict) else []) or []
+
+
+def _pick(x, *names):
+    """从多个候选字段名里取第一个非空值(接口字段可能微调)。"""
+    for n in names:
+        v = x.get(n)
+        if v not in (None, "", 0, "0"):
+            return v
+    # 再容忍 0 值(金额可能真为 0,但日期不会)
+    for n in names:
+        if n in x and x.get(n) not in (None, ""):
+            return x.get(n)
+    return None
+
+
+def fetch_finx(ticker: str, user: str, pwd: str, base: str = "") -> List[SourceResult]:
+    base = (base or C.FINX_BASE_DEFAULT).rstrip("/")
+    if not (user and pwd):
+        return [SourceResult("FINX", ticker, "unavailable", detail="未配置 FINX 凭证")]
+    ric = C.finx_ric(ticker)
+    if not ric:
+        return [SourceResult("FINX", ticker, "unavailable", detail="无 RIC(非个股/ETF)")]
+    token = _finx_token(user, pwd, base)
+    if not token:
+        return [SourceResult("FINX", ticker, "unavailable", detail="认证失败/接口未就绪")]
+
+    out = []
+    # 分红:事件接口 DIVIDEND(含宣告日);拿不到再退派发历史
+    try:
+        rows = _finx_get(f"/event/{ric}/DIVIDEND", token, base)
+        if not rows:
+            rows = _finx_get(f"/financial/dividend/payout/history/{ric}", token, base)
+        evs = []
+        for x in rows:
+            if not isinstance(x, dict):
+                continue
+            evs.append(Event(
+                ticker, "dividend", "FINX",
+                # 实测字段名(事件接口 / 派发历史接口两套都兼容)
+                ex_date=_norm_date(_pick(x, "dividendExDate", "divExDate", "exDate")),
+                record_date=_norm_date(_pick(x, "dividendRecordDate", "divRecordDate", "recordDate")),
+                pay_date=_norm_date(_pick(x, "dividendPaymentDate", "divPayDate", "payDate")),
+                declaration_date=_norm_date(_pick(x, "annoucementDate", "announcementDate", "declarationDate")),
+                amount=_f(_pick(x, "dividendAmount", "divRate", "amount")),
+                raw=x))
+        out.append(SourceResult("FINX", ticker, "ok", evs))
+    except Exception as e:
+        out.append(SourceResult("FINX", ticker, "unavailable", detail=f"div:{e}"))
+
+    # 拆股:事件接口 STOCK_SPLIT
+    try:
+        rows = _finx_get(f"/event/{ric}/STOCK_SPLIT", token, base)
+        evs = []
+        for x in rows:
+            if not isinstance(x, dict):
+                continue
+            ratio = _pick(x, "splitRatio", "ratio")
+            evs.append(Event(
+                ticker, "split", "FINX",
+                ex_date=_norm_date(_pick(x, "splitExDate", "exDate")),
+                record_date=_norm_date(_pick(x, "splitRecordDate")),
+                pay_date=_norm_date(_pick(x, "splitPaymentDate", "payDate")),
+                declaration_date=_norm_date(_pick(x, "splitAnnouncement", "splitAnnoucement", "annoucementDate", "announcementDate")),
+                ratio=str(ratio) if ratio is not None else None,
+                raw=x))
+        out.append(SourceResult("FINX", ticker, "ok", evs))
+    except Exception as e:
+        out.append(SourceResult("FINX", ticker, "unavailable", detail=f"split:{e}"))
+
+    # 并购 / 其它公司行动:作为 filing 信号
+    for et, label in (("MA", "并购"), ("OTHER_CORPORATE_ACTION", "其它公司行动")):
+        try:
+            rows = _finx_get(f"/event/{ric}/{et}", token, base)
+            evs = []
+            for x in rows:
+                if not isinstance(x, dict):
+                    continue
+                desc = _pick(x, "enDivTypeMarkerDesc", "eventType", "description") or label
+                evs.append(Event(
+                    ticker, "filing", "FINX",
+                    ex_date=_norm_date(_pick(x, "startDate", "annoucementDate", "announcementDate", "lastUpdate")),
+                    note=f"FINX · {desc}",
+                    raw=x))
+            out.append(SourceResult("FINX", ticker, "ok", evs))
+        except Exception as e:
+            out.append(SourceResult("FINX", ticker, "unavailable", detail=f"{et}:{e}"))
+    return out
+
+
 # ---------------- 汇总单只票的所有源 ----------------
 def fetch_all_for_ticker(ticker: str, keys: dict, av_enabled: bool = True) -> List[SourceResult]:
     results = []
@@ -496,4 +619,7 @@ def fetch_all_for_ticker(ticker: str, keys: dict, av_enabled: bool = True) -> Li
     if keys.get("TIINGO"):
         results += fetch_tiingo(ticker, keys["TIINGO"])
     results += fetch_alpaca(ticker)   # 需先调用 prefetch_alpaca
+    # 第 8 源 FINX:仅在配置了凭证时才真正请求(否则静默跳过,不拖慢/不报错)
+    if keys.get("FINX_USER") and keys.get("FINX_PASS"):
+        results += fetch_finx(ticker, keys["FINX_USER"], keys["FINX_PASS"], keys.get("FINX_BASE", ""))
     return results

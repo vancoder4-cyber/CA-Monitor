@@ -2,7 +2,7 @@
 
 盯住一篮子标的的公司行动(分红 / 拆股 / 并购 / 分拆 / 退市),**多源并行抓取 → 归一化 → 零容忍交叉核对 → 报警**,产出一屏看全的 HTML 面板 + 文本预警清单。逻辑接近机构的 golden-copy 做法:同一事件多源比对,缺失或字段不一致就报警。
 
-## 数据源(7 个,3 类角色)
+## 数据源(7 主力 + FINX 接入中,3 类角色)
 
 | 源 | 角色 | Key | 覆盖 |
 |---|---|---|---|
@@ -13,8 +13,11 @@
 | **FMP** | 分红/拆股 | 免费 key | 部分票(免费版 402 限额) |
 | **Alpha Vantage** | 分红/拆股 | 免费 key | 尽力(免费 25 次/天,易限流) |
 | **SEC EDGAR** | 并购/退市 filing(权威) | 免 | 24/24,8-K/S-4/25-NSE 等 |
+| **FINX(TRKD-HS)** | 分红/拆股/并购(JWT) | `FINX_USER`+`FINX_PASS` | 接入中:供方接口约 2 周内调整、demo 阶段;**配置凭证后才启用,留空自动跳过** |
 
 > 关键设计:源被限流/付费墙时标「**不可用**」而非「空缺」,绝不把"没查到"误判成"源说没有"。
+>
+> **FINX 备注**:认证 `POST /auth/token` 换 JWT,其余请求带 `x-auth-token` header;用 RIC(如 `TSLA.O`)寻址,映射见 `config.FINX_RIC`(默认 `.O`,接口稳定后按实际可调)。凭证只走环境变量,代码不留明文。
 
 ## 快速开始
 
@@ -55,7 +58,7 @@ python run.py build                       # 用缓存合并 → dashboard.html +
 - `ALERT_ROUNDS` —— 预警节奏 `[30,14,7,3,1]`
 - `GROUP_WINDOW_DAYS` —— 跨源归组时间窗(默认 5 天)
 - API key —— **全部从 `.env` / 环境变量读取,代码里不留明文**:
-  `FMP` / `ALPHAVANTAGE` / `FINNHUB` / `TIINGO` / `ALPACA_KEY_ID` / `ALPACA_SECRET` / `SEC_UA`
+  `FMP` / `ALPHAVANTAGE` / `FINNHUB` / `TIINGO` / `ALPACA_KEY_ID` / `ALPACA_SECRET` / `SEC_UA` / `FINX_USER` / `FINX_PASS`(可选,FINX 第 8 源;`FINX_BASE` 可改 UAT)
 - `GH_TOKEN` —— 细粒度 PAT(Contents 读写),供「确认 / 需求提报」写回仓库(配在 Railway)
 
 **可维护文件(改完提交即可)**:`refs.json`(IR 分红页 + 催办 @ 名单)、`CHANGELOG.md`(每次必记一条)、`UPDATE_CHECKLIST.md`(收尾检查清单)、`requests.md`(需求自动汇总)。

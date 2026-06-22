@@ -55,6 +55,9 @@ jobs:
           ALPACA_KEY_ID: ${{ secrets.ALPACA_KEY_ID }}
           ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
           SEC_UA: ${{ secrets.SEC_UA }}
+          FINX_USER: ${{ secrets.FINX_USER }}
+          FINX_PASS: ${{ secrets.FINX_PASS }}
+          FINX_BASE: ${{ secrets.FINX_BASE }}
           LARK_WEBHOOK: ${{ secrets.LARK_WEBHOOK }}
           LARK_SECRET: ${{ secrets.LARK_SECRET }}
           LARK_DASHBOARD_URL: ${{ vars.LARK_DASHBOARD_URL }}

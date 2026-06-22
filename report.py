@@ -217,7 +217,7 @@ def build_dashboard(all_groups, source_health, alerts, meta):
                      ) if resolved_items else ""
 
     # 源健康矩阵
-    sources_order = ["yfinance", "FMP", "AlphaVantage", "Nasdaq", "Tiingo", "Alpaca", "SEC"]
+    sources_order = ["yfinance", "FMP", "AlphaVantage", "Nasdaq", "Tiingo", "Alpaca", "SEC", "FINX"]
     health_rows = []
     for tk in C.TICKERS:
         cells = []

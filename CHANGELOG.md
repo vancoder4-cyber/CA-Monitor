@@ -7,6 +7,7 @@
 - 用 RIC 寻址(如 `TSLA.O`),映射表 `config.FINX_RIC`(默认 `.O`,可按实际上市所调)
 - 凭证只走环境变量 `FINX_USER`/`FINX_PASS`(`FINX_BASE` 可切 UAT);**未配置即静默跳过,不影响其它源**
 - 注:供方接口仍在调整(约 2 周、demo 阶段),字段做了防御式解析;稳定后再核对 RIC/字段
+- Actions 工作流传入 `FINX_USER/FINX_PASS/FINX_BASE` secret;网页源健康矩阵加 FINX 列(否则 FINX 抓了也不显示/不生效)
 
 ## 2026-06-21 · README 查漏补缺
 - 标的数订正:监控 24 → 27(现货 24 个股 + QQQ/EWY/DRAM 三个 ETF)

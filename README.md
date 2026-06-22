@@ -61,7 +61,7 @@ python run.py build                       # 用缓存合并 → dashboard.html +
   `FMP` / `ALPHAVANTAGE` / `FINNHUB` / `TIINGO` / `ALPACA_KEY_ID` / `ALPACA_SECRET` / `SEC_UA` / `FINX_USER` / `FINX_PASS`(可选,FINX 第 8 源;`FINX_BASE` 可改 UAT)
 - `GH_TOKEN` —— 细粒度 PAT(Contents 读写),供「确认 / 需求提报」写回仓库(配在 Railway)
 
-**可维护文件(改完提交即可)**:`refs.json`(IR 分红页 + 催办 @ 名单)、`CHANGELOG.md`(每次必记一条)、`UPDATE_CHECKLIST.md`(收尾检查清单)、`requests.md`(需求自动汇总)。
+**可维护文件(改完提交即可)**:`refs.json`(IR 分红页 + 催办 @ 名单)、`CHANGELOG.md`(每次必记一条)、`UPDATE_CHECKLIST.md`(收尾检查清单)、`requests.md`(需求自动汇总)、`TODO.md`(内部技术待办/后续跟进)。
 
 ## 密钥与安全
 

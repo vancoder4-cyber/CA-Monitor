@@ -2,6 +2,11 @@
 
 > 规则:每次 push 前在最上面加一条,格式 `## 日期 · 标题` + 几条 `- 要点`。日期用**真实当天日期**(可 `date +%F` 确认),别照抄上一条。保持简洁。
 
+## 2026-06-22 · FINX 空缺降噪 + 新增 TODO.md
+- 历史覆盖短的源(FINX)只对近 45 天内及未来事件参与「空缺」判定:老历史它没有不再误报(META/GOOGL/NVDA 三条历史空缺消除)
+- 配置项 `config.SHORT_HISTORY_SOURCES` / `SHORT_HISTORY_GAP_DAYS`;逻辑在 `reconcile.py`
+- 新增 `TODO.md`(内部技术待办):记 FINX 接口稳定后复核 RIC/历史空缺/字段、轮换密码等;README 可维护文件索引补上它
+
 ## 2026-06-22 · 新增第 8 源 FINX(TRKD-HS)
 - 接入 FINX 静态数据 API:JWT 认证(`/auth/token` 换 token,其余带 `x-auth-token`),抓分红/拆股/并购
 - 用 RIC 寻址(如 `TSLA.O`),映射表 `config.FINX_RIC`(默认 `.O`,可按实际上市所调)

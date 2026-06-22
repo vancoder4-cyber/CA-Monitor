@@ -113,6 +113,12 @@ DIV_COMPARE_FIELDS = ["ex_date", "record_date", "pay_date", "amount"]
 # 比对哪些字段(拆股)
 SPLIT_COMPARE_FIELDS = ["ex_date", "ratio"]
 
+# 历史覆盖较短的源(如 FINX/demo 阶段:事件接口只回近期+未来):
+# 仅对「近 SHORT_HISTORY_GAP_DAYS 天内及未来」的事件参与「空缺」判定,
+# 老历史这些源没有也不算空缺,避免每次跑都刷出一堆历史误报噪音。
+SHORT_HISTORY_SOURCES = {"FINX"}
+SHORT_HISTORY_GAP_DAYS = 45
+
 # ---- 预警节奏(距除息日天数,临近时只触发"最接近的一轮")----
 ALERT_ROUNDS = [30, 14, 7, 3, 1]
 # 以哪个日期作为预警基准

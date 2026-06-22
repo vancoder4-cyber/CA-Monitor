@@ -169,6 +169,12 @@ def _evaluate(g: EventGroup, etype):
     # ---- 空缺(仅对近窗口内已发生事件:在覆盖该票该类的 ok 源里,谁缺了)----
     if not g.is_future and in_window:
         missing = [s for s in g.sources_ok if s not in g.by_source]
+        # 降噪:历史覆盖短的源(如 FINX),仅对近窗口内的事件算空缺;
+        # 更早的历史事件这些源没有也不报(它们本就只回近期+未来)。
+        if missing:
+            sh_cut = (TODAY - dt.timedelta(days=C.SHORT_HISTORY_GAP_DAYS)).isoformat()
+            missing = [s for s in missing
+                       if s not in C.SHORT_HISTORY_SOURCES or (g.anchor_date or "") >= sh_cut]
         if missing and len(g.by_source) >= 1:
             g.gaps.append(f"{'/'.join(missing)} 缺失此事件(其它源有)")
 

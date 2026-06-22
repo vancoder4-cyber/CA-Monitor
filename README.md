@@ -50,11 +50,15 @@ python run.py build                       # 用缓存合并 → dashboard.html +
 
 ## 配置(`config.py`)
 
-- `TICKERS` —— 标的清单(当前 24 支)
+- `SPOT_TICKERS` / `CONTRACT_TICKERS` —— 现货 24 个股 / 合约 22(含 ETF 与商品/海外)
+- `TICKERS` —— 实际监控标的 **27 支**(现货 24 个股 + QQQ/EWY/DRAM 三个 ETF;商品/海外列入覆盖但不监控)
 - `ALERT_ROUNDS` —— 预警节奏 `[30,14,7,3,1]`
 - `GROUP_WINDOW_DAYS` —— 跨源归组时间窗(默认 5 天)
 - API key —— **全部从 `.env` / 环境变量读取,代码里不留明文**:
   `FMP` / `ALPHAVANTAGE` / `FINNHUB` / `TIINGO` / `ALPACA_KEY_ID` / `ALPACA_SECRET` / `SEC_UA`
+- `GH_TOKEN` —— 细粒度 PAT(Contents 读写),供「确认 / 需求提报」写回仓库(配在 Railway)
+
+**可维护文件(改完提交即可)**:`refs.json`(IR 分红页 + 催办 @ 名单)、`CHANGELOG.md`(每次必记一条)、`UPDATE_CHECKLIST.md`(收尾检查清单)、`requests.md`(需求自动汇总)。
 
 ## 密钥与安全
 
@@ -161,9 +165,9 @@ LARK_NOTIFY_EMPTY=0   # 1=没预警也推一条
 
 ## 免费源额度提醒(生产注意)
 
-- **Alpha Vantage** 免费 25 次/天:跑两次 ×24 支会远超额,代码已限量 + 限流自动标「不可用」。生产建议升级或仅作补充。
+- **Alpha Vantage** 免费 25 次/天:跑两次 ×27 支会远超额,代码已限量 + 限流自动标「不可用」。生产建议升级或仅作补充。
 - **FMP** 免费版对部分票返回 402(额度/覆盖限制),已按「不可用」处理。要全覆盖需付费档。
-- **yfinance / Nasdaq / Tiingo / Alpaca** 实测对 24 支稳定全绿,是当前核对主力。
+- **yfinance / Nasdaq / Tiingo / Alpaca** 实测对个股稳定全绿,是当前核对主力。
 
 ## 部署到 GitHub
 

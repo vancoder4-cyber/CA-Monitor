@@ -2,6 +2,10 @@
 
 > 规则:每次 push 前在最上面加一条,格式 `## 日期 · 标题` + 几条 `- 要点`。日期用**真实当天日期**(可 `date +%F` 确认),别照抄上一条。保持简洁。
 
+## 2026-06-21 · README 查漏补缺
+- 标的数订正:监控 24 → 27(现货 24 个股 + QQQ/EWY/DRAM 三个 ETF)
+- 补充 GH_TOKEN 说明 + 可维护文件索引(refs.json / CHANGELOG / UPDATE_CHECKLIST / requests.md)
+
 ## 2026-06-21 · 新增「需求提报」指令
 - 群里 @机器人 + `需求 你的想法` → 追加到仓库 requests.md(带提报人 open_id + 时间),供负责人汇总迭代
 - 复用 GH_TOKEN;指令数 11 → 12

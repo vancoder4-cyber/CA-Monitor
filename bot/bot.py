@@ -167,6 +167,19 @@ def on_message(data: P2ImMessageReceiveV1):
             ok, msg = ack.add_ack(ticker, value, etype, date)
             send_card(chat_id, cards.confirm_card(ok, msg, ticker, value, SITE_URL))
             return
+        if cmd == "request":
+            req = re.sub(r"@_user_\d+|@_all", "", text or "").strip()
+            for kw in ("需求提报", "需求", "提报", "反馈", "建议", "feature", "feedback"):
+                if req.lower().startswith(kw.lower()):
+                    req = req[len(kw):].strip(" :：")
+                    break
+            print(f"[msg] chat={chat_id} -> request {req!r} by={sender_oid}")
+            if not req:
+                send_card(chat_id, cards.request_card(False, "", "", SITE_URL))
+                return
+            ok, msg = ack.add_request(req, by=sender_oid or "")
+            send_card(chat_id, cards.request_card(ok, msg, req, SITE_URL))
+            return
         if cmd == "lookup" or (ticker and cmd == "help"):
             print(f"[msg] chat={chat_id} text={text!r} -> lookup {ticker}")
             send_card(chat_id, cards.lookup_card(d, ticker, SITE_URL))

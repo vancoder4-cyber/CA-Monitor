@@ -65,3 +65,35 @@ def add_ack(ticker, value=None, etype=None, date=None, by="lark"):
         return False, f"写入失败 HTTP {r.status_code}: {r.text[:160]}"
     except Exception as e:
         return False, f"确认写入异常: {e}"
+
+
+REQ_PATH = "requests.md"
+
+
+def add_request(text, by=""):
+    """把需求追加到 repo 的 requests.md(供负责人汇总)。返回 (ok, msg)。"""
+    if not GH_TOKEN:
+        return False, "未配置 GH_TOKEN —— 请在 Railway 加一个对本仓库 Contents 有写权限的细粒度 PAT"
+    try:
+        url = f"{API}/repos/{GH_REPO}/contents/{REQ_PATH}?ref={GH_BRANCH}"
+        r = requests.get(url, headers=_headers(), timeout=15)
+        if r.status_code == 200:
+            j = r.json()
+            content = base64.b64decode(j["content"]).decode("utf-8")
+            sha = j.get("sha")
+        else:
+            content = "# 需求提报汇总\n\n> 群里 @机器人 + 「需求 内容」自动追加到这里。\n"
+            sha = None
+        ts = dt.datetime.now(dt.timezone.utc).isoformat(timespec="minutes")
+        content += f"\n- [ ] {ts} · 提报人 {by or '未知'}\n  {text}\n"
+        new_content = base64.b64encode(content.encode("utf-8")).decode("utf-8")
+        body = {"message": f"需求提报: {text[:40]}", "content": new_content, "branch": GH_BRANCH}
+        if sha:
+            body["sha"] = sha
+        r = requests.put(f"{API}/repos/{GH_REPO}/contents/{REQ_PATH}",
+                         headers=_headers(), json=body, timeout=20)
+        if r.status_code in (200, 201):
+            return True, "已收到需求"
+        return False, f"写入失败 HTTP {r.status_code}: {r.text[:160]}"
+    except Exception as e:
+        return False, f"需求写入异常: {e}"

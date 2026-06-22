@@ -19,6 +19,7 @@ COMMANDS = [
     {"key": "coverage", "kw": ["覆盖", "资产", "标的", "coverage"],      "name": "覆盖",   "desc": "各标的在现货/合约的覆盖情况"},
     {"key": "lookup",   "kw": ["查代码", "查询", "代码", "查", "ticker", "lookup"], "name": "查代码", "desc": "@我 + 代码(如 AVGO)弹出该标的公司行动;只发『查代码』看用法"},
     {"key": "confirm",  "kw": ["确认", "confirm", "已核对"],              "name": "确认",   "desc": "人工确认冲突:确认 CODE [正确值],停报警 + 网页 finalize"},
+    {"key": "request",  "kw": ["需求", "提报", "反馈", "建议", "feature"], "name": "需求提报", "desc": "提需求:需求 你的想法 —— 汇总给负责人用于迭代"},
 ]
 # 注:顺序即匹配优先级 + 展示顺序。帮助不含 "?"(无匹配时默认即回帮助),避免「…?」误判。
 
@@ -427,6 +428,23 @@ def lookup_card(data, ticker, site_url):
         elems.append({"tag": "div", "text": {"tag": "lark_md", "content": "近窗口内暂无公司行动记录。"}})
 
     return _card(f"🔎 {ticker} 公司行动", "blue", elems, site_url, "打开网页面板")
+
+
+# ---------------- 需求提报 ----------------
+def request_card(ok, msg, text="", site_url=""):
+    if ok:
+        content = (f"✅ 需求已收到,谢谢!已汇总给负责人,会排进迭代评估。\n\n你的需求:{text}"
+                   if text else "✅ 需求已收到,谢谢!")
+        tpl = "green"
+    elif text == "":
+        content = "用法:**需求 + 你的想法**,例如「需求 希望增加财报日提醒」。"
+        tpl = "blue"
+    else:
+        content = f"⚠️ 提交未成功:{msg}"
+        tpl = "red"
+    return _card("📝 需求提报", tpl,
+                 [{"tag": "div", "text": {"tag": "lark_md", "content": content}}],
+                 site_url, "打开网页面板")
 
 
 # ---------------- 确认(人工 finalize)----------------

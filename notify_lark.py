@@ -89,6 +89,21 @@ def _md_escape(s):
     return str(s).replace("[", "［").replace("]", "］")
 
 
+def _dates(x):
+    """关键日链:宣告 · 登记 · 除息/生效 · 派发(有哪个显示哪个,与查代码口径一致)。"""
+    lab = "除息" if x.get("etype") == "dividend" else "生效"
+    parts = []
+    if x.get("decl"):
+        parts.append(f"宣告 {x['decl']}")
+    if x.get("record"):
+        parts.append(f"登记 {x['record']}")
+    if x.get("date"):
+        parts.append(f"{lab} {x['date']}")
+    if x.get("pay"):
+        parts.append(f"派发 {x['pay']}")
+    return " · ".join(parts)
+
+
 def _build_card(alerts, meta, dashboard_url=""):
     n_new = len(alerts["new"]); n_round = len(alerts["rounds"])
     n_conf = len(alerts["conflicts"]); n_gap = len(alerts["gaps"])
@@ -120,11 +135,7 @@ def _build_card(alerts, meta, dashboard_url=""):
     # ⏰ 临近预警(运营催办)—— 最优先,放最前
     rl = []
     for x in alerts["rounds"]:
-        dates = f"除息 {x['date']}"
-        if x.get("record"):
-            dates += f" · 登记 {x['record']}"
-        if x.get("pay"):
-            dates += f" · 派发 {x['pay']}"
+        dates = _dates(x)
         val = ""
         if x.get("amount") is not None:
             val = f" ${x['amount']}"
@@ -178,11 +189,7 @@ def _build_card(alerts, meta, dashboard_url=""):
             val = f" ${x['amount']}"
         elif x.get("ratio"):
             val = f" {x['ratio']}"
-        dates = f"除息 {x['date']}"
-        if x.get("record"):
-            dates += f" · 登记 {x['record']}"
-        if x.get("pay"):
-            dates += f" · 派发 {x['pay']}"
+        dates = _dates(x)
         line = (f"• {prod}**{x['ticker']}** {ETYPE_CN.get(x['etype'], x['etype'])}{val} — "
                 f"<font color='red'>还剩 {x['days']} 天</font>　{dates}")
         for rn in x.get("risk", []):

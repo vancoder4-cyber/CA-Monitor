@@ -42,12 +42,18 @@ def _val(x):
 
 
 def _dates(x):
-    s = f"除息 {x['date']}"
+    """关键日链:宣告 · 登记 · 除息/生效 · 派发(有哪个显示哪个,与查代码口径一致)。"""
+    lab = "除息" if x.get("etype") == "dividend" else "生效"
+    parts = []
+    if x.get("decl"):
+        parts.append(f"宣告 {x['decl']}")
     if x.get("record"):
-        s += f" · 登记 {x['record']}"
+        parts.append(f"登记 {x['record']}")
+    if x.get("date"):
+        parts.append(f"{lab} {x['date']}")
     if x.get("pay"):
-        s += f" · 派发 {x['pay']}"
-    return s
+        parts.append(f"派发 {x['pay']}")
+    return " · ".join(parts)
 
 
 def _card(title, template, elements, site_url, btn_text):

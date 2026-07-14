@@ -145,12 +145,15 @@ def build_dashboard(all_groups, source_health, alerts, meta):
                    + "+".join(x["products"]) + "</span> "
         val = (f" ${x['amount']}" if x.get("amount") is not None
                else (f" {x['ratio']}" if x.get("ratio") else ""))
+        # 关键日链:首发 · 宣告 · 登记 · 除息/生效 · 派发(纯文本,外层会 html.escape)
         dates = ""
         if x.get("first"):
-            dates += f"<span style='color:#0969da'>首发 {x['first']}</span> · "
-        dates += f"除息 {x['date']}"
+            dates += f"首发 {x['first']} · "
+        if x.get("decl"):
+            dates += f"宣告 {x['decl']} · "
         if x.get("record"):
-            dates += f" · 登记 {x['record']}"
+            dates += f"登记 {x['record']} · "
+        dates += f"{'除息' if x.get('etype') == 'dividend' else '生效'} {x['date']}"
         if x.get("pay"):
             dates += f" · 派发 {x['pay']}"
         risk = "".join(f"<br><span style='color:#9a6700'>⚠️ {html.escape(r)}</span>" for r in x.get("risk", []))
@@ -184,8 +187,10 @@ def build_dashboard(all_groups, source_health, alerts, meta):
                 if (x.get("ticker"), x.get("etype"), x.get("date")) not in _round_sigs]
     announced_html = alert_block("📣 新公告(刚宣告)", _ann_web, _ann_render)
     def _round_dates(x):
-        bits = [f"除息 {x['date']}"]
+        bits = []
+        if x.get("decl"): bits.append(f"宣告 {x['decl']}")
         if x.get("record"): bits.append(f"登记 {x['record']}")
+        bits.append(f"{'除息' if x.get('etype') == 'dividend' else '生效'} {x['date']}")
         if x.get("pay"): bits.append(f"派发 {x['pay']}")
         return " · ".join(html.escape(b) for b in bits)
     def _round_render(x):
@@ -404,8 +409,11 @@ def build_text_digest(alerts, meta):
         L.append("")
     def _round_line(x):
         prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
-        s = (f"{prod}{x['ticker']} {ETYPE_CN.get(x['etype'],x['etype'])} D-{x['days']} ({x['round']}天轮) | 除息 {x['date']}"
+        lab = "除息" if x.get("etype") == "dividend" else "生效"
+        s = (f"{prod}{x['ticker']} {ETYPE_CN.get(x['etype'],x['etype'])} D-{x['days']} ({x['round']}天轮) |"
+             + (f" 宣告 {x['decl']}" if x.get('decl') else "")
              + (f" 登记 {x['record']}" if x.get('record') else "")
+             + f" {lab} {x['date']}"
              + (f" 派发 {x['pay']}" if x.get('pay') else ""))
         if x.get("ops"):
             s += f"\n      👉 {x['ops']}"

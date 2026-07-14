@@ -7,6 +7,7 @@
 这区分让交叉核对不会把"源不可用"误判成"空缺"。
 """
 import os
+import re
 import json
 import time
 import datetime as dt
@@ -531,6 +532,15 @@ def _pick(x, *names):
     return None
 
 
+def _finx_ratio(r):
+    """FINX 拆股比例 '1-250' → '1:250'(与其它源统一,避免格式造成假冲突)。"""
+    if r is None:
+        return None
+    s = str(r).strip()
+    m = re.fullmatch(r"(\d+)\s*-\s*(\d+)", s)
+    return f"{m.group(1)}:{m.group(2)}" if m else s
+
+
 def fetch_finx(ticker: str, user: str, pwd: str, base: str = "") -> List[SourceResult]:
     base = (base or C.FINX_BASE_DEFAULT).rstrip("/")
     if not (user and pwd):
@@ -572,14 +582,14 @@ def fetch_finx(ticker: str, user: str, pwd: str, base: str = "") -> List[SourceR
         for x in rows:
             if not isinstance(x, dict):
                 continue
-            ratio = _pick(x, "splitRatio", "ratio")
+            ratio = _finx_ratio(_pick(x, "splitRatio", "ratio"))
             evs.append(Event(
                 ticker, "split", "FINX",
                 ex_date=_norm_date(_pick(x, "splitExDate", "exDate")),
                 record_date=_norm_date(_pick(x, "splitRecordDate")),
                 pay_date=_norm_date(_pick(x, "splitPaymentDate", "payDate")),
                 declaration_date=_norm_date(_pick(x, "splitAnnouncement", "splitAnnoucement", "annoucementDate", "announcementDate")),
-                ratio=str(ratio) if ratio is not None else None,
+                ratio=ratio,
                 raw=x))
         out.append(SourceResult("FINX", ticker, "ok", evs))
     except Exception as e:

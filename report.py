@@ -253,6 +253,25 @@ def build_dashboard(all_groups, source_health, alerts, meta):
                   + "; ".join(html.escape(x) for x in g.gaps) + _aged(g))
 
     # 顶部「待人工确认」横幅:不确认就一直在
+    # 规则说明(常驻):让看网页的人知道「为什么有些金额不给数字」「怎么解除」
+    rules_html = (
+        "<details style='background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:10px 14px;margin:12px 0'>"
+        "<summary style='cursor:pointer;font-weight:600'>📖 规则说明:取值口径 · 金额门禁 · 人工确认(点开)</summary>"
+        "<div style='font-size:13px;color:#444;line-height:1.9;margin-top:8px'>"
+        "<b>取值</b>:金额/比例取<b>多数票 + 源优先级</b>(要的是公司宣告的<b>原值</b>)。各源口径不同——"
+        "yfinance 会按拆股回溯调整历史分红、还四舍五入;Alpaca 对 ADR 报的是<b>扣预扣税后的净额</b>"
+        "(如 ASML=gross×0.85 荷兰15%、TSM×0.79 台湾21%)。<br>"
+        "<b>🚦 金额门禁</b>:只有<b>多源交叉验证过且无冲突</b>的金额才显示确定值,否则一律封锁:<br>"
+        "　• <span style='color:#cf222e;font-weight:600'>⚠️各源不一致(a / b)</span> —— 源之间对不上<br>"
+        "　• <span style='color:#bf8700;font-weight:600'>⚠️单源未交叉验证(x)</span> —— 只有 1 个源报,没交叉验证过<br>"
+        "　• <span style='color:#bf8700;font-weight:600'>⚠️未见宣告日</span> —— 单源预估,公司尚未正式公告<br>"
+        "<b>这些数字没人核过,不要拿去执行。</b><br>"
+        "<b>🙋 人工介入(零容忍·不豁免)</b>:异常每次扫描都重报、一直挂着并显示「已挂 N 天」,"
+        "超 3 天没人确认会在推送里 @ 负责人。<b>唯一出口</b>:群里发 "
+        "<code>确认 代码 [正确值]</code>(如 <code>确认 TSM 1.11362</code>)"
+        "→ 门禁解除、停报警、按你给的值显示,并留痕(谁确认、何时)。"
+        "</div></details>")
+
     review_html = ""
     if _rv.get("open"):
         od = _rv.get("overdue", 0)
@@ -401,6 +420,7 @@ def build_dashboard(all_groups, source_health, alerts, meta):
   </table>
 
   <h2>报警</h2>
+  {rules_html}
   {review_html}
   {round_html}
   {announced_html}

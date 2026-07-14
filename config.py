@@ -21,7 +21,7 @@ def _load_dotenv():
 _load_dotenv()
 
 # ---- 业务范围 ----
-# 现货:86 支美股(原 24 + 本轮新上 62;SPCX 已上线故保留)
+# 现货:85 支美股(原 24 + 本轮新上 61;SPCX 已上线故保留;STRC 本轮不上,已下掉)
 # 注:Berkshire B 类代码写作 BRK-B(SEC/yfinance/Tiingo/FMP 都用这个格式;写 BRK.B 会全线抓不到)
 SPOT_TICKERS = {
     "AAOI", "AAPL", "ADBE", "ALAB", "AMAT", "AMD", "AMZN", "ARM", "ASML", "ASTS",
@@ -31,7 +31,7 @@ SPOT_TICKERS = {
     "HD", "HIMS", "HOOD", "HPE", "IBM", "INTC", "IREN", "JPM", "KLAC", "LITE",
     "LLY", "LRCX", "META", "MRVL", "MSFT", "MSTR", "MU", "NBIS", "NFLX", "NOK",
     "NOW", "NVDA", "NVO", "ONDS", "ORCL", "PAYP", "PLTR", "QCOM", "QNT", "RIVN",
-    "RKLB", "SMCI", "SNDK", "SONY", "SPCX", "STRC", "TER", "TSLA", "TSM", "TTWO",
+    "RKLB", "SMCI", "SNDK", "SONY", "SPCX", "TER", "TSLA", "TSM", "TTWO",
     "TXN", "UBER", "V", "WDC", "WMT", "ZM",
 }
 # 合约:22(截图 23 行去掉已下架的 SOXL)
@@ -70,7 +70,7 @@ NAMES = {
     "HOOD": "Robinhood", "CRWV": "CoreWeave", "RKLB": "火箭实验室",
     "MSTR": "微策略", "COIN": "Coinbase", "CRCL": "Circle",
     "HIMS": "Hims & Hers", "SPCX": "SpaceX",
-    # 现货新上(62)—— 推送/卡片仍用代码简写,名称仅作上下文
+    # 现货新上(61)—— 推送/卡片仍用代码简写,名称仅作上下文
     "AAOI": "应用光电", "ADBE": "Adobe", "ALAB": "Astera Labs", "AMAT": "应用材料",
     "ARM": "Arm 控股", "ASML": "阿斯麦", "ASTS": "AST SpaceMobile", "AXTI": "AXT",
     "BABA": "阿里巴巴", "BB": "黑莓", "BE": "Bloom Energy", "BMNR": "Bitmine",
@@ -84,7 +84,7 @@ NAMES = {
     "NOK": "诺基亚", "NOW": "ServiceNow", "NVO": "诺和诺德", "ONDS": "Ondas",
     "ORCL": "甲骨文", "PAYP": "PayPay(日本支付)", "QCOM": "高通",
     "QNT": "Quantinuum(量子计算)", "RIVN": "Rivian", "SMCI": "超微电脑",
-    "SONY": "索尼", "STRC": "Strategy 优先股", "TER": "泰瑞达", "TSM": "台积电",
+    "SONY": "索尼", "TER": "泰瑞达", "TSM": "台积电",
     "TTWO": "Take-Two", "TXN": "德州仪器", "UBER": "优步", "V": "Visa",
     "WDC": "西部数据", "WMT": "沃尔玛", "ZM": "Zoom",
     # 合约
@@ -149,6 +149,18 @@ SHORT_HISTORY_GAP_DAYS = 45
 #   True         = 静默建基线(记为已见但不推)—— 不刷屏,只从此以后的新事件才报
 # 上 62 个新现货那次实测:False → 72 条新发现;True → 0 条。
 BASELINE_NEW_TICKERS = False
+
+# 字段取值的源优先级(多数票平票时用)。我们要的是「公司实际宣告的原值」:
+#   - yfinance 会按拆股回溯调整历史分红(KLAC 10:1 后 2.3 被报成 0.23),且四舍五入到 3 位
+#   - Alpaca 对 ADR 报的是扣预扣税后的净额(ASML=gross×0.85 荷兰15%;TSM 台湾21%)
+# 所以把「报宣告原值」的源排前面。
+SRC_PRIORITY = ["Nasdaq", "FINX", "FMP", "Tiingo", "AlphaVantage", "SEC", "yfinance", "Alpaca"]
+
+# ---- 人工介入闭环(不做口径豁免:每条异常都必须有人看过并「确认」)----
+# 异常 = 字段冲突 / 数据空缺 / 待执行里「未见宣告日的单源预估」。
+# 每条异常记录「首次出现日」,算出挂了多少天没人确认;超过下面的天数就在推送里 @ 负责人升级。
+# 消解方式只有一个:群里发「确认 代码 [正确值]」——不豁免、不自动消失。
+REVIEW_ESCALATE_DAYS = 3
 
 # ---- 预警节奏(距除息日天数,临近时只触发"最接近的一轮")----
 ALERT_ROUNDS = [30, 14, 7, 3, 1]

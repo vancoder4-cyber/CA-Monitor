@@ -53,8 +53,8 @@ python run.py build                       # 用缓存合并 → dashboard.html +
 
 ## 配置(`config.py`)
 
-- `SPOT_TICKERS` / `CONTRACT_TICKERS` —— 现货 **86 个股** / 合约 22(含 ETF 与商品/海外)
-- `TICKERS` —— 实际监控标的 **89 支**(现货 86 个股 + QQQ/EWY/DRAM 三个 ETF;商品/海外列入覆盖但不监控)
+- `SPOT_TICKERS` / `CONTRACT_TICKERS` —— 现货 **85 个股** / 合约 22(含 ETF 与商品/海外)
+- `TICKERS` —— 实际监控标的 **88 支**(现货 85 个股 + QQQ/EWY/DRAM 三个 ETF;商品/海外列入覆盖但不监控)
   - 代码格式坑:Berkshire B 类必须写 **`BRK-B`**(SEC/yfinance/Tiingo/FMP 都用这个;写 `BRK.B` 会全线抓不到)
   - `BASELINE_NEW_TICKERS` —— 新标的首次纳入时,历史事件是否静默建基线。`False`(默认)= 照常推「新发现」(上一批新标的会刷屏但能看全);`True` = 记为已见但不推(不刷屏)。上 62 个新现货实测:False→72 条,True→0 条
 - `ALERT_ROUNDS` —— 预警节奏 `[30,14,7,3,1]`
@@ -172,8 +172,8 @@ LARK_NOTIFY_EMPTY=0   # 1=没预警也推一条
 
 ## 免费源额度提醒(生产注意)
 
-- **Alpha Vantage** 免费 25 次/天:89 支远超额,代码已限量(`av_limit=24`,只给前 24 支)+ 限流自动标「不可用」。生产建议升级或仅作补充。
-- **抓取耗时**:89 支 × 8 并发 ≈ 3–4 分钟(原 27 支约 1 分钟),Action 时长会相应变长。
+- **Alpha Vantage** 免费 25 次/天:88 支远超额,代码已限量(`av_limit=24`,只给前 24 支)+ 限流自动标「不可用」。生产建议升级或仅作补充。
+- **抓取耗时**:88 支 × 8 并发 ≈ 3–4 分钟(原 27 支约 1 分钟),Action 时长会相应变长。
 - **FMP** 免费版对部分票返回 402(额度/覆盖限制),已按「不可用」处理。要全覆盖需付费档。
 - **yfinance / Nasdaq / Tiingo / Alpaca** 实测对个股稳定全绿,是当前核对主力。
 

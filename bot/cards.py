@@ -34,6 +34,12 @@ def parse_command(text):
 
 
 def _val(x):
+    """金额/比例门禁:有未确认冲突 → 不给确定值,标『待人工确认·勿据此执行』。
+    人工发「确认 代码 值」消解冲突后,才恢复显示确定值。"""
+    if x.get("disputed"):
+        vals = x.get("dispute_vals") or {}
+        pairs = " / ".join(str(v) for v in dict.fromkeys(vals.values()))
+        return f" <font color='red'>⚠️各源不一致({pairs})· 待人工确认,勿据此执行</font>"
     if x.get("amount") is not None:
         return f" ${x['amount']}"
     if x.get("ratio"):
@@ -127,7 +133,7 @@ def about_card(data, site_url):
     gen = data.get("generated", "")
     content = (
         "**CA问答助手** —— 公司行动(Corporate Actions)监控\n"
-        "盯 **现货(86 支美股)+ 合约范围(22 个)**标的的:分红 / 拆股·合股 / 并购 / 分拆 / 退市·代码变更。"
+        "盯 **现货(85 支美股)+ 合约范围(22 个)**标的的:分红 / 拆股·合股 / 并购 / 分拆 / 退市·代码变更。"
         "合约里的 ETF(QQQ/EWY/DRAM)监控分红;商品/海外(XAU/WTI/SKHYNIX 等)无公司行动,仅列入覆盖。\n\n"
         "**数据源(7 主力 + FINX 接入中,多源交叉核对·零容忍)**\n"
         "yfinance · FMP · Alpha Vantage · Nasdaq · Tiingo · Alpaca · SEC EDGAR · FINX(TRKD-HS,配置凭证后启用)\n\n"

@@ -88,6 +88,20 @@ def _fmt_key_dates(g):
     return "<br>".join(rows)
 
 
+
+def _val_html(x):
+    """金额/比例门禁(官网):未确认冲突 → 不给确定值。"""
+    if x.get("disputed"):
+        vals = x.get("dispute_vals") or {}
+        pairs = " / ".join(str(v) for v in dict.fromkeys(vals.values()))
+        return ("<span style='color:#cf222e;font-weight:700'> ⚠️各源不一致(" + html.escape(pairs)
+                + ")· 待人工确认,勿据此执行</span>")
+    if x.get("amount") is not None:
+        return html.escape(f" ${x['amount']}")
+    if x.get("ratio"):
+        return html.escape(f" {x['ratio']}")
+    return ""
+
 def build_dashboard(all_groups, source_health, alerts, meta):
     today = dt.date.today()
     rows_html = []
@@ -143,8 +157,7 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         if x.get("products"):
             prod = "<span style='background:#eef;color:#3538cd;border-radius:4px;padding:0 6px;font-size:12px'>" \
                    + "+".join(x["products"]) + "</span> "
-        val = (f" ${x['amount']}" if x.get("amount") is not None
-               else (f" {x['ratio']}" if x.get("ratio") else ""))
+        val = _val_html(x)
         # 关键日链:首发 · 宣告 · 登记 · 除息/生效 · 派发(纯文本,外层会 html.escape)
         dates = ""
         if x.get("first"):
@@ -156,7 +169,12 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         dates += f"{'除息' if x.get('etype') == 'dividend' else '生效'} {x['date']}"
         if x.get("pay"):
             dates += f" · 派发 {x['pay']}"
-        risk = "".join(f"<br><span style='color:#9a6700'>⚠️ {html.escape(r)}</span>" for r in x.get("risk", []))
+        unconf = ""
+        if not x.get("confirmed", True):
+            unconf = ("<br><span style='color:#bf8700;font-weight:600'>⚠️ 未见宣告日,仅 "
+                      + html.escape("/".join(x.get("srcs") or []))
+                      + " 单源(可能是预估,公司尚未正式公告)—— 请勿据此执行</span>")
+        risk = unconf + "".join(f"<br><span style='color:#9a6700'>⚠️ {html.escape(r)}</span>" for r in x.get("risk", []))
         ref = ""
         if x.get("etype") == "dividend":
             if x.get("decl_url"):
@@ -166,7 +184,7 @@ def build_dashboard(all_groups, source_health, alerts, meta):
             else:
                 ref = (f"<br><a href='https://www.nasdaq.com/market-activity/stocks/{x['ticker'].lower()}/dividend-history'"
                        f" target='_blank' rel='noopener'>🔗 Nasdaq 分红记录 ↗</a>")
-        return (f"{prod}<b>{x['ticker']}</b> {ETYPE_CN.get(x['etype'], x['etype'])}{html.escape(val)} — "
+        return (f"{prod}<b>{x['ticker']}</b> {ETYPE_CN.get(x['etype'], x['etype'])}{val} — "
                 f"<b style='color:#cf222e'>还剩 {x['days']} 天</b>　<span style='color:#555;font-size:12px'>{html.escape(dates)}</span>{risk}{ref}")
     pending_html = alert_block("⏳ 待执行(已公告未发生,持续提醒)", alerts.get("pending", []), _pending_render)
 
@@ -176,10 +194,9 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         if x.get("products"):
             prod = "<span style='background:#eef;color:#3538cd;border-radius:4px;padding:0 6px;font-size:12px'>" \
                    + "+".join(x["products"]) + "</span> "
-        val = (f" ${x['amount']}" if x.get("amount") is not None
-               else (f" {x['ratio']}" if x.get("ratio") else ""))
+        val = _val_html(x)
         days = f" · <b style='color:#cf222e'>还剩 {x['days']} 天</b>" if x.get("days") is not None else ""
-        return (f"{prod}<b>{x['ticker']}</b> {ETYPE_CN.get(x['etype'], x['etype'])}{html.escape(val)} — "
+        return (f"{prod}<b>{x['ticker']}</b> {ETYPE_CN.get(x['etype'], x['etype'])}{val} — "
                 f"<span style='color:#0969da'>宣告 {x.get('decl')}</span> · 除息 {x['date']}{days}")
     # 网页报警去重:已在「临近预警(催办)」里的事件,不在「新公告」重复;「待执行」整块由时间线覆盖,不再单列
     _round_sigs = {(x.get("ticker"), x.get("etype"), x.get("date")) for x in alerts.get("rounds", [])}
@@ -204,10 +221,38 @@ def build_dashboard(all_groups, source_health, alerts, meta):
             s += f"<br><span style='color:#9a6700'>🛡 {html.escape(x['risk_copy'])}</span>"
         return s
     round_html = alert_block("⏰ 临近预警(运营催办)", alerts["rounds"], _round_render)
-    conf_html = alert_block("❗ 字段冲突(零容忍)", alerts["conflicts"],
-        lambda g: f"<b>{g.ticker}</b> {ETYPE_CN.get(g.etype,g.etype)} {g.anchor_date}: " + "; ".join(html.escape(c) for c in g.conflicts))
-    gap_html = alert_block("🕳 数据空缺", alerts["gaps"],
-        lambda g: f"<b>{g.ticker}</b> {ETYPE_CN.get(g.etype,g.etype)} {g.anchor_date}: " + "; ".join(html.escape(x) for x in g.gaps))
+    # 零容忍:不做口径豁免。挂着就一直报,只有人工「确认」能消解 —— 挂越久标记越醒目。
+    _rv = alerts.get("review") or {}
+    _esc = _rv.get("escalate_days", 3)
+
+    def _aged(g):
+        a = getattr(g, "age_days", 0) or 0
+        if a >= _esc:
+            return (f" <span style='color:#cf222e;font-weight:700'>⏳已挂 {a} 天未确认</span>")
+        return f" <span style='color:#888;font-size:12px'>已挂 {a} 天</span>" if a else ""
+
+    conf_html = alert_block("❗ 字段冲突(零容忍 · 需人工确认)", alerts["conflicts"],
+        lambda g: f"<b>{g.ticker}</b> {ETYPE_CN.get(g.etype,g.etype)} {g.anchor_date}: "
+                  + "; ".join(html.escape(c) for c in g.conflicts) + _aged(g))
+    gap_html = alert_block("🕳 数据空缺(需人工确认)", alerts["gaps"],
+        lambda g: f"<b>{g.ticker}</b> {ETYPE_CN.get(g.etype,g.etype)} {g.anchor_date}: "
+                  + "; ".join(html.escape(x) for x in g.gaps) + _aged(g))
+
+    # 顶部「待人工确认」横幅:不确认就一直在
+    review_html = ""
+    if _rv.get("open"):
+        od = _rv.get("overdue", 0)
+        bg, bd = ("#fff5f5", "#cf222e") if od else ("#fffbe6", "#bf8700")
+        over = (f"<br><b style='color:#cf222e'>其中 {od} 条已超过 {_esc} 天没人确认(推送会 @ 负责人)</b>"
+                if od else "")
+        review_html = (
+            f"<div style='background:{bg};border-left:4px solid {bd};padding:12px 14px;border-radius:6px;margin:12px 0'>"
+            f"<b style='font-size:15px'>🙋 待人工确认 {_rv['open']} 条</b>"
+            f"　<span style='color:#555'>字段冲突 {_rv.get('conflicts',0)} · 数据空缺 {_rv.get('gaps',0)} ·"
+            f" 未宣告预估 {_rv.get('unconfirmed',0)}　最久已挂 <b>{_rv.get('max_age',0)}</b> 天</span>{over}"
+            f"<div style='color:#555;font-size:13px;margin-top:6px'>零容忍:<b>不做口径豁免</b>。"
+            f"核对后在群里发 <code>确认 代码 [正确值]</code>(例:<code>确认 TSM 1.11362</code>)才会消解;"
+            f"不确认则每次扫描都会继续报。</div></div>")
 
     def _resolved_render(r):
         v = f" · 以 <b>{html.escape(str(r['value']))}</b> 为准" if r.get("value") else ""
@@ -342,6 +387,7 @@ def build_dashboard(all_groups, source_health, alerts, meta):
   </table>
 
   <h2>报警</h2>
+  {review_html}
   {round_html}
   {announced_html}
   {pending_html}
@@ -433,16 +479,14 @@ def build_text_digest(alerts, meta):
 
     def _ann_line(x):
         prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
-        val = (f" ${x['amount']}" if x.get("amount") is not None
-               else (f" {x['ratio']}" if x.get("ratio") else ""))
+        val = _val_html(x)
         d = f" 还剩{x['days']}天" if x.get("days") is not None else ""
         return f"{prod}{x['ticker']} {ETYPE_CN.get(x['etype'],x['etype'])}{val} 宣告 {x.get('decl')} · 除息 {x['date']}{d}"
     sec("新公告(刚宣告)", _ann, _ann_line)
 
     def _pending_line(x):
         prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
-        val = (f" ${x['amount']}" if x.get("amount") is not None
-               else (f" {x['ratio']}" if x.get("ratio") else ""))
+        val = _val_html(x)
         s = f"{prod}{x['ticker']} {ETYPE_CN.get(x['etype'],x['etype'])}{val} 还剩{x['days']}天 · 除息 {x['date']}"
         if x.get("record"):
             s += f" 登记 {x['record']}"
@@ -454,9 +498,9 @@ def build_text_digest(alerts, meta):
     sec("待执行(已公告未发生,持续提醒)", _pend, _pending_line)
     sec("新发现事件", alerts["new"],
         lambda g: f"{g.ticker} {ETYPE_CN.get(g.etype,g.etype)} {g.anchor_date} {(_strip(g))}")
-    sec("字段冲突(零容忍)", alerts["conflicts"],
+    sec("字段冲突(零容忍·需人工确认)", alerts["conflicts"],
         lambda g: f"{g.ticker} {ETYPE_CN.get(g.etype,g.etype)} {g.anchor_date}: " + "; ".join(g.conflicts))
-    sec("数据空缺", alerts["gaps"],
+    sec("数据空缺(需人工确认)", alerts["gaps"],
         lambda g: f"{g.ticker} {ETYPE_CN.get(g.etype,g.etype)} {g.anchor_date}: " + "; ".join(g.gaps))
     return "\n".join(L)
 

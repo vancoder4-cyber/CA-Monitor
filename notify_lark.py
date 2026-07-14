@@ -104,6 +104,20 @@ def _dates(x):
     return " · ".join(parts)
 
 
+
+def _val(x):
+    """金额/比例门禁:有未确认冲突 → 不给确定值,标『待人工确认·勿据此执行』。
+    人工「确认」后冲突消解,才会恢复显示确定值。"""
+    if x.get("disputed"):
+        vals = x.get("dispute_vals") or {}
+        pairs = " / ".join(f"{v}" for v in dict.fromkeys(vals.values()))
+        return f" <font color='red'>⚠️各源不一致({pairs})· 待人工确认,勿据此执行</font>"
+    if x.get("amount") is not None:
+        return f" ${x['amount']}"
+    if x.get("ratio"):
+        return f" {x['ratio']}"
+    return ""
+
 def _build_card(alerts, meta, dashboard_url=""):
     n_new = len(alerts["new"]); n_round = len(alerts["rounds"])
     n_conf = len(alerts["conflicts"]); n_gap = len(alerts["gaps"])
@@ -132,15 +146,25 @@ def _build_card(alerts, meta, dashboard_url=""):
         elements.append({"tag": "div", "text": {"tag": "lark_md",
                         "content": f"**{title}**\n{body}{more}"}})
 
-    # ⏰ 临近预警(运营催办)—— 最优先,放最前
+    # 🙋 待人工确认(不豁免:挂着就一直报,只有「确认」能消解)—— 超期则 @ 人升级
+    _rv = alerts.get("review") or {}
+    _esc = _rv.get("escalate_days", 3)
+    if _rv.get("open"):
+        _m = _load_mentions()
+        head = (f"🙋 **待人工确认 {_rv['open']} 条**"
+                f"(冲突 {_rv.get('conflicts',0)} · 空缺 {_rv.get('gaps',0)} · 未宣告预估 {_rv.get('unconfirmed',0)})"
+                f"　最久已挂 **{_rv.get('max_age',0)} 天**")
+        if _rv.get("overdue") and _m:
+            head = (_at_tags(_m) + f" ❗ 有 **{_rv['overdue']}** 条异常超过 {_esc} 天没人确认,请尽快处理\n" + head)
+        head += "\n　👉 核对后在群里发 **确认 代码 [正确值]**(例:`确认 TSM 1.11362`)即可消解;不确认会一直报。"
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": head}})
+        elements.append({"tag": "hr"})
+
+    # ⏰ 临近预警(运营催办)
     rl = []
     for x in alerts["rounds"]:
         dates = _dates(x)
-        val = ""
-        if x.get("amount") is not None:
-            val = f" ${x['amount']}"
-        elif x.get("ratio"):
-            val = f" {x['ratio']}"
+        val = _val(x)
         prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
         line = (f"• {prod}**{x['ticker']}** {ETYPE_CN.get(x['etype'], x['etype'])}{val} — "
                 f"<font color='red'>D-{x['days']}</font>({x['round']}天轮)　{dates}")
@@ -168,11 +192,7 @@ def _build_card(alerts, meta, dashboard_url=""):
             continue
         claimed.add(_sig(x))
         prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
-        val = ""
-        if x.get("amount") is not None:
-            val = f" ${x['amount']}"
-        elif x.get("ratio"):
-            val = f" {x['ratio']}"
+        val = _val(x)
         days = f" · <font color='red'>还剩 {x['days']} 天</font>" if x.get("days") is not None else ""
         al.append(f"• {prod}**{x['ticker']}** {ETYPE_CN.get(x['etype'], x['etype'])}{val} —— "
                   f"宣告 {x.get('decl')} · 除息 {x['date']}{days}")
@@ -184,27 +204,32 @@ def _build_card(alerts, meta, dashboard_url=""):
         if _sig(x) in claimed:
             continue
         prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
-        val = ""
-        if x.get("amount") is not None:
-            val = f" ${x['amount']}"
-        elif x.get("ratio"):
-            val = f" {x['ratio']}"
+        val = _val(x)
         dates = _dates(x)
         line = (f"• {prod}**{x['ticker']}** {ETYPE_CN.get(x['etype'], x['etype'])}{val} — "
                 f"<font color='red'>还剩 {x['days']} 天</font>　{dates}")
+        if not x.get("confirmed", True):
+            line += (f"\n　⚠️ <font color='orange'>未见宣告日,仅 {'/'.join(x.get('srcs') or [])} 单源"
+                     f"(可能是预估,公司尚未正式公告)—— 请勿据此执行</font>")
         for rn in x.get("risk", []):
             line += f"\n　⚠️ {rn}"
         line += _refs(x["ticker"], x["etype"], decl_url=x.get("decl_url"), ir_url=x.get("ir_url"))
         pl.append(line)
     section("⏳ 待执行(已公告未发生)", pl)
 
-    # 字段冲突
+    # 字段冲突(零容忍:不豁免,每次都报,直到人工「确认」)
+    def _aged(g):
+        a = getattr(g, "age_days", 0) or 0
+        if a >= _esc:
+            return f"　<font color='red'>⏳已挂 {a} 天未确认</font>"
+        return f"　<font color='grey'>已挂 {a} 天</font>" if a else ""
     cl = [f"• **{g.ticker}** {ETYPE_CN.get(g.etype, g.etype)} {g.anchor_date}:"
-          f" {_md_escape('; '.join(g.conflicts))}{_refs(g.ticker, g.etype, g)}" for g in alerts["conflicts"]]
-    section("❗ 字段冲突(零容忍)", cl)
+          f" {_md_escape('; '.join(g.conflicts))}{_aged(g)}{_refs(g.ticker, g.etype, g)}"
+          for g in alerts["conflicts"]]
+    section("❗ 字段冲突(零容忍 · 需人工确认)", cl)
 
-    # 数据空缺
-    gl = [f"• **{g.ticker}** {ETYPE_CN.get(g.etype, g.etype)} {g.anchor_date}:"
+    # 数据空缺(同样需人工确认)
+    gl = [f"• **{g.ticker}** {ETYPE_CN.get(g.etype, g.etype)} {g.anchor_date}{_aged(g)}:"
           f" {_md_escape('; '.join(g.gaps))}" for g in alerts["gaps"]]
     section("🕳 数据空缺", gl)
 

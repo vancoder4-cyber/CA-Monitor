@@ -10,6 +10,7 @@
 """
 import os, sys, json, re, datetime as dt
 import requests
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import config as C
 import sources as S
@@ -225,7 +226,28 @@ def build():
                 gaps.append(g)
 
             def _pk(f, _g=g):
-                return next((v.get(f) for v in _g.by_source.values() if v.get(f)), None)
+                """取字段值:多数票优先,平票按源优先级。
+
+                不能用「第一个源赢」——源的顺序不代表谁对,会踩三个坑:
+                  1) yfinance 会按拆股回溯调整历史分红(KLAC 10:1 后把 2.3 报成 0.23)
+                  2) yfinance 四舍五入到 3 位(0.2475 → 0.248)
+                  3) Alpaca 对 ADR 报的是扣预扣税后的净额(ASML 3.16845×0.85=2.693;TSM 台湾 21%)
+                我们要的是「公司实际宣告的原值」,所以 Nasdaq/FINX/FMP 优先于 yfinance/Alpaca。
+                """
+                vals = [(s, v.get(f)) for s, v in _g.by_source.items() if v.get(f) is not None]
+                if not vals:
+                    return None
+                cnt = Counter(v for _, v in vals)
+                top = cnt.most_common(1)[0][1]
+                winners = [v for v, n in cnt.items() if n == top]
+                if len(winners) == 1:
+                    return winners[0]
+                # 平票:按源优先级挑(报「宣告原值」更可靠的源在前)
+                for s in C.SRC_PRIORITY:
+                    for src, v in vals:
+                        if src == s and v in winners:
+                            return v
+                return vals[0][1]
 
             # 📣 新公告:首次出现 declaration date 即推送(即使之前见过其预估)
             decl = _pk("declaration_date")
@@ -242,11 +264,16 @@ def build():
 
             if g.is_future and g.etype != "filing" and g.days_to is not None:
                 # 持续推送:所有"已公告未执行"事件,每次跑都列出(带 D-天数 + 产品 + 风控提示)
+                _decl = _pk("declaration_date")
+                # 「真·已宣告」判定:有宣告日,或 ≥2 源都有这个事件。
+                # 否则多半是单源(Alpaca)按节奏推的**预估**,公司并未实际公告 —— 不能当已公告让运营去准备。
+                _confirmed = bool(_decl) or len(g.by_source) >= 2
                 pending.append({"ticker": g.ticker, "etype": g.etype, "date": g.anchor_date,
                                 "days": g.days_to, "status": g.status,
-                                "decl": _pk("declaration_date"), "record": _pk("record_date"),
+                                "decl": _decl, "record": _pk("record_date"),
                                 "pay": _pk("pay_date"), "amount": _pk("amount"), "ratio": _pk("ratio"),
-                                "first": _pk("declaration_date") or seen.get(s),
+                                "first": _decl or seen.get(s),
+                                "confirmed": _confirmed, "srcs": sorted(g.by_source.keys()),
                                 "products": C.product_tags(g.ticker), "risk": C.risk_note(g.ticker, g.etype)})
                 done = set(fired.get(s, []))
                 # 只触发「最接近的一轮」:跨过的更大轮次一并标记,避免补推一堆
@@ -302,8 +329,47 @@ def build():
             e["decl_url"] = match_decl_8k(_sec8k, e["ticker"], e.get("decl"))
             e["ir_url"] = _ir_map.get(e["ticker"], "")
 
+    # ---- 人工介入闭环:每条异常挂多久没人确认(不豁免、不自动消失、每次跑都重报)----
+    # 异常 = 字段冲突 / 数据空缺 / 待执行里「未见宣告日的单源预估」。
+    # 唯一消解方式:群里发「确认 代码 [正确值]」。挂越久越显眼,超 REVIEW_ESCALATE_DAYS 天在推送里 @ 人升级。
+    review = state.setdefault("review", {})
+    today_d = dt.date.today()
+
+    def _age(key):
+        first = review.get(key)
+        if not first:
+            review[key] = today
+            return 0
+        try:
+            return (today_d - dt.date.fromisoformat(first)).days
+        except Exception:
+            return 0
+
+    unconfirmed = [x for x in pending if not x.get("confirmed", True)]
+    open_keys = set()
+    for g in conflicts:
+        k = f"{sig(g)}#conflict"; open_keys.add(k); g.age_days = _age(k)
+    for g in gaps:
+        k = f"{sig(g)}#gap"; open_keys.add(k); g.age_days = _age(k)
+    for x in unconfirmed:
+        k = f"{x['ticker']}|{x['etype']}|{x['date']}#unconfirmed"
+        open_keys.add(k); x["age_days"] = _age(k)
+    # 已被人工确认 / 事件已消失的,从待办里清掉(只有这两种情况才会消失)
+    for k in list(review):
+        if k not in open_keys:
+            review.pop(k, None)
+
+    ages = ([g.age_days for g in conflicts] + [g.age_days for g in gaps]
+            + [x["age_days"] for x in unconfirmed])
+    esc = C.REVIEW_ESCALATE_DAYS
+    review_summary = {"open": len(open_keys), "overdue": sum(1 for a in ages if a >= esc),
+                      "max_age": max(ages) if ages else 0, "escalate_days": esc,
+                      "conflicts": len(conflicts), "gaps": len(gaps),
+                      "unconfirmed": len(unconfirmed)}
+
     alerts = {"new": new_events, "rounds": round_alerts, "conflicts": conflicts,
-              "gaps": gaps, "pending": pending, "announced": announced, "resolved": resolved}
+              "gaps": gaps, "pending": pending, "announced": announced, "resolved": resolved,
+              "review": review_summary}
     meta = {"generated": _now_label()}
 
     # 单页站点:日历 + 预警面板(标签切换)
@@ -350,6 +416,24 @@ def build():
             if e["ticker"] == a["ticker"] and (not a.get("date") or e.get("date") == a.get("date")):
                 if e.get("etype") == "dividend":
                     e["amount"] = v
+
+    # ---- 金额门禁:仍有「未确认冲突」的事件,金额/比例不是权威值,三面都不得当确定值展示 ----
+    # 人已确认的不在 conflicts 里(上面已用确认值覆盖),所以不会被 gate —— 只有没人确认的才封。
+    # 目的:防止运营照着一个各源都对不上、还没人核过的数字去执行。
+    _disputed = {}
+    for g in conflicts:
+        vals = {}
+        for s, v in g.by_source.items():
+            x = v.get("amount") if v.get("amount") is not None else v.get("ratio")
+            if x is not None:
+                vals[s] = x
+        _disputed[sig(g)] = {"detail": "; ".join(g.conflicts), "vals": vals}
+    for e in calendar_events + pending + announced:
+        d = _disputed.get(f"{e['ticker']}|{e['etype']}|{e.get('date')}")
+        if d:
+            e["disputed"] = True
+            e["dispute_vals"] = d["vals"]
+            e["dispute_detail"] = d["detail"]
 
     # 资产覆盖(现货/合约 × 标的类型 × 是否监控)
     TYPE_CN = {"equity": "个股", "etf": "ETF", "commodity": "商品/外汇", "foreign": "海外股"}

@@ -36,7 +36,11 @@ def parse_command(text):
 def _val(x):
     """金额/比例门禁:有未确认冲突 → 不给确定值,标『待人工确认·勿据此执行』。
     人工发「确认 代码 值」消解冲突后,才恢复显示确定值。"""
-    if x.get("disputed"):
+    if not x.get("acked") and not x.get("disputed") and (x.get("amt_srcs") or 0) == 1 and (
+            x.get("amount") is not None or x.get("ratio")):
+        v = x.get("amount") if x.get("amount") is not None else x.get("ratio")
+        return f" <font color='orange'>⚠️单源未交叉验证({v})· 待人工确认,勿据此执行</font>"
+    if x.get("disputed") and not x.get("acked"):
         vals = x.get("dispute_vals") or {}
         pairs = " / ".join(str(v) for v in dict.fromkeys(vals.values()))
         return f" <font color='red'>⚠️各源不一致({pairs})· 待人工确认,勿据此执行</font>"

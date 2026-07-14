@@ -5,6 +5,7 @@ import html
 import calendar as _cal
 import datetime as dt
 import config as C
+import reconcile as R
 
 
 def load_changelog():
@@ -44,8 +45,8 @@ ETYPE_CN = {"dividend": "分红", "split": "拆股", "filing": "并购/公告"}
 
 
 def _pick(g, field):
-    """从各源里取第一个非空值。"""
-    return next((v.get(field) for v in g.by_source.values() if v.get(field)), None)
+    """取值:多数票 + 源优先级(唯一真相在 reconcile.pick_value)。"""
+    return R.pick_value(g.by_source, field)
 
 
 def _sec_url(g):
@@ -54,11 +55,19 @@ def _sec_url(g):
 
 
 def _fmt_event_fields(g):
-    """金额/比例(详情列用)。"""
+    """金额/比例(详情列用):未确认冲突 → 不给确定值。"""
     if g.etype == "filing":
         return html.escape(g.note or "")
+    if R.is_disputed(g):
+        vals = [v.get("amount") if v.get("amount") is not None else v.get("ratio")
+                for v in g.by_source.values()]
+        vals = [str(v) for v in dict.fromkeys(v for v in vals if v is not None)]
+        return ("<span style='color:#cf222e;font-weight:700'>⚠️各源不一致(" + html.escape(" / ".join(vals))
+                + ")· 待人工确认</span>")
     parts = []
-    amt = next((v.get("amount") for v in g.by_source.values() if v.get("amount") is not None), None)
+    amt = getattr(g, "ack_value", None)
+    if amt is None:
+        amt = _pick(g, "amount")
     ratio = _pick(g, "ratio")
     if amt is not None:
         parts.append(f"金额 <b>${amt}</b>")
@@ -90,8 +99,13 @@ def _fmt_key_dates(g):
 
 
 def _val_html(x):
-    """金额/比例门禁(官网):未确认冲突 → 不给确定值。"""
-    if x.get("disputed"):
+    """金额/比例门禁(官网):未确认冲突 / 单源未交叉验证 → 一律不给确定值。"""
+    if not x.get("acked") and not x.get("disputed") and (x.get("amt_srcs") or 0) == 1 and (
+            x.get("amount") is not None or x.get("ratio")):
+        v = x.get("amount") if x.get("amount") is not None else x.get("ratio")
+        return ("<span style='color:#bf8700;font-weight:700'> ⚠️单源未交叉验证(" + html.escape(str(v))
+                + ")· 待人工确认,勿据此执行</span>")
+    if x.get("disputed") and not x.get("acked"):
         vals = x.get("dispute_vals") or {}
         pairs = " / ".join(str(v) for v in dict.fromkeys(vals.values()))
         return ("<span style='color:#cf222e;font-weight:700'> ⚠️各源不一致(" + html.escape(pairs)
@@ -508,8 +522,10 @@ def build_text_digest(alerts, meta):
 def _strip(g):
     if g.etype == "filing":
         return g.note or ""
-    amt = next((v.get("amount") for v in g.by_source.values() if v.get("amount") is not None), None)
-    ratio = next((v.get("ratio") for v in g.by_source.values() if v.get("ratio")), None)
+    if R.is_disputed(g):
+        return "⚠️各源不一致·待确认"
+    amt = _pick(g, "amount")
+    ratio = _pick(g, "ratio")
     return (f"${amt}" if amt is not None else "") + (f" {ratio}" if ratio else "")
 
 
@@ -544,12 +560,20 @@ def _collect_calendar_marks(all_groups, start, end):
                                         "tip": f"{g.ticker} {note}(点击看 SEC 原文)",
                                         "url": _sec_url(g)})
                 continue
-            amt = _pick(g, "amount")
+            amt = getattr(g, "ack_value", None)
+            if amt is None:
+                amt = _pick(g, "amount")
             ratio = _pick(g, "ratio")
             ex, rec, pay = g.anchor_date, _pick(g, "record_date"), _pick(g, "pay_date")
             decl = _pick(g, "declaration_date")
             first = getattr(g, "first_announced", None)
-            val = (f"${amt}" if amt is not None else "") + (f" {ratio}" if ratio else "")
+            # 门禁:未确认冲突 / 单源未交叉验证 → 格子里不给确定数字
+            if R.is_disputed(g):
+                val = "⚠️待确认"
+            elif R.n_src(g.by_source, "amount") == 1 and amt is not None and not getattr(g, "acked", False):
+                val = "⚠️单源"
+            else:
+                val = (f"${amt}" if amt is not None else "") + (f" {ratio}" if ratio else "")
             tip = f"{g.ticker} {CAL_TYPE[g.etype]['label']} {val} | 首发 {first or '—'} · 宣告 {decl or '—'} · 除息 {ex or '—'} · 登记 {rec or '—'} · 派发 {pay or '—'} | {STATUS_CN.get(g.status)}"
             add(ex, {"tk": g.ticker, "kind": "ex", "etype": g.etype, "status": g.status,
                      "text": f"{val}", "tip": tip})

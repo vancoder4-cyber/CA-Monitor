@@ -201,6 +201,19 @@ def build():
         all_groups[tk] = [R.EventGroup.from_dict(x) for x in d["groups"]]
         source_health[tk] = d["health"]
 
+    # 人工确认:给「所有」匹配的事件组打 acked —— 不只是冲突,单源事件也要能被人工放行
+    acks = load_acknowledged()
+    if acks:
+        for _tk, _gs in all_groups.items():
+            for _g in _gs:
+                _a = _ack_match(acks, _g.ticker, _g.anchor_date)
+                if _a:
+                    _g.acked = True
+                    try:
+                        _g.ack_value = float(_a["value"]) if _a.get("value") not in (None, "") else None
+                    except Exception:
+                        _g.ack_value = None
+
     state = load_state()
     seen, fired, declared = state["seen"], state["fired_rounds"], state["declared"]
     today = dt.date.today().isoformat()
@@ -226,28 +239,12 @@ def build():
                 gaps.append(g)
 
             def _pk(f, _g=g):
-                """取字段值:多数票优先,平票按源优先级。
+                return R.pick_value(_g.by_source, f)
 
-                不能用「第一个源赢」——源的顺序不代表谁对,会踩三个坑:
-                  1) yfinance 会按拆股回溯调整历史分红(KLAC 10:1 后把 2.3 报成 0.23)
-                  2) yfinance 四舍五入到 3 位(0.2475 → 0.248)
-                  3) Alpaca 对 ADR 报的是扣预扣税后的净额(ASML 3.16845×0.85=2.693;TSM 台湾 21%)
-                我们要的是「公司实际宣告的原值」,所以 Nasdaq/FINX/FMP 优先于 yfinance/Alpaca。
-                """
-                vals = [(s, v.get(f)) for s, v in _g.by_source.items() if v.get(f) is not None]
-                if not vals:
-                    return None
-                cnt = Counter(v for _, v in vals)
-                top = cnt.most_common(1)[0][1]
-                winners = [v for v, n in cnt.items() if n == top]
-                if len(winners) == 1:
-                    return winners[0]
-                # 平票:按源优先级挑(报「宣告原值」更可靠的源在前)
-                for s in C.SRC_PRIORITY:
-                    for src, v in vals:
-                        if src == s and v in winners:
-                            return v
-                return vals[0][1]
+            def _nsrc(f, _g=g):
+                return R.n_src(_g.by_source, f)
+
+            _amt_srcs = max(_nsrc("amount"), _nsrc("ratio"))
 
             # 📣 新公告:首次出现 declaration date 即推送(即使之前见过其预估)
             decl = _pk("declaration_date")
@@ -259,7 +256,8 @@ def build():
                     announced.append({"ticker": g.ticker, "etype": g.etype, "date": g.anchor_date,
                                       "decl": decl, "days": g.days_to,
                                       "record": _pk("record_date"), "pay": _pk("pay_date"),
-                                      "amount": _pk("amount"), "ratio": _pk("ratio"),
+                                      "amount": _pk("amount"), "ratio": _pk("ratio"), "amt_srcs": _amt_srcs,
+                                      "acked": getattr(g, "acked", False),
                                       "products": C.product_tags(g.ticker)})
 
             if g.is_future and g.etype != "filing" and g.days_to is not None:
@@ -272,6 +270,7 @@ def build():
                                 "days": g.days_to, "status": g.status,
                                 "decl": _decl, "record": _pk("record_date"),
                                 "pay": _pk("pay_date"), "amount": _pk("amount"), "ratio": _pk("ratio"),
+                                "amt_srcs": _amt_srcs, "acked": getattr(g, "acked", False),
                                 "first": _decl or seen.get(s),
                                 "confirmed": _confirmed, "srcs": sorted(g.by_source.keys()),
                                 "products": C.product_tags(g.ticker), "risk": C.risk_note(g.ticker, g.etype)})
@@ -307,7 +306,6 @@ def build():
     announced.sort(key=lambda x: x.get("decl") or "", reverse=True)
 
     # 人工确认:把已确认的冲突从报警里剔除(停推+网页 finalize),记入 resolved
-    acks = load_acknowledged()
     resolved = []
     if acks:
         _active = []
@@ -394,9 +392,11 @@ def build():
             elif g.etype not in ("dividend", "split"):
                 continue
             def _ck(f, _g=g):
-                return next((v.get(f) for v in _g.by_source.values() if v.get(f)), None)
+                return R.pick_value(_g.by_source, f)
             calendar_events.append({"ticker": g.ticker, "etype": g.etype, "date": ad,
                                     "amount": _ck("amount"), "ratio": _ck("ratio"), "note": g.note,
+                                    "amt_srcs": max(R.n_src(g.by_source, "amount"), R.n_src(g.by_source, "ratio")),
+                                    "acked": getattr(g, "acked", False),
                                     "record": _ck("record_date"), "pay": _ck("pay_date"),
                                     "decl": _ck("declaration_date"),
                                     "first": getattr(g, "first_announced", None),

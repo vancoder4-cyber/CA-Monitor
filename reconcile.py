@@ -7,12 +7,47 @@
   报警: gap(已发生事件某源缺失) / conflict(字段不一致)
 """
 import datetime as dt
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import List, Dict
 import config as C
 
 
 TODAY = dt.date.today()
+
+
+# ---- 取值的唯一真相(所有消费端都必须走这里,别再各写一份)----
+def pick_value(by_source, field):
+    """多数票 + 源优先级取值。要的是「公司实际宣告的原值」。
+
+    绝不能用「第一个源赢」——源的顺序不代表谁对,会踩三个坑:
+      1) yfinance 按拆股回溯调整历史分红(KLAC 10:1 后把 2.3 报成 0.23)
+      2) yfinance 四舍五入到 3 位(0.2475 → 0.248)
+      3) Alpaca 对 ADR 报的是扣预扣税后的净额(ASML=gross×0.85;TSM 台湾21%)
+    """
+    vals = [(s, v.get(field)) for s, v in by_source.items() if v.get(field) is not None]
+    if not vals:
+        return None
+    cnt = Counter(v for _, v in vals)
+    top = cnt.most_common(1)[0][1]
+    winners = [v for v, n in cnt.items() if n == top]
+    if len(winners) == 1:
+        return winners[0]
+    for s in getattr(C, "SRC_PRIORITY", []):
+        for src, v in vals:
+            if src == s and v in winners:
+                return v
+    return vals[0][1]
+
+
+def n_src(by_source, field):
+    """有几个源报了这个字段(<2 = 没交叉验证过,不能当权威值)。"""
+    return sum(1 for v in by_source.values() if v.get(field) is not None)
+
+
+def is_disputed(g):
+    """该事件是否还有「未经人工确认」的冲突(run.py 会给已确认的打 acked=True)。"""
+    return bool(g.conflicts) and not getattr(g, "acked", False)
 
 
 def _d(s):

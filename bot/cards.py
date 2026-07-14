@@ -127,7 +127,7 @@ def about_card(data, site_url):
     gen = data.get("generated", "")
     content = (
         "**CA问答助手** —— 公司行动(Corporate Actions)监控\n"
-        "盯 **现货(24 支美股)+ 合约范围(22 个)**标的的:分红 / 拆股·合股 / 并购 / 分拆 / 退市·代码变更。"
+        "盯 **现货(86 支美股)+ 合约范围(22 个)**标的的:分红 / 拆股·合股 / 并购 / 分拆 / 退市·代码变更。"
         "合约里的 ETF(QQQ/EWY/DRAM)监控分红;商品/海外(XAU/WTI/SKHYNIX 等)无公司行动,仅列入覆盖。\n\n"
         "**数据源(7 主力 + FINX 接入中,多源交叉核对·零容忍)**\n"
         "yfinance · FMP · Alpha Vantage · Nasdaq · Tiingo · Alpaca · SEC EDGAR · FINX(TRKD-HS,配置凭证后启用)\n\n"

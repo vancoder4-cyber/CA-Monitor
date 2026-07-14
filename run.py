@@ -206,11 +206,19 @@ def build():
     cutoff30 = (dt.date.today() - dt.timedelta(days=30)).isoformat()
     new_events, round_alerts, conflicts, gaps, pending, announced = [], [], [], [], [], []
 
+    # 新标的首次纳入监控时是否静默建基线(见 config.BASELINE_NEW_TICKERS):
+    #   开 → 把它的历史事件记为「已见」但不推「新发现」,避免上新一批标的时刷屏
+    #   关(默认)→ 照常推,能一次看全新标的的存量事件
+    known_tickers = {s.split("|", 1)[0] for s in seen}
+
     for tk, groups in all_groups.items():
+        first_time_ticker = getattr(C, "BASELINE_NEW_TICKERS", False) and tk not in known_tickers
         for g in groups:
             s = sig(g)
             if s not in seen:
-                new_events.append(g); seen[s] = today
+                seen[s] = today
+                if not first_time_ticker:
+                    new_events.append(g)
             if g.conflicts:
                 conflicts.append(g)
             if g.gaps:

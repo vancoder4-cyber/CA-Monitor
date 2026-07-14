@@ -53,13 +53,17 @@ python run.py build                       # 用缓存合并 → dashboard.html +
 
 ## 配置(`config.py`)
 
-- `SPOT_TICKERS` / `CONTRACT_TICKERS` —— 现货 24 个股 / 合约 22(含 ETF 与商品/海外)
-- `TICKERS` —— 实际监控标的 **27 支**(现货 24 个股 + QQQ/EWY/DRAM 三个 ETF;商品/海外列入覆盖但不监控)
+- `SPOT_TICKERS` / `CONTRACT_TICKERS` —— 现货 **86 个股** / 合约 22(含 ETF 与商品/海外)
+- `TICKERS` —— 实际监控标的 **89 支**(现货 86 个股 + QQQ/EWY/DRAM 三个 ETF;商品/海外列入覆盖但不监控)
+  - 代码格式坑:Berkshire B 类必须写 **`BRK-B`**(SEC/yfinance/Tiingo/FMP 都用这个;写 `BRK.B` 会全线抓不到)
+  - `BASELINE_NEW_TICKERS` —— 新标的首次纳入时,历史事件是否静默建基线。`False`(默认)= 照常推「新发现」(上一批新标的会刷屏但能看全);`True` = 记为已见但不推(不刷屏)。上 62 个新现货实测:False→72 条,True→0 条
 - `ALERT_ROUNDS` —— 预警节奏 `[30,14,7,3,1]`
 - `GROUP_WINDOW_DAYS` —— 跨源归组时间窗(默认 5 天)
 - API key —— **全部从 `.env` / 环境变量读取,代码里不留明文**:
   `FMP` / `ALPHAVANTAGE` / `FINNHUB` / `TIINGO` / `ALPACA_KEY_ID` / `ALPACA_SECRET` / `SEC_UA` / `FINX_USER` / `FINX_PASS`(可选,FINX 第 8 源;`FINX_BASE` 可改 UAT)
 - `GH_TOKEN` —— 细粒度 PAT(Contents 读写),供「确认 / 需求提报」写回仓库(配在 Railway)
+
+**一键触发 Action**:`./tools/trigger.sh`(触发 + 等跑完 + 核验网页刷新;需 `brew install gh && gh auth login`)。
 
 **可维护文件(改完提交即可)**:`refs.json`(IR 分红页 + 催办 @ 名单)、`CHANGELOG.md`(每次必记一条)、`UPDATE_CHECKLIST.md`(收尾检查清单)、`requests.md`(需求自动汇总)、`TODO.md`(内部技术待办/后续跟进)。
 
@@ -168,7 +172,8 @@ LARK_NOTIFY_EMPTY=0   # 1=没预警也推一条
 
 ## 免费源额度提醒(生产注意)
 
-- **Alpha Vantage** 免费 25 次/天:跑两次 ×27 支会远超额,代码已限量 + 限流自动标「不可用」。生产建议升级或仅作补充。
+- **Alpha Vantage** 免费 25 次/天:89 支远超额,代码已限量(`av_limit=24`,只给前 24 支)+ 限流自动标「不可用」。生产建议升级或仅作补充。
+- **抓取耗时**:89 支 × 8 并发 ≈ 3–4 分钟(原 27 支约 1 分钟),Action 时长会相应变长。
 - **FMP** 免费版对部分票返回 402(额度/覆盖限制),已按「不可用」处理。要全覆盖需付费档。
 - **yfinance / Nasdaq / Tiingo / Alpaca** 实测对个股稳定全绿,是当前核对主力。
 

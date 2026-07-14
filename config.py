@@ -21,11 +21,18 @@ def _load_dotenv():
 _load_dotenv()
 
 # ---- 业务范围 ----
-# 现货:24 支美股个股
+# 现货:86 支美股(原 24 + 本轮新上 62;SPCX 已上线故保留)
+# 注:Berkshire B 类代码写作 BRK-B(SEC/yfinance/Tiingo/FMP 都用这个格式;写 BRK.B 会全线抓不到)
 SPOT_TICKERS = {
-    "MU", "SNDK", "NVDA", "TSLA", "AMD", "INTC", "MSFT", "AAPL",
-    "AMZN", "GOOGL", "META", "AVGO", "MRVL", "PLTR", "LLY", "NBIS",
-    "HOOD", "CRWV", "RKLB", "MSTR", "COIN", "CRCL", "HIMS", "SPCX",
+    "AAOI", "AAPL", "ADBE", "ALAB", "AMAT", "AMD", "AMZN", "ARM", "ASML", "ASTS",
+    "AVGO", "AXTI", "BABA", "BB", "BE", "BMNR", "BRK-B", "BSP", "BX", "CAT",
+    "CBRS", "CIEN", "COHR", "COIN", "COST", "CRCL", "CRDO", "CRM", "CRWD", "CRWV",
+    "CSCO", "DELL", "DIS", "DKNG", "EBAY", "FLEX", "FLNC", "GLW", "GME", "GOOGL",
+    "HD", "HIMS", "HOOD", "HPE", "IBM", "INTC", "IREN", "JPM", "KLAC", "LITE",
+    "LLY", "LRCX", "META", "MRVL", "MSFT", "MSTR", "MU", "NBIS", "NFLX", "NOK",
+    "NOW", "NVDA", "NVO", "ONDS", "ORCL", "PAYP", "PLTR", "QCOM", "QNT", "RIVN",
+    "RKLB", "SMCI", "SNDK", "SONY", "SPCX", "STRC", "TER", "TSLA", "TSM", "TTWO",
+    "TXN", "UBER", "V", "WDC", "WMT", "ZM",
 }
 # 合约:22(截图 23 行去掉已下架的 SOXL)
 CONTRACT_TICKERS = {
@@ -39,7 +46,8 @@ CONTRACT_TICKERS = {
 ASSET_TYPE = {
     "QQQ": "etf", "EWY": "etf", "DRAM": "etf",
     "XAU": "commodity", "WTI": "commodity", "XAG": "commodity", "BRENTOIL": "commodity",
-    "NATGAS": "commodity", "XCU": "commodity", "CBRS": "commodity",
+    "NATGAS": "commodity", "XCU": "commodity",
+    # CBRS = Cerebras(AI 芯片),是股票不是商品 —— 原来误归 commodity 导致不被监控,已改回 equity(默认)
     "SKHYNIX": "foreign",
 }
 
@@ -62,10 +70,27 @@ NAMES = {
     "HOOD": "Robinhood", "CRWV": "CoreWeave", "RKLB": "火箭实验室",
     "MSTR": "微策略", "COIN": "Coinbase", "CRCL": "Circle",
     "HIMS": "Hims & Hers", "SPCX": "SpaceX",
-    # 合约新增
+    # 现货新上(62)—— 推送/卡片仍用代码简写,名称仅作上下文
+    "AAOI": "应用光电", "ADBE": "Adobe", "ALAB": "Astera Labs", "AMAT": "应用材料",
+    "ARM": "Arm 控股", "ASML": "阿斯麦", "ASTS": "AST SpaceMobile", "AXTI": "AXT",
+    "BABA": "阿里巴巴", "BB": "黑莓", "BE": "Bloom Energy", "BMNR": "Bitmine",
+    "BRK-B": "伯克希尔B", "BSP": "Bending Spoons", "BX": "黑石", "CAT": "卡特彼勒",
+    "CIEN": "Ciena", "COHR": "Coherent", "COST": "好市多", "CRDO": "Credo",
+    "CRM": "Salesforce", "CRWD": "CrowdStrike", "CSCO": "思科", "DELL": "戴尔",
+    "DIS": "迪士尼", "DKNG": "DraftKings", "EBAY": "eBay", "FLEX": "伟创力",
+    "FLNC": "Fluence Energy", "GLW": "康宁", "GME": "GameStop", "HD": "家得宝",
+    "HPE": "慧与", "IBM": "IBM", "IREN": "IREN", "JPM": "摩根大通",
+    "KLAC": "科磊", "LITE": "Lumentum", "LRCX": "泛林", "NFLX": "奈飞",
+    "NOK": "诺基亚", "NOW": "ServiceNow", "NVO": "诺和诺德", "ONDS": "Ondas",
+    "ORCL": "甲骨文", "PAYP": "PayPay(日本支付)", "QCOM": "高通",
+    "QNT": "Quantinuum(量子计算)", "RIVN": "Rivian", "SMCI": "超微电脑",
+    "SONY": "索尼", "STRC": "Strategy 优先股", "TER": "泰瑞达", "TSM": "台积电",
+    "TTWO": "Take-Two", "TXN": "德州仪器", "UBER": "优步", "V": "Visa",
+    "WDC": "西部数据", "WMT": "沃尔玛", "ZM": "Zoom",
+    # 合约
     "QQQ": "纳指100 ETF", "EWY": "韩国 ETF", "XAU": "黄金", "WTI": "WTI原油",
     "XAG": "白银", "BRENTOIL": "布伦特原油", "NATGAS": "天然气", "XCU": "铜",
-    "DRAM": "内存 ETF", "CBRS": "(合约)", "SKHYNIX": "SK海力士",
+    "DRAM": "内存 ETF", "CBRS": "Cerebras(AI芯片)", "SKHYNIX": "SK海力士",
 }
 
 # ---- API keys ----
@@ -118,6 +143,12 @@ SPLIT_COMPARE_FIELDS = ["ex_date", "ratio"]
 # 老历史这些源没有也不算空缺,避免每次跑都刷出一堆历史误报噪音。
 SHORT_HISTORY_SOURCES = {"FINX"}
 SHORT_HISTORY_GAP_DAYS = 45
+
+# 新标的首次纳入监控时,它的历史事件怎么处理:
+#   False(默认)= 照常当「新发现」推出来 —— 上一批新标的会刷屏,但能一次看全
+#   True         = 静默建基线(记为已见但不推)—— 不刷屏,只从此以后的新事件才报
+# 上 62 个新现货那次实测:False → 72 条新发现;True → 0 条。
+BASELINE_NEW_TICKERS = False
 
 # ---- 预警节奏(距除息日天数,临近时只触发"最接近的一轮")----
 ALERT_ROUNDS = [30, 14, 7, 3, 1]

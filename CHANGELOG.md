@@ -2,6 +2,19 @@
 
 > 规则:每次 push 前在最上面加一条,格式 `## 日期 · 标题` + 几条 `- 要点`。日期用**真实当天日期**(可 `date +%F` 确认),别照抄上一条。保持简洁。
 
+## 2026-07-14 · 现货扩容 24 → 86(新上 62 支)
+- 现货新增 62 支(AAOI/ADBE/ALAB/AMAT/ARM/ASML/BABA/BRK-B/BX/CAT/COST/CRM/CSCO/DELL/DIS/HD/IBM/JPM/NFLX/ORCL/QCOM/SONY/TSM/V/WMT 等);监控标的 27 → **89**
+- **合约维持 22 不变**;SPCX 虽不在新清单但已上线,保留
+- **BRK-B 格式坑**:Berkshire B 类必须写 `BRK-B`(SEC/yfinance/Tiingo/FMP 都用这个)。原写法 `BRK.B` 会导致 5/7 源不可用、0 条数据 —— 已修
+- **CBRS 修正归类**:原误标 `commodity`(不监控),实为 Cerebras(AI 芯片,股票)→ 改回 equity,现已纳入监控
+- 新增开关 `BASELINE_NEW_TICKERS`:新标的首次纳入时历史事件是否静默建基线。默认 `False`(照常推「新发现」);置 `True` 则不刷屏。本次上新实测:False→72 条新发现,True→0 条
+- 抓取耗时 89 支约 3–4 分钟(原 1 分钟);Alpha Vantage 仍限前 24 支
+
+## 2026-07-14 · 一键触发 Action(tools/trigger.sh)
+- 新增 `tools/trigger.sh`:一行触发 Action + 等跑完 + 自动核验网页刷新时间,不用再开网页点按钮
+- 用 gh CLI 的登录态(workflow_dispatch 需 Actions:write,GH_TOKEN 那个 Contents-only 的 PAT 不够)
+- 一次性准备:`brew install gh && gh auth login`;之后 `./tools/trigger.sh`(加 `-n` 只触发不等)
+
 ## 2026-07-14 · 关键日补上「宣告日」(三面统一)
 - 催办/待执行原来只显示 除息·登记·派发,漏了宣告日(数据里一直有 `decl`,只是没渲染)
 - 统一为 **宣告 · 登记 · 除息/生效 · 派发**(与「查代码」的关键日链一致);缺哪个就不显示哪个

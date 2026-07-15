@@ -153,19 +153,38 @@ def on_message(data: P2ImMessageReceiveV1):
         # 查代码:显式『查』指令,或直接发了一个已覆盖的代码(未命中其它指令时)
         if cmd == "confirm":
             clean = re.sub(r"@_user_\d+|@_all", "", text or "")  # 去掉 @ 占位符再取数值,避免误读
-            mval = re.search(r"\d+(?:\.\d+)?", clean)
+            # 先摘出日期(YYYY-MM-DD)再取数值 —— 否则「2026」会被当成金额。
+            # 同一标的可能有多条不同值的异常(如 KLAC 2.3 / 1.9),必须能指定是哪一条。
+            mdate = re.search(r"\d{4}-\d{2}-\d{2}", clean)
+            date = mdate.group(0) if mdate else None
+            rest = clean.replace(date, "") if date else clean
+            mval = re.search(r"\d+(?:\.\d+)?", rest)
             value = mval.group(0) if mval else None
-            etype = date = None
-            for c in d.get("conflicts", []):
-                if c.get("ticker") == ticker:
-                    etype, date = c.get("etype"), c.get("date")
-                    break
-            print(f"[msg] chat={chat_id} text={text!r} -> confirm {ticker} {value}")
+
+            etype = None
+            if date:
+                # 指定了日期:在冲突/待执行/日历里定位该标的该日期的事件
+                for key in ("conflicts", "pending", "calendar", "gaps"):
+                    for c in d.get(key, []) or []:
+                        if c.get("ticker") == ticker and c.get("date") == date:
+                            etype = c.get("etype")
+                            break
+                    if etype:
+                        break
+            else:
+                # 没给日期:默认取该标的的第一条冲突(多条不同值时,建议带上日期)
+                for c in d.get("conflicts", []) or []:
+                    if c.get("ticker") == ticker:
+                        etype, date = c.get("etype"), c.get("date")
+                        break
+            print(f"[msg] chat={chat_id} text={text!r} -> confirm {ticker} {value} @{date}")
             if not ticker:
-                send_card(chat_id, cards.confirm_card(False, "没认出代码,用法:确认 META 0.525", site_url=SITE_URL))
+                send_card(chat_id, cards.confirm_card(
+                    False, "没认出代码。用法:`确认 代码 [正确值] [日期]`,例:`确认 KLAC 2.3 2026-05-18`",
+                    site_url=SITE_URL))
                 return
-            ok, msg = ack.add_ack(ticker, value, etype, date)
-            send_card(chat_id, cards.confirm_card(ok, msg, ticker, value, SITE_URL))
+            ok, msg = ack.add_ack(ticker, value, etype, date, by=sender_oid or "")
+            send_card(chat_id, cards.confirm_card(ok, msg, ticker, value, SITE_URL, date))
             return
         if cmd == "request":
             req = re.sub(r"@_user_\d+|@_all", "", text or "").strip()

@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """从 Pages 发布的 data.json 构建 Lark 交互卡片。"""
 import datetime as dt
-import ack  # 复用权威来源解析(authoritative_source / quick_look);ack 顶层不触网,import 安全
+# 注意:不要在模块顶层 import ack —— ack 依赖 requests,而 CI 的「指令一致性检查」在装依赖**之前**
+# 就 import cards,顶层拉 ack 会 ModuleNotFoundError。ack 只在 _authoritative_link 的兜底分支惰性导入。
 ETYPE_CN = {"dividend": "分红", "split": "拆股", "filing": "并购/公告"}
 # 异常/确认里带的那个日期,到底是哪个关键日:分红=除息日,拆股=生效日,filing=事件日
 DATE_LABEL = {"dividend": "除息日", "split": "生效日", "filing": "事件日"}
@@ -18,6 +19,7 @@ def _authoritative_link(g):
     src = g.get("src_url") or g.get("sec_url")
     if src:
         return f"　🔗 [SEC 原文(具体 filing)]({src})"
+    import ack  # 惰性导入(ack 依赖 requests);只在没有 src_url 的兜底分支才用
     tk, et = g.get("ticker", ""), g.get("etype")
     return f"　🔗 [核对来源(公司IR/SEC备案)]({ack.authoritative_source(tk, et)})"
 

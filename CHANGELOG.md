@@ -9,6 +9,7 @@
 - 风险卡链接:有 `src_url` → **[SEC 原文(具体 filing)]**;定位不到 → 回退 [公司IR/SEC备案]。**去掉第三方聚合页链接**。
 - best-effort:解析全程 try/except、每次调用 8–12s 超时、`SEC_FILING=0` 可一键关闭,绝不影响核对/报警主流程。
 - 直达链接在**下次流水线重跑后**生效(它在 build 时解析并写入 data.json)。
+- 修:`cards.py` 顶层别 import ack(ack 依赖 requests,而 CI「指令一致性检查」在装依赖前就 import cards,会炸)——改成兜底分支惰性导入。
 
 ## 2026-07-15 · 风险卡每条冲突直接带权威核对链接
 

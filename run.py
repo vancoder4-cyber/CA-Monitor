@@ -310,9 +310,12 @@ def build():
     pending.sort(key=lambda x: x["days"])
     announced.sort(key=lambda x: x.get("decl") or "", reverse=True)
 
-    # 人工确认:把已确认的冲突从报警里剔除(停推+网页 finalize),记入 resolved
+    # 人工确认:把已确认的冲突/空缺从报警里剔除(停推+网页 finalize),记入 resolved
+    # 确认 = 人工已核实该事件 → 冲突和空缺**一起**消(和机器人 apply_acks 口径一致);
+    # 否则会出现"值确认了、空缺还挂着"的怪象(NOK/SONY 就是)。
     resolved = []
     if acks:
+        _res_seen = set()
         _active = []
         for g in conflicts:
             a = _ack_match(acks, g.ticker, g.anchor_date)
@@ -320,9 +323,22 @@ def build():
                 resolved.append({"ticker": g.ticker, "etype": g.etype, "date": g.anchor_date,
                                  "value": a.get("value"), "by": a.get("by"), "at": a.get("at"),
                                  "detail": "; ".join(g.conflicts)})
+                _res_seen.add((g.ticker, g.anchor_date))
             else:
                 _active.append(g)
         conflicts = _active
+        _active_gaps = []
+        for g in gaps:
+            a = _ack_match(acks, g.ticker, g.anchor_date)
+            if a:
+                if (g.ticker, g.anchor_date) not in _res_seen:
+                    resolved.append({"ticker": g.ticker, "etype": g.etype, "date": g.anchor_date,
+                                     "value": a.get("value"), "by": a.get("by"), "at": a.get("at"),
+                                     "detail": "; ".join(g.gaps)})
+                    _res_seen.add((g.ticker, g.anchor_date))
+            else:
+                _active_gaps.append(g)
+        gaps = _active_gaps
 
     # 给「待执行」分红预挂核对链接(供网页预警面板显示):8-K(Item8.01) / IR(refs) / 否则前端回退 Nasdaq
     _ir_map = load_refs().get("ir_dividend", {})

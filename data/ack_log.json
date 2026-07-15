@@ -26,5 +26,19 @@
     "source": "https://www.nasdaq.com/market-activity/stocks/klac/dividend-history",
     "note": "已比对公司8-K",
     "action": "confirm"
+  },
+  {
+    "at_bj": "2026-07-15T21:13:58+08:00",
+    "at_utc": "2026-07-15T13:13:58+00:00",
+    "ticker": "WMT",
+    "etype": "dividend",
+    "date": "2026-05-08",
+    "value": "0.2475",
+    "prev_value": null,
+    "by_name": "",
+    "by": "ou_05b39ad8ca3ef55e64d4af0ef956c88c",
+    "source": "https://www.nasdaq.com/market-activity/stocks/wmt/dividend-history",
+    "note": "",
+    "action": "confirm"
   }
 ]

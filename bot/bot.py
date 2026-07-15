@@ -228,7 +228,7 @@ def on_message(data: P2ImMessageReceiveV1):
             by_name = get_user_name(sender_oid)
             ok, msg = ack.add_ack(ticker, value, etype, date,
                                   by=sender_oid or "", by_name=by_name, note=note)
-            send_card(chat_id, cards.confirm_card(ok, msg, ticker, value, SITE_URL, date))
+            send_card(chat_id, cards.confirm_card(ok, msg, ticker, value, SITE_URL, date, etype))
             return
         if cmd == "audit":
             # 留痕库:拉最近确认记录(可只看某个标的)。经 GH API 读 data/ack_log.json

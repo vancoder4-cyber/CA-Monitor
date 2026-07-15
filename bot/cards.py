@@ -2,6 +2,12 @@
 """从 Pages 发布的 data.json 构建 Lark 交互卡片。"""
 import datetime as dt
 ETYPE_CN = {"dividend": "分红", "split": "拆股", "filing": "并购/公告"}
+# 异常/确认里带的那个日期,到底是哪个关键日:分红=除息日,拆股=生效日,filing=事件日
+DATE_LABEL = {"dividend": "除息日", "split": "生效日", "filing": "事件日"}
+
+
+def date_label(etype):
+    return DATE_LABEL.get(etype, "关键日")
 
 # ===== 指令唯一来源(改指令只改这里;HELP_TEXT / 关于卡片 / parse_command 都由它生成)=====
 # 顺序即匹配优先级。key 必须在 bot.py 的 on_message 里有对应 dispatch 分支。
@@ -474,11 +480,11 @@ def request_card(ok, msg, text="", site_url=""):
 
 
 # ---------------- 确认(人工 finalize)----------------
-def confirm_card(ok, msg, ticker=None, value=None, site_url="", date=None):
-    """用法:确认 代码 [正确值] [日期]。日期可选,但同一标的有多条不同值的异常时必须带上。"""
+def confirm_card(ok, msg, ticker=None, value=None, site_url="", date=None, etype=None):
+    """用法:确认 代码 [正确值] [日期] [备注]。日期=该事件的除息日(分红)/生效日(拆股)。"""
     if ok:
         v = f",以 **{value}** 为准" if value is not None else ""
-        dd = f"(事件日 {date})" if date else ""
+        dd = f"({date_label(etype)} {date})" if date else ""
         content = (f"✅ 已记录确认:**{ticker}**{dd}{v}。\n"
                    "金额门禁解除、停止报警;已写入留痕库(谁/何时/核对来源,发『留痕』可调取)。\n\n"
                    "> 同一标的有多条**值不同**的异常时,请带上日期指定是哪一条,"
@@ -521,8 +527,9 @@ def audit_card(log, site_url="", ticker=None):
         if prev not in (None, "", val):
             vtxt += f"(原 {prev})"
         et = ETYPE_CN.get(e.get("etype"), e.get("etype") or "")
+        dlab = date_label(e.get("etype"))
         head = (f"• {_ago_bj(e.get('at_bj'))}　**{e.get('ticker','')}** {et} "
-                f"{e.get('date','') or ''} → {vtxt}　_by {who}_")
+                f"{dlab} {e.get('date','') or ''} → {vtxt}　_by {who}_")
         sub = []
         if e.get("source"):
             sub.append(f"[核对来源]({e['source']})")

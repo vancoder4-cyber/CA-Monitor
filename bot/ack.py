@@ -68,17 +68,20 @@ def _load_refs_ir():
 
 def authoritative_source(ticker, etype, refs_ir=None):
     """给一条确认自动带出『最权威的核对来源』链接,确认人点开核对即可。
-    优先级与网页一致:并购/退市→SEC 原文;分红/拆股→公司 IR(refs)→ 回退 Nasdaq。"""
+    优先级:公司 IR(refs,最权威)→ SEC EDGAR 该标的全部备案(8-K 普通股 / 6-K 外国发行人 ADR 都能覆盖)。
+    不用 Nasdaq 分红页 —— 它是 JS 渲染、常空白,且不覆盖 NYSE/ADR(HPE、BABA 都点不出)。"""
     ir = (refs_ir if refs_ir is not None else _load_refs_ir()).get(ticker) or ""
+    # EDGAR 用 ticker= 参数直接按代码解析到公司,列出全部 filing(含 8-K/6-K),始终有内容
+    edgar = (f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany"
+             f"&ticker={ticker}&type=&dateb=&owner=include&count=40")
+    return ir or edgar
+
+
+def quick_look(ticker, etype):
+    """快速核对『数值对不对』用的聚合页(服务端渲染、覆盖 US+ADR,比 Nasdaq 稳)。
+    留痕里存的是 authoritative_source(权威原始出处);这个只给人肉 eyeball 用。"""
     tkl = (ticker or "").lower()
-    if etype == "filing":
-        return (f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany"
-                f"&CIK={ticker}&type=&dateb=&owner=include&count=40")
-    if etype == "split":
-        return ir or (f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany"
-                      f"&CIK={ticker}&type=8-K&dateb=&owner=include&count=40")
-    # 分红(默认)
-    return ir or f"https://www.nasdaq.com/market-activity/stocks/{tkl}/dividend-history"
+    return f"https://stockanalysis.com/stocks/{tkl}/dividend/"
 
 
 def get_ack_log(limit=None):

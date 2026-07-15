@@ -18,7 +18,8 @@ COMMANDS = [
     {"key": "calendar", "kw": ["日历", "calendar", "cal"],              "name": "日历",   "desc": "当月公司行动月历(图)"},
     {"key": "coverage", "kw": ["覆盖", "资产", "标的", "coverage"],      "name": "覆盖",   "desc": "各标的在现货/合约的覆盖情况"},
     {"key": "lookup",   "kw": ["查代码", "查询", "代码", "查", "ticker", "lookup"], "name": "查代码", "desc": "@我 + 代码(如 AVGO)弹出该标的公司行动;只发『查代码』看用法"},
-    {"key": "confirm",  "kw": ["确认", "confirm", "已核对"],              "name": "确认",   "desc": "人工放行异常:确认 CODE [正确值] [日期] —— 解除金额门禁、停报警、按你给的值显示并留痕"},
+    {"key": "confirm",  "kw": ["确认", "confirm", "已核对"],              "name": "确认",   "desc": "人工放行异常:确认 CODE [正确值] [日期] [备注] —— 解除金额门禁、停报警、按你给的值显示并留痕"},
+    {"key": "audit",    "kw": ["留痕", "审计", "audit", "log"], "name": "留痕",   "desc": "调取确认留痕:谁在何时确认了什么(可加代码只看某标的);要 Excel 用 tools/export_ack_log.py"},
     {"key": "request",  "kw": ["需求", "提报", "反馈", "建议", "feature"], "name": "需求提报", "desc": "提需求:需求 你的想法 —— 汇总给负责人用于迭代"},
 ]
 # 注:顺序即匹配优先级 + 展示顺序。帮助不含 "?"(无匹配时默认即回帮助),避免「…?」误判。
@@ -150,8 +151,9 @@ def about_card(data, site_url):
         "**没确认过的数字,不要拿去执行。**\n\n"
         "**🙋 人工介入闭环(零容忍·不豁免)**:字段冲突 / 数据空缺 / 未见宣告日的单源预估,"
         "**每次扫描都重报、一直挂着**,并显示「已挂 N 天」;超 3 天没人确认会在推送里 **@ 负责人**。"
-        "唯一消解方式:群里发 **确认 代码 [正确值] [日期]**(如 `确认 TSM 1.11362`;同一标的多条不同值时带日期,如 `确认 KLAC 2.3 2026-05-18`)"
-        "—— 确认后门禁解除、按你给的值显示,并留痕(谁确认、何时)。\n\n"
+        "唯一消解方式:群里发 **确认 代码 [正确值] [日期] [备注]**(如 `确认 TSM 1.11362`;同一标的多条不同值时带日期,如 `确认 KLAC 2.3 2026-05-18`)"
+        "—— 确认后门禁解除、按你给的值显示。每次确认**只追加、不删**地写入留痕库(谁/何时/改值前后/核对来源/备注),"
+        "群里发 **留痕** 可随时调取,离线表用 `tools/export_ack_log.py` 导 Excel。\n\n"
         "**核对链接**:每条事件附原始出处(并购/退市→SEC 原文;分红→宣告 8-K / 公司 IR / Nasdaq),方便你核完再确认。\n\n"
         "**更新**:每交易日 3 次 —— 开盘后 9:35 / 盘中 12:45 / 收盘后 16:05(美东)。\n\n"
         "**提前预警(运营催办)**:以除息日为准,距 **30/14** 天提前知会;**7** 天开始准备文案并明确排期;"
@@ -478,14 +480,57 @@ def confirm_card(ok, msg, ticker=None, value=None, site_url="", date=None):
         v = f",以 **{value}** 为准" if value is not None else ""
         dd = f"(事件日 {date})" if date else ""
         content = (f"✅ 已记录确认:**{ticker}**{dd}{v}。\n"
-                   "金额门禁解除、停止报警;网页在下次刷新(或手动触发 Action)后标记为「已人工确认」。\n\n"
+                   "金额门禁解除、停止报警;已写入留痕库(谁/何时/核对来源,发『留痕』可调取)。\n\n"
                    "> 同一标的有多条**值不同**的异常时,请带上日期指定是哪一条,"
-                   "例:`确认 KLAC 2.3 2026-05-18`、`确认 KLAC 1.9 2026-02-17`。")
+                   "例:`确认 KLAC 2.3 2026-05-18`、`确认 KLAC 1.9 2026-02-17`。\n"
+                   "> 可在末尾加备注记录你核对了什么,例:`确认 KLAC 2.3 2026-05-18 已比对公司8-K`。")
         tpl = "green"
     else:
         content = (f"⚠️ 确认未成功:{msg}\n\n"
-                   "用法:`确认 代码 [正确值] [日期]`,例:`确认 KLAC 2.3 2026-05-18`")
+                   "用法:`确认 代码 [正确值] [日期] [备注]`,例:`确认 KLAC 2.3 2026-05-18 已比对公司8-K`")
         tpl = "red"
     return _card("✅ 人工确认", tpl,
                  [{"tag": "div", "text": {"tag": "lark_md", "content": content}}],
+                 site_url, "打开网页面板")
+
+
+# ---------------- 留痕库(确认审计)----------------
+def _ago_bj(iso):
+    """把 at_bj(ISO 带 +08:00)显示成『MM-DD HH:MM』。"""
+    s = iso or ""
+    try:
+        return f"{s[5:10]} {s[11:16]}"
+    except Exception:
+        return s
+
+
+def audit_card(log, site_url="", ticker=None):
+    """确认留痕:谁在何时把哪条改成了什么值 + 核对来源 + 备注。log 已按时间倒序。"""
+    title = f"📒 确认留痕 · {ticker}" if ticker else "📒 确认留痕(最近确认)"
+    if not log:
+        tip = (f"暂无 **{ticker}** 的确认记录。" if ticker else "留痕库还没有记录 —— 尚无人工确认。") + \
+              "\n每条『确认』都会自动落库(只追加不删),要离线表用 `tools/export_ack_log.py` 导 Excel。"
+        return _card(title, "blue", [{"tag": "div", "text": {"tag": "lark_md", "content": tip}}],
+                     site_url, "打开网页面板")
+    lines = []
+    for e in log:
+        who = e.get("by_name") or (("…" + e["by"][-6:]) if e.get("by") else "未知")
+        val = e.get("value")
+        prev = e.get("prev_value")
+        vtxt = (f"**{val}**" if val not in (None, "") else "—")
+        if prev not in (None, "", val):
+            vtxt += f"(原 {prev})"
+        et = ETYPE_CN.get(e.get("etype"), e.get("etype") or "")
+        head = (f"• {_ago_bj(e.get('at_bj'))}　**{e.get('ticker','')}** {et} "
+                f"{e.get('date','') or ''} → {vtxt}　_by {who}_")
+        sub = []
+        if e.get("source"):
+            sub.append(f"[核对来源]({e['source']})")
+        if e.get("note"):
+            sub.append(f"备注:{e['note']}")
+        lines.append(head + ("\n　" + " · ".join(sub) if sub else ""))
+    body = "\n".join(lines)
+    foot = "\n\n_只追加、永不删;完整表用 `tools/export_ack_log.py` 导 Excel。_"
+    return _card(title, "blue",
+                 [{"tag": "div", "text": {"tag": "lark_md", "content": body + foot}}],
                  site_url, "打开网页面板")

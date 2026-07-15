@@ -18,8 +18,11 @@ import requests
 GH_TOKEN = os.environ.get("GH_TOKEN", "").strip()
 GH_REPO = os.environ.get("GH_REPO", "vancoder4-cyber/CA-Monitor").strip()
 GH_BRANCH = os.environ.get("GH_BRANCH", "main").strip()
-ACK_PATH = "data/acknowledged.json"
+ACK_PATH = "data/acknowledged.json"   # 当前生效值(同标的+同日去重,pipeline 读这个)
+LOG_PATH = "data/ack_log.json"        # 留痕库:只追加、永不删,记录每一次确认(含改值前后)
 API = "https://api.github.com"
+_BJ = dt.timezone(dt.timedelta(hours=8))
+_HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def _headers():
@@ -28,9 +31,9 @@ def _headers():
             "X-GitHub-Api-Version": "2022-11-28"}
 
 
-def _get_file():
+def _get_file(path=ACK_PATH):
     """返回 (data:list, sha or None)。文件不存在则 ([], None)。"""
-    url = f"{API}/repos/{GH_REPO}/contents/{ACK_PATH}?ref={GH_BRANCH}"
+    url = f"{API}/repos/{GH_REPO}/contents/{path}?ref={GH_BRANCH}"
     r = requests.get(url, headers=_headers(), timeout=15)
     if r.status_code == 200:
         j = r.json()
@@ -42,27 +45,92 @@ def _get_file():
     return [], None
 
 
-def add_ack(ticker, value=None, etype=None, date=None, by="lark"):
-    """记录一条确认。返回 (ok: bool, msg: str)。"""
+def _put_file(path, data, sha, message):
+    body = {"message": message,
+            "content": base64.b64encode(
+                json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")).decode("utf-8"),
+            "branch": GH_BRANCH}
+    if sha:
+        body["sha"] = sha
+    r = requests.put(f"{API}/repos/{GH_REPO}/contents/{path}",
+                     headers=_headers(), json=body, timeout=20)
+    return r
+
+
+def _load_refs_ir():
+    """refs.json 的 ir_dividend(公司官方分红页),没有就空。"""
+    try:
+        p = os.path.join(os.path.dirname(_HERE), "refs.json")
+        return json.load(open(p, encoding="utf-8")).get("ir_dividend", {})
+    except Exception:
+        return {}
+
+
+def authoritative_source(ticker, etype, refs_ir=None):
+    """给一条确认自动带出『最权威的核对来源』链接,确认人点开核对即可。
+    优先级与网页一致:并购/退市→SEC 原文;分红/拆股→公司 IR(refs)→ 回退 Nasdaq。"""
+    ir = (refs_ir if refs_ir is not None else _load_refs_ir()).get(ticker) or ""
+    tkl = (ticker or "").lower()
+    if etype == "filing":
+        return (f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany"
+                f"&CIK={ticker}&type=&dateb=&owner=include&count=40")
+    if etype == "split":
+        return ir or (f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany"
+                      f"&CIK={ticker}&type=8-K&dateb=&owner=include&count=40")
+    # 分红(默认)
+    return ir or f"https://www.nasdaq.com/market-activity/stocks/{tkl}/dividend-history"
+
+
+def get_ack_log(limit=None):
+    """读取留痕库(只追加日志),按时间**倒序**返回(最新在前)。无 token/文件则 []。"""
+    if not GH_TOKEN:
+        return []
+    try:
+        data, _ = _get_file(LOG_PATH)
+        data = list(reversed(data))
+        return data[:limit] if limit else data
+    except Exception:
+        return []
+
+
+def add_ack(ticker, value=None, etype=None, date=None, by="lark", by_name="", note=""):
+    """记录一条确认。写两处:留痕库(只追加)+ 生效值(去重)。返回 (ok, msg)。"""
     if not GH_TOKEN:
         return False, "未配置 GH_TOKEN —— 请在 Railway 加一个对本仓库 Contents 有写权限的细粒度 PAT"
     try:
-        data, sha = _get_file()
-        # 同标的 + 同日期 视为同一条,替换(去重)
+        now = dt.datetime.now(dt.timezone.utc)
+        # 1) 取当前生效值(为了留痕里记录『从旧值改成新值』)
+        data, sha = _get_file(ACK_PATH)
+        prev = next((e.get("value") for e in data
+                     if e.get("ticker") == ticker and e.get("date") == date), None)
+
+        # 2) 先写留痕库(只追加,永不删)—— 审计的可信底账,必须成功
+        log, log_sha = _get_file(LOG_PATH)
+        entry = {
+            "at_bj": now.astimezone(_BJ).isoformat(timespec="seconds"),
+            "at_utc": now.isoformat(timespec="seconds"),
+            "ticker": ticker, "etype": etype, "date": date,
+            "value": value, "prev_value": prev,
+            "by_name": by_name or "", "by": by or "",
+            "source": authoritative_source(ticker, etype),
+            "note": (note or "").strip(),
+            "action": "confirm",
+        }
+        log.append(entry)
+        rlog = _put_file(LOG_PATH, log, log_sha,
+                         f"ack-log: {ticker} {value if value is not None else ''} @{date or ''}".strip())
+        if rlog.status_code not in (200, 201):
+            return False, f"留痕写入失败 HTTP {rlog.status_code}: {rlog.text[:140]}"
+
+        # 3) 再更新生效值(同标的+同日期去重替换)—— pipeline 据此停报警
         data = [e for e in data if not (e.get("ticker") == ticker and e.get("date") == date)]
         data.append({"ticker": ticker, "value": value, "etype": etype, "date": date,
-                     "by": by, "at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")})
-        new_content = base64.b64encode(
-            json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")).decode("utf-8")
-        body = {"message": f"ack: {ticker} {value if value is not None else ''}".strip(),
-                "content": new_content, "branch": GH_BRANCH}
-        if sha:
-            body["sha"] = sha
-        r = requests.put(f"{API}/repos/{GH_REPO}/contents/{ACK_PATH}",
-                         headers=_headers(), json=body, timeout=20)
-        if r.status_code in (200, 201):
-            return True, "已记录确认"
-        return False, f"写入失败 HTTP {r.status_code}: {r.text[:160]}"
+                     "by": by, "by_name": by_name or "", "at": now.isoformat(timespec="seconds")})
+        rack = _put_file(ACK_PATH, data, sha, f"ack: {ticker} {value if value is not None else ''}".strip())
+        if rack.status_code not in (200, 201):
+            return True, "已留痕,但生效值写入失败(报警可能未即时消解),稍后会自动重试口径。"
+        chg = f"(原 {prev} → {value})" if prev not in (None, "", value) else ""
+        return True, f"已记录确认并留痕{chg}"
     except Exception as e:
         return False, f"确认写入异常: {e}"
 

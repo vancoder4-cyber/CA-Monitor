@@ -34,19 +34,51 @@ _seen = set()      # message_id 去重
 BOT_OPEN_ID = None  # 机器人自身 open_id(用于判断是否被 @)
 
 
-def get_bot_open_id():
-    """取机器人自身 open_id,用于在群里只回应被 @ 的消息。"""
+def _tenant_token():
     try:
-        t = requests.post(
+        return requests.post(
             "https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal",
             json={"app_id": APP_ID, "app_secret": APP_SECRET}, timeout=15
         ).json().get("tenant_access_token")
+    except Exception as e:
+        print("tenant token err:", e)
+        return None
+
+
+def get_bot_open_id():
+    """取机器人自身 open_id,用于在群里只回应被 @ 的消息。"""
+    try:
+        t = _tenant_token()
         r = requests.get("https://open.larksuite.com/open-apis/bot/v3/info",
                          headers={"Authorization": f"Bearer {t}"}, timeout=15).json()
         return (r.get("bot") or {}).get("open_id")
     except Exception as e:
         print("get_bot_open_id err:", e)
         return None
+
+
+_NAME_CACHE = {}
+
+
+def get_user_name(open_id):
+    """open_id → 显示名(留痕『谁确认的』要可读)。需通讯录 contact 读权限;
+    没权限/取不到时返回空串,ack 里仍留 open_id 兜底,不影响确认。"""
+    if not open_id:
+        return ""
+    if open_id in _NAME_CACHE:
+        return _NAME_CACHE[open_id]
+    name = ""
+    try:
+        t = _tenant_token()
+        r = requests.get(
+            f"https://open.larksuite.com/open-apis/contact/v3/users/{open_id}",
+            params={"user_id_type": "open_id"},
+            headers={"Authorization": f"Bearer {t}"}, timeout=15).json()
+        name = ((r.get("data") or {}).get("user") or {}).get("name", "") or ""
+    except Exception as e:
+        print("get_user_name err:", e)
+    _NAME_CACHE[open_id] = name
+    return name
 
 
 def fetch_data():
@@ -161,6 +193,16 @@ def on_message(data: P2ImMessageReceiveV1):
             mval = re.search(r"\d+(?:\.\d+)?", rest)
             value = mval.group(0) if mval else None
 
+            # 备注:去掉指令词/代码/值之后剩下的自由文字(如「已比对公司 8-K」)
+            note = rest
+            if value:
+                note = note.replace(value, "", 1)
+            for _kw in ("确认", "confirm", "已核对"):
+                note = re.sub(_kw, "", note, flags=re.I)
+            if ticker:
+                note = re.sub(rf"\b{re.escape(ticker)}\b", "", note, flags=re.I)
+            note = note.strip(" :：,，、-—\t")
+
             etype = None
             if date:
                 # 指定了日期:在冲突/待执行/日历里定位该标的该日期的事件
@@ -180,11 +222,21 @@ def on_message(data: P2ImMessageReceiveV1):
             print(f"[msg] chat={chat_id} text={text!r} -> confirm {ticker} {value} @{date}")
             if not ticker:
                 send_card(chat_id, cards.confirm_card(
-                    False, "没认出代码。用法:`确认 代码 [正确值] [日期]`,例:`确认 KLAC 2.3 2026-05-18`",
+                    False, "没认出代码。用法:`确认 代码 [正确值] [日期] [备注]`,例:`确认 KLAC 2.3 2026-05-18 已比对公司8-K`",
                     site_url=SITE_URL))
                 return
-            ok, msg = ack.add_ack(ticker, value, etype, date, by=sender_oid or "")
+            by_name = get_user_name(sender_oid)
+            ok, msg = ack.add_ack(ticker, value, etype, date,
+                                  by=sender_oid or "", by_name=by_name, note=note)
             send_card(chat_id, cards.confirm_card(ok, msg, ticker, value, SITE_URL, date))
+            return
+        if cmd == "audit":
+            # 留痕库:拉最近确认记录(可只看某个标的)。经 GH API 读 data/ack_log.json
+            log = ack.get_ack_log(limit=200)
+            if ticker:
+                log = [e for e in log if e.get("ticker") == ticker]
+            print(f"[msg] chat={chat_id} -> audit ticker={ticker} n={len(log)}")
+            send_card(chat_id, cards.audit_card(log[:15], SITE_URL, ticker))
             return
         if cmd == "request":
             req = re.sub(r"@_user_\d+|@_all", "", text or "").strip()

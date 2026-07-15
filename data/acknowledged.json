@@ -50,5 +50,14 @@
     "by": "ou_05b39ad8ca3ef55e64d4af0ef956c88c",
     "by_name": "",
     "at": "2026-07-15T13:16:06+00:00"
+  },
+  {
+    "ticker": "ASML",
+    "value": "3.16845",
+    "etype": "dividend",
+    "date": "2026-04-27",
+    "by": "ou_05b39ad8ca3ef55e64d4af0ef956c88c",
+    "by_name": "",
+    "at": "2026-07-15T13:16:18+00:00"
   }
 ]

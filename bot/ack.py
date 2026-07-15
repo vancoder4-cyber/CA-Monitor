@@ -84,6 +84,18 @@ def quick_look(ticker, etype):
     return f"https://stockanalysis.com/stocks/{tkl}/dividend/"
 
 
+def get_acks():
+    """读取当前生效的人工确认 acknowledged.json(bot 用来把已确认项即时从卡片剔除)。
+    无 token/文件 → []。"""
+    if not GH_TOKEN:
+        return []
+    try:
+        data, _ = _get_file(ACK_PATH)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
 def get_ack_log(limit=None):
     """读取留痕库(只追加日志),按时间**倒序**返回(最新在前)。无 token/文件则 []。"""
     if not GH_TOKEN:

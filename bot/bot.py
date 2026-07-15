@@ -85,10 +85,43 @@ def fetch_data():
     try:
         r = requests.get(DATA_URL, timeout=15)
         if r.status_code == 200:
-            return r.json()
+            return apply_acks(r.json())
     except Exception as e:
         print("fetch data.json err:", e)
     return {}
+
+
+def apply_acks(d):
+    """把最新的人工确认叠加到(可能过期的)data.json 上,让卡片**即时**反映确认结果:
+    已确认的『字段冲突 / 数据空缺』当场从风险/总览里剔除,不必等流水线(3×/日)重跑。
+    读的是仓库里实时的 acknowledged.json —— 你一发『确认』,下一次 @bot 就看不到那条了。"""
+    if not isinstance(d, dict):
+        return d
+    try:
+        acks = ack.get_acks()
+    except Exception as e:
+        print("apply_acks get_acks err:", e)
+        acks = []
+    if not acks:
+        return d
+    ackset = {(a.get("ticker"), a.get("date")) for a in acks}
+    # 冲突/空缺:已确认 → 直接剔除(风险卡的『数据冲突』、总览的『空缺』当场消失)
+    for key in ("conflicts", "gaps"):
+        lst = d.get(key)
+        if isinstance(lst, list):
+            d[key] = [g for g in lst if (g.get("ticker"), g.get("date")) not in ackset]
+    # 待执行/日历/新公告:标记已确认(解除金额门禁显示),但保留事件本身(真实公司行动不因确认而消失)
+    for key in ("pending", "calendar", "announced"):
+        for x in d.get(key, []) or []:
+            if (x.get("ticker"), x.get("date")) in ackset:
+                x["acked"] = True
+    c = d.get("counts")
+    if isinstance(c, dict):
+        if isinstance(d.get("conflicts"), list):
+            c["conflicts"] = len(d["conflicts"])
+        if isinstance(d.get("gaps"), list):
+            c["gaps"] = len(d["gaps"])
+    return d
 
 
 def _send(chat_id, msg_type, content):

@@ -1,0 +1,16 @@
+[
+  {
+    "at_bj": "2026-07-15T21:10:13+08:00",
+    "at_utc": "2026-07-15T13:10:13+00:00",
+    "ticker": "KLAC",
+    "etype": "dividend",
+    "date": "2026-02-17",
+    "value": "1.9",
+    "prev_value": null,
+    "by_name": "",
+    "by": "ou_05b39ad8ca3ef55e64d4af0ef956c88c",
+    "source": "https://www.nasdaq.com/market-activity/stocks/klac/dividend-history",
+    "note": "",
+    "action": "confirm"
+  }
+]

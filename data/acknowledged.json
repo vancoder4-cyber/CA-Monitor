@@ -59,5 +59,14 @@
     "by": "ou_05b39ad8ca3ef55e64d4af0ef956c88c",
     "by_name": "",
     "at": "2026-07-15T13:16:18+00:00"
+  },
+  {
+    "ticker": "KLAC",
+    "value": "2.3",
+    "etype": "dividend",
+    "date": "2026-05-18",
+    "by": "ou_05b39ad8ca3ef55e64d4af0ef956c88c",
+    "by_name": "",
+    "at": "2026-07-15T14:40:25+00:00"
   }
 ]

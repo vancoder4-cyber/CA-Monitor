@@ -17,6 +17,7 @@ import sources as S
 import reconcile as R
 import report as RP
 import notify_lark
+import sec_filing
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "data")
@@ -133,8 +134,10 @@ def _grp_brief(g):
     u = (g.by_source.get("SEC") or {}).get("url", "") if g.etype == "filing" else ""
     amt = next((v.get("amount") for v in g.by_source.values() if v.get("amount") is not None), None)
     ratio = next((v.get("ratio") for v in g.by_source.values() if v.get("ratio")), None)
+    # src_url = 直达那封宣告 filing(分红/拆股经 EFTS 定位;filing 直接用 SEC 源 url)。best-effort。
+    src = u or sec_filing.resolve_filing_url(g.ticker, g.etype, g.anchor_date)
     return {"ticker": g.ticker, "etype": g.etype, "date": g.anchor_date,
-            "note": g.note, "amount": amt, "ratio": ratio, "sec_url": u,
+            "note": g.note, "amount": amt, "ratio": ratio, "sec_url": u, "src_url": src,
             "conflicts": g.conflicts, "gaps": g.gaps}
 
 
@@ -258,6 +261,7 @@ def build():
                                       "record": _pk("record_date"), "pay": _pk("pay_date"),
                                       "amount": _pk("amount"), "ratio": _pk("ratio"), "amt_srcs": _amt_srcs,
                                       "acked": getattr(g, "acked", False),
+                                      "src_url": sec_filing.resolve_filing_url(g.ticker, g.etype, g.anchor_date),
                                       "products": C.product_tags(g.ticker)})
 
             if g.is_future and g.etype != "filing" and g.days_to is not None:
@@ -273,6 +277,7 @@ def build():
                                 "amt_srcs": _amt_srcs, "acked": getattr(g, "acked", False),
                                 "first": _decl or seen.get(s),
                                 "confirmed": _confirmed, "srcs": sorted(g.by_source.keys()),
+                                "src_url": sec_filing.resolve_filing_url(g.ticker, g.etype, g.anchor_date),
                                 "products": C.product_tags(g.ticker), "risk": C.risk_note(g.ticker, g.etype)})
                 done = set(fired.get(s, []))
                 # 只触发「最接近的一轮」:跨过的更大轮次一并标记,避免补推一堆

@@ -12,13 +12,14 @@ def date_label(etype):
 
 
 def _authoritative_link(g):
-    """给一条冲突配一个可点开核对的**权威来源**:公司 IR → SEC EDGAR(8-K 普通股 / 6-K 外国发行人)。
-    分红再附一个聚合页(stockanalysis)供快速看数值。不用 Nasdaq(常空白、不覆盖 NYSE/ADR)。"""
+    """给一条冲突配一个可点开核对的**权威来源**。
+    首选流水线已定位好的**那封具体 filing**(src_url:分红/拆股经 EFTS 直达 8-K/6-K 原文);
+    没定位到就回退到公司 IR / SEC 该标的备案列表(ack.authoritative_source)。不用第三方聚合页。"""
+    src = g.get("src_url") or g.get("sec_url")
+    if src:
+        return f"　🔗 [SEC 原文(具体 filing)]({src})"
     tk, et = g.get("ticker", ""), g.get("etype")
-    links = [f"[权威核对]({ack.authoritative_source(tk, et)})"]
-    if et == "dividend":
-        links.append(f"[看数值]({ack.quick_look(tk, et)})")
-    return "　🔗 " + " · ".join(links)
+    return f"　🔗 [核对来源(公司IR/SEC备案)]({ack.authoritative_source(tk, et)})"
 
 # ===== 指令唯一来源(改指令只改这里;HELP_TEXT / 关于卡片 / parse_command 都由它生成)=====
 # 顺序即匹配优先级。key 必须在 bot.py 的 on_message 里有对应 dispatch 分支。

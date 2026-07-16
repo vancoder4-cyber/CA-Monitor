@@ -13,15 +13,12 @@ def date_label(etype):
 
 
 def _authoritative_link(g):
-    """给一条冲突配一个可点开核对的**权威来源**。
-    首选流水线已定位好的**那封具体 filing**(src_url:分红/拆股经 EFTS 直达 8-K/6-K 原文);
-    没定位到就回退到公司 IR / SEC 该标的备案列表(ack.authoritative_source)。不用第三方聚合页。"""
-    src = g.get("src_url") or g.get("sec_url")
-    if src:
-        return f"　🔗 [SEC 原文(具体 filing)]({src})"
-    import ack  # 惰性导入(ack 依赖 requests);只在没有 src_url 的兜底分支才用
-    tk, et = g.get("ticker", ""), g.get("etype")
-    return f"　🔗 [核对来源(公司IR/SEC备案)]({ack.authoritative_source(tk, et)})"
+    """给一条冲突配一个可点开核对的来源,带**置信度分级**:
+    1 公司IR → 2 具体SEC filing → 3 聚合页(1 没有看 2,2 没有看 3)。链接文字标出是第几档。"""
+    import ack  # 惰性导入(ack 依赖 requests);CI 的一致性检查在装依赖前 import cards,故不放模块顶层
+    url, label, _tier = ack.verify_link(
+        g.get("ticker", ""), g.get("etype"), g.get("src_url") or g.get("sec_url"))
+    return f"　🔗 [{label}]({url})"
 
 # ===== 指令唯一来源(改指令只改这里;HELP_TEXT / 关于卡片 / parse_command 都由它生成)=====
 # 顺序即匹配优先级。key 必须在 bot.py 的 on_message 里有对应 dispatch 分支。

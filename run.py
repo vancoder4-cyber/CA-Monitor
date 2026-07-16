@@ -17,7 +17,6 @@ import sources as S
 import reconcile as R
 import report as RP
 import notify_lark
-import sec_filing
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "data")
@@ -134,10 +133,11 @@ def _grp_brief(g):
     u = (g.by_source.get("SEC") or {}).get("url", "") if g.etype == "filing" else ""
     amt = next((v.get("amount") for v in g.by_source.values() if v.get("amount") is not None), None)
     ratio = next((v.get("ratio") for v in g.by_source.values() if v.get("ratio")), None)
-    # src_url = 直达那封宣告 filing(分红/拆股经 EFTS 定位;filing 直接用 SEC 源 url)。best-effort。
-    src = u or sec_filing.resolve_filing_url(g.ticker, g.etype, g.anchor_date)
+    # src_url:只用 SEC 源给出的**真实 filing url**(并购/退市那类,可靠)。
+    # 分红/拆股不再用 EFTS 全文猜——它会命中章程/发债8-K/港交所月报等任何提到 dividend 的文件,
+    # 且 ADR 的 USD/ADR 值本就不在 SEC(公司报本币,存托行折 USD)。宁可回退公司IR/备案列表,也不给错的。
     return {"ticker": g.ticker, "etype": g.etype, "date": g.anchor_date,
-            "note": g.note, "amount": amt, "ratio": ratio, "sec_url": u, "src_url": src,
+            "note": g.note, "amount": amt, "ratio": ratio, "sec_url": u, "src_url": u,
             "conflicts": g.conflicts, "gaps": g.gaps}
 
 
@@ -261,7 +261,6 @@ def build():
                                       "record": _pk("record_date"), "pay": _pk("pay_date"),
                                       "amount": _pk("amount"), "ratio": _pk("ratio"), "amt_srcs": _amt_srcs,
                                       "acked": getattr(g, "acked", False),
-                                      "src_url": sec_filing.resolve_filing_url(g.ticker, g.etype, g.anchor_date),
                                       "products": C.product_tags(g.ticker)})
 
             if g.is_future and g.etype != "filing" and g.days_to is not None:
@@ -277,7 +276,6 @@ def build():
                                 "amt_srcs": _amt_srcs, "acked": getattr(g, "acked", False),
                                 "first": _decl or seen.get(s),
                                 "confirmed": _confirmed, "srcs": sorted(g.by_source.keys()),
-                                "src_url": sec_filing.resolve_filing_url(g.ticker, g.etype, g.anchor_date),
                                 "products": C.product_tags(g.ticker), "risk": C.risk_note(g.ticker, g.etype)})
                 done = set(fired.get(s, []))
                 # 只触发「最接近的一轮」:跨过的更大轮次一并标记,避免补推一堆

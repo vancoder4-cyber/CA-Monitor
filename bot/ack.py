@@ -78,10 +78,26 @@ def authoritative_source(ticker, etype, refs_ir=None):
 
 
 def quick_look(ticker, etype):
-    """快速核对『数值对不对』用的聚合页(服务端渲染、覆盖 US+ADR,比 Nasdaq 稳)。
-    留痕里存的是 authoritative_source(权威原始出处);这个只给人肉 eyeball 用。"""
+    """快速核对『数值对不对』用的聚合页(服务端渲染、覆盖 US+ADR,比 Nasdaq 稳)。"""
     tkl = (ticker or "").lower()
+    if etype == "split":
+        return f"https://stockanalysis.com/stocks/{tkl}/"
     return f"https://stockanalysis.com/stocks/{tkl}/dividend/"
+
+
+def verify_link(ticker, etype, src_url="", refs_ir=None):
+    """『核对来源』置信度分级(1 没有看 2,2 没有看 3),返回 (url, label, tier):
+      T1 公司 IR 分红页(refs.json,最权威·第一方·直接显示宣告值)
+      T2 具体 SEC filing(只有可靠的才用:并购/退市源给的真实 url;分红一般没有)
+      T3 聚合页 stockanalysis(服务端渲染,美股+ADR 都显示 USD 分红历史,快速核对)
+    注意:ADR 的 USD/ADR 是存托行折算,SEC 里没有,所以那种情况 T3 反而比 SEC 有用。"""
+    tk = ticker or ""
+    ir = (refs_ir if refs_ir is not None else _load_refs_ir()).get(tk) or ""
+    if ir:
+        return ir, "公司IR·最权威", 1
+    if src_url:
+        return src_url, "SEC原文", 2
+    return quick_look(tk, etype), "聚合页·第三方(快速核对)", 3
 
 
 def get_acks():

@@ -1,11 +1,12 @@
 {
-  "_说明": "参考链接维护台。分红核对链接优先级 = 宣告8-K(自动匹配) > 此处 ir_dividend 链接 > Nasdaq(自动回退)。改完这一个文件提交即可:run.py 会读取,机器人卡片与网页『参考链接』板块都会用。URL 留空表示未维护(自动回退 Nasdaq)。",
-  "_维护方法": "把对应标的的官方 IR『分红/股息历史』页 URL 填进 ir_dividend;不确定就留空。建议填前先在浏览器打开确认页面真的有分红表。",
+  "_说明": "参考链接维护台(核对来源置信度分级 T1)。核对链接优先级 = 公司IR(此处 ir_dividend,T1·最权威) > 具体SEC filing(T2) > 聚合页 stockanalysis(T3·快速核对)。改完这一个文件提交即可:run.py 读取,机器人风险卡『核对来源』就用它。URL 留空则自动降到 T2/T3。",
+  "_维护方法": "把标的官方 IR『分红/股息』页 URL 填进 ir_dividend;不确定就留空。**ADR 尤其要填**——因为 ADR 的 USD 是净额、聚合页(T3)显示的是税后净额,而我们认毛额(gross),毛额只在公司 IR 的本币公告里(如 NVO 的 DKK 7.95/股、TSM 的 NT$6.0/股)。填前先在浏览器打开确认页面真有分红数据。",
   "_alert_mention说明": "推送『临近预警(催办)』时 @ 谁。填 open_id(ou_xxx,让对方 @ 一次机器人即可从 Railway 日志取到);填 \"all\" = @所有人;留空 = 不 @。",
   "alert_mention_open_ids": ["ou_05b39ad8ca3ef55e64d4af0ef956c88c", "ou_93fee48eefca514e73e17c58d622cb18"],
   "ir_dividend": {
     "AAPL": "https://investor.apple.com/dividend-history/default.aspx",
     "MSFT": "https://www.microsoft.com/en-us/investor/dividends-and-stock-history",
+    "NVO": "https://www.novonordisk.com/investors/stock-information/dividend.html",
     "NVDA": "",
     "AVGO": "",
     "GOOGL": "",

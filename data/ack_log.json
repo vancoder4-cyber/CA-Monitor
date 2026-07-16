@@ -110,5 +110,19 @@
     "source": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&ticker=HPE&type=&dateb=&owner=include&count=40",
     "note": "已核8-K,$0.1425/share",
     "action": "confirm"
+  },
+  {
+    "at_bj": "2026-07-16T12:08:57+08:00",
+    "at_utc": "2026-07-16T04:08:57+00:00",
+    "ticker": "BABA",
+    "etype": "dividend",
+    "date": "2026-06-11",
+    "value": "1.05",
+    "prev_value": null,
+    "by_name": "",
+    "by": "ou_05b39ad8ca3ef55e64d4af0ef956c88c",
+    "source": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&ticker=BABA&type=&dateb=&owner=include&count=40",
+    "note": "已核年报,US$1.05/ADS",
+    "action": "confirm"
   }
 ]

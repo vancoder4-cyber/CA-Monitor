@@ -245,9 +245,13 @@ def build_dashboard(all_groups, source_health, alerts, meta):
             return (f" <span style='color:#cf222e;font-weight:700'>⏳已挂 {a} 天未确认</span>")
         return f" <span style='color:#888;font-size:12px'>已挂 {a} 天</span>" if a else ""
 
+    def _adr_html(g):  # ADR 预扣税提示:保证认税前毛额
+        n = R.adr_tax_note(g.ticker, g.by_source) if g.etype == "dividend" else ""
+        n = n.replace("**", "")
+        return (f"<br><span style='color:#cf222e'>{html.escape(n)}</span>") if n else ""
     conf_html = alert_block("❗ 字段冲突(零容忍 · 需人工确认)", alerts["conflicts"],
         lambda g: f"<b>{g.ticker}</b> {ETYPE_CN.get(g.etype,g.etype)} {g.anchor_date}: "
-                  + "; ".join(html.escape(c) for c in g.conflicts) + _aged(g))
+                  + "; ".join(html.escape(c) for c in g.conflicts) + _aged(g) + _adr_html(g))
     gap_html = alert_block("🕳 数据空缺(需人工确认)", alerts["gaps"],
         lambda g: f"<b>{g.ticker}</b> {ETYPE_CN.get(g.etype,g.etype)} {g.anchor_date}: "
                   + "; ".join(html.escape(x) for x in g.gaps) + _aged(g))

@@ -227,8 +227,15 @@ def _build_card(alerts, meta, dashboard_url=""):
         if a >= _esc:
             return f"　<font color='red'>⏳已挂 {a} 天未确认</font>"
         return f"　<font color='grey'>已挂 {a} 天</font>" if a else ""
+    def _adr(g):  # ADR 预扣税提示:保证认税前毛额
+        try:
+            import reconcile as _R
+            n = _R.adr_tax_note(g.ticker, g.by_source) if g.etype == "dividend" else ""
+        except Exception:
+            n = ""
+        return f"\n　<font color='red'>{n}</font>" if n else ""
     cl = [f"• **{g.ticker}** {ETYPE_CN.get(g.etype, g.etype)} {g.anchor_date}:"
-          f" {_md_escape('; '.join(g.conflicts))}{_aged(g)}{_refs(g.ticker, g.etype, g)}"
+          f" {_md_escape('; '.join(g.conflicts))}{_aged(g)}{_adr(g)}{_refs(g.ticker, g.etype, g)}"
           for g in alerts["conflicts"]]
     section("❗ 字段冲突(零容忍 · 需人工确认)", cl)
 

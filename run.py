@@ -147,8 +147,12 @@ def _grp_brief(g):
     # src_url:①并购/退市→SEC 源的真实 filing url;②分红/拆股→refs.json 里**人工核实过**的
     # filing_overrides(代码|除息日)。不再用 EFTS 全文猜(会命中章程/发债8-K/港交所月报)。
     src = u or filing_overrides().get(f"{g.ticker}|{g.anchor_date}", "")
+    # ADR 分红:识别毛额/净额,附提示,保证运营认税前毛额(见 config.ADR_WHT)
+    _adr = R.adr_tax(g.ticker, g.by_source) if g.etype == "dividend" else None
     return {"ticker": g.ticker, "etype": g.etype, "date": g.anchor_date,
             "note": g.note, "amount": amt, "ratio": ratio, "sec_url": u, "src_url": src,
+            "adr_note": (R.adr_tax_note(g.ticker, g.by_source) if g.etype == "dividend" else ""),
+            "adr_gross": (_adr["gross"] if _adr else None),
             "conflicts": g.conflicts, "gaps": g.gaps}
 
 

@@ -33,3 +33,5 @@
 
 - [ ] NOK / SONY 的宣告 filing 或公司 IR 分红页核实后,补进 `refs.json`(filing_overrides 或 ir_dividend),让其核对来源从 T3 聚合页升到 T2/T1。
 - [ ] 其余 ADR(ASML 等)同理,尤其毛额只在本币公告里的。
+
+- [ ] **SONY/NOK 本币毛额**:从各自 6-K 精确核出年末息/分期息的 JPY/EUR per share,填 refs.json(filing_overrides + 校准 gross);当前靠源侧毛额近似。

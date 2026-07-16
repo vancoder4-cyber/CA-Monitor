@@ -258,10 +258,23 @@ def on_message(data: P2ImMessageReceiveV1):
                     False, "没认出代码。用法:`确认 代码 [正确值] [日期] [备注]`,例:`确认 KLAC 2.3 2026-05-18 已比对公司8-K`",
                     site_url=SITE_URL))
                 return
+            # ADR 防呆:若确认的值像「净额(税后)」——低于该事件毛额约 5% 以上——就警告(仍记录)
+            warn = ""
+            _ag = None
+            for c in (d.get("conflicts", []) or []):
+                if c.get("ticker") == ticker and c.get("date") == date:
+                    _ag = c.get("adr_gross")
+                    break
+            try:
+                if _ag and value is not None and float(value) < float(_ag) * 0.95:
+                    warn = (f"⚠️ 你确认的 **{value}** 像是**净额(税后)**;该 ADR **毛额(税前)约 {_ag}**。"
+                            f"我们认毛额 —— 若填错请用毛额重发一次(会覆盖)。")
+            except (TypeError, ValueError):
+                pass
             by_name = get_user_name(sender_oid)
             ok, msg = ack.add_ack(ticker, value, etype, date,
                                   by=sender_oid or "", by_name=by_name, note=note)
-            send_card(chat_id, cards.confirm_card(ok, msg, ticker, value, SITE_URL, date, etype))
+            send_card(chat_id, cards.confirm_card(ok, msg, ticker, value, SITE_URL, date, etype, warn))
             return
         if cmd == "audit":
             # 留痕库:拉最近确认记录(可只看某个标的)。经 GH API 读 data/ack_log.json

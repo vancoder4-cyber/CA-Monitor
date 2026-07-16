@@ -230,9 +230,16 @@ def risk_card(data, site_url):
     sec("🤝 并购 / 退市(评估暂停·移仓·强结)",
         [_line(e) for e in structurals])
     _refs = data.get("refs", {})
+
+    def _conf_line(g):
+        s = (f"• **{g['ticker']}** {ETYPE_CN.get(g['etype'], g['etype'])} {date_label(g['etype'])} {g['date']}: "
+             + "; ".join(g.get("conflicts", [])))
+        if g.get("adr_note"):   # ADR 预扣税提示:保证认税前毛额
+            s += f"\n　<font color='red'>{g['adr_note']}</font>"
+        return s + "\n" + _authoritative_link(g, _refs)
+
     sec("❗ 数据冲突(动手前先核实;先看权威源,再用聚合页交叉核对)",
-        [f"• **{g['ticker']}** {ETYPE_CN.get(g['etype'], g['etype'])} {date_label(g['etype'])} {g['date']}: "
-         + "; ".join(g.get("conflicts", [])) + "\n" + _authoritative_link(g, _refs) for g in conflicts])
+        [_conf_line(g) for g in conflicts])
     if n == 0:
         elems.append({"tag": "div", "text": {"tag": "lark_md", "content": "✅ 当前无风控事项。"}})
     return _card("⚠️ 风控清单", template, elems, site_url, "打开预警面板")
@@ -496,12 +503,14 @@ def request_card(ok, msg, text="", site_url=""):
 
 
 # ---------------- 确认(人工 finalize)----------------
-def confirm_card(ok, msg, ticker=None, value=None, site_url="", date=None, etype=None):
-    """用法:确认 代码 [正确值] [日期] [备注]。日期=该事件的除息日(分红)/生效日(拆股)。"""
+def confirm_card(ok, msg, ticker=None, value=None, site_url="", date=None, etype=None, warn=""):
+    """用法:确认 代码 [正确值] [日期] [备注]。日期=该事件的除息日(分红)/生效日(拆股)。
+    warn:ADR 防呆提示(确认的值像净额时),非空则红字置顶。"""
     if ok:
         v = f",以 **{value}** 为准" if value is not None else ""
         dd = f"({date_label(etype)} {date})" if date else ""
-        content = (f"✅ 已记录确认:**{ticker}**{dd}{v}。\n"
+        head = f"<font color='red'>{warn}</font>\n\n" if warn else ""
+        content = (head + f"✅ 已记录确认:**{ticker}**{dd}{v}。\n"
                    "金额门禁解除、停止报警;已写入留痕库(谁/何时/核对来源,发『留痕』可调取)。\n\n"
                    "> 同一标的有多条**值不同**的异常时,请带上日期指定是哪一条,"
                    "例:`确认 KLAC 2.3 2026-05-18`、`确认 KLAC 1.9 2026-02-17`。\n"

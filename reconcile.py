@@ -50,6 +50,46 @@ def is_disputed(g):
     return bool(g.conflicts) and not getattr(g, "acked", False)
 
 
+def adr_tax(ticker, by_source, field="amount"):
+    """ADR 分红的**毛额/净额**识别 —— 保证认的是税前(毛额)。
+    预扣税只会让金额变小,所以**毛额 = 各源最大值**;明显低于毛额(>5%)的源判为**净额(税后)**。
+    返回 {gross, country, rate, nets:[(src,val,pct)]} 或 None(非 ADR / 数据不足)。"""
+    wht = C.adr_wht(ticker)
+    if not wht:
+        return None
+    country, rate = wht
+    vals = []
+    for s, v in by_source.items():
+        x = v.get(field)
+        if x is None:
+            continue
+        try:
+            vals.append((s, float(x)))
+        except (TypeError, ValueError):
+            pass
+    if len(vals) < 2:
+        return None
+    gmax = max(v for _, v in vals)
+    if gmax <= 0:
+        return None
+    # 明显低于最高值(>5%)的判为净额;毛额 = 剩下「非净额」源里的多数票(而非单纯取最大,避免某源汇率偏高)
+    nets = [(s, v, 1 - v / gmax) for s, v in vals if v < gmax * 0.95]
+    net_srcs = {s for s, _, _ in nets}
+    gross_by = {s: by_source[s] for s in by_source if s not in net_srcs}
+    gross = pick_value(gross_by, field) or gmax
+    return {"gross": gross, "country": country, "rate": rate, "nets": nets}
+
+
+def adr_tax_note(ticker, by_source, field="amount"):
+    """给运营看的一句话提示:毛额(税前)是多少、哪些源是净额别拿去确认。无净额则空串。"""
+    a = adr_tax(ticker, by_source, field)
+    if not a or not a["nets"]:
+        return ""
+    nets = "、".join(f"{s}={v:g}(≈已扣{p*100:.0f}%)" for s, v, p in a["nets"])
+    return (f"⚠️ ADR·{a['country']}预扣税:确认请用**毛额 {a['gross']:g}**(税前);"
+            f"{nets} 是净额(税后),勿据此确认")
+
+
 def _d(s):
     try:
         return dt.date.fromisoformat(s)

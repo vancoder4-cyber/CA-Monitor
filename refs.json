@@ -3,6 +3,14 @@
   "_维护方法": "把标的官方 IR『分红/股息』页 URL 填进 ir_dividend;不确定就留空。**ADR 尤其要填**——因为 ADR 的 USD 是净额、聚合页(T3)显示的是税后净额,而我们认毛额(gross),毛额只在公司 IR 的本币公告里(如 NVO 的 DKK 7.95/股、TSM 的 NT$6.0/股)。填前先在浏览器打开确认页面真有分红数据。",
   "_alert_mention说明": "推送『临近预警(催办)』时 @ 谁。填 open_id(ou_xxx,让对方 @ 一次机器人即可从 Railway 日志取到);填 \"all\" = @所有人;留空 = 不 @。",
   "alert_mention_open_ids": ["ou_05b39ad8ca3ef55e64d4af0ef956c88c", "ou_93fee48eefca514e73e17c58d622cb18"],
+  "_filing_overrides说明": "人工核实过的『那封具体宣告 filing』直达 URL,key = 代码|除息日(YYYY-MM-DD)。作为 T2 核对来源直接用(比 T3 聚合页可靠)。**只放亲自打开确认过含该金额的**;不确定就别放。分红/拆股不再自动 EFTS 猜,只认这里的人工登记。",
+  "filing_overrides": {
+    "HPE|2026-06-16": "https://www.sec.gov/Archives/edgar/data/1645590/000164559026000052/hpe-20260601.htm",
+    "HPE|2026-03-24": "https://www.sec.gov/Archives/edgar/data/1645590/000164559026000028/hpe-20260309.htm",
+    "TSM|2026-06-11": "https://www.sec.gov/Archives/edgar/data/1046179/000104617926000294/tsm-dividendadjustmentx202.htm",
+    "TSM|2026-03-17": "https://www.sec.gov/Archives/edgar/data/1046179/000104617926000027/tsm-dividendadjustmentx202.htm",
+    "BABA|2026-06-11": "https://www.sec.gov/Archives/edgar/data/1577552/000110465926060224/tm2614494d1_ex99-1.htm"
+  },
   "ir_dividend": {
     "AAPL": "https://investor.apple.com/dividend-history/default.aspx",
     "MSFT": "https://www.microsoft.com/en-us/investor/dividends-and-stock-history",

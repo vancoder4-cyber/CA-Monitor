@@ -2,6 +2,18 @@
 
 > 规则:每次 push 前在最上面加一条,格式 `## 日期 · 标题` + 几条 `- 要点`。日期用**真实当天日期**(可 `date +%F` 确认),别照抄上一条。保持简洁。
 
+## 2026-07-16 · 人工核实的 filing 直达(filing_overrides)—— 回答"为什么又成聚合页"
+
+- 我在对话里逐封打开核对过的宣告 filing,以前没进系统,所以风险卡回退到 T3 聚合页。现登记进 `refs.json.filing_overrides`(key=代码|除息日),作为 **T2 SEC原文**直接用。
+- 本批已核实并登记(都亲自打开确认含该金额):
+  - HPE 06-16 → hpe-20260601.htm("$0.1425 common per share, record June 16")
+  - HPE 03-24 → hpe-20260309.htm("$0.1425 … record March 24")
+  - TSM 06-11 → …294/tsm-dividendadjustment(NT$6.0/股,Q4'25)
+  - TSM 03-17 → …027/tsm-dividendadjustment(NT$6.0/股,Q3'25)
+  - BABA 06-11 → …060224/…ex99-1(FY26 年报公告:"US$1.05 per ADS … June 11")
+- NOK/SONY 暂未登记(分期派息结构复杂),仍走 T3;后续核实后补进 filing_overrides 或 IR。
+- 取值仍只认人工登记,**不再 EFTS 全文猜**。
+
 ## 2026-07-16 · 核对来源改为置信度分级 + 关停乱猜 filing
 
 - **关停 EFTS 猜 filing**:全文搜「dividend」会命中公司章程、发债 8-K、港交所月报等任何提到该词的文件(BABA/NVO 就被匹配错)。分红/拆股不再自动给"具体 filing";并购/退市仍用 SEC 源的真实 url(可靠)。

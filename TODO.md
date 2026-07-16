@@ -28,3 +28,8 @@
 - [ ] **字段再核对**:`sources.fetch_finx` 的字段是按当前 demo 返回写的(`dividendExDate/dividendRecordDate/dividendPaymentDate`、`splitAnnouncement` 等),已做防御式多名兼容;稳定后对照正式文档再确认一遍。
 - [ ] **轮换 FINX 密码**:demo 密码曾在沟通中明文出现,确认已在 Railway + GitHub secret 两处换成新密码。
 - [ ] **拆股/并购验证**:目前主要用 AAPL/MSFT 分红验证过;等有拆股或并购样本时,验证 `STOCK_SPLIT` / `MA` / `OTHER_CORPORATE_ACTION` 解析正确。
+
+## 核对来源:补齐 ADR 的 T1/T2
+
+- [ ] NOK / SONY 的宣告 filing 或公司 IR 分红页核实后,补进 `refs.json`(filing_overrides 或 ir_dividend),让其核对来源从 T3 聚合页升到 T2/T1。
+- [ ] 其余 ADR(ASML 等)同理,尤其毛额只在本币公告里的。

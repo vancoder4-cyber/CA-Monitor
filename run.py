@@ -84,6 +84,17 @@ def load_refs():
         return {}
 
 
+_FILING_OVERRIDES = None
+
+
+def filing_overrides():
+    """refs.json 里人工核实过的『具体宣告 filing』:key = 代码|除息日 → 直达 URL。"""
+    global _FILING_OVERRIDES
+    if _FILING_OVERRIDES is None:
+        _FILING_OVERRIDES = load_refs().get("filing_overrides", {}) or {}
+    return _FILING_OVERRIDES
+
+
 def _ack_match(acks, ticker, date):
     """找到匹配的确认条目(同标的;确认未记日期则不限日期)。"""
     for a in acks:
@@ -133,11 +144,11 @@ def _grp_brief(g):
     u = (g.by_source.get("SEC") or {}).get("url", "") if g.etype == "filing" else ""
     amt = next((v.get("amount") for v in g.by_source.values() if v.get("amount") is not None), None)
     ratio = next((v.get("ratio") for v in g.by_source.values() if v.get("ratio")), None)
-    # src_url:只用 SEC 源给出的**真实 filing url**(并购/退市那类,可靠)。
-    # 分红/拆股不再用 EFTS 全文猜——它会命中章程/发债8-K/港交所月报等任何提到 dividend 的文件,
-    # 且 ADR 的 USD/ADR 值本就不在 SEC(公司报本币,存托行折 USD)。宁可回退公司IR/备案列表,也不给错的。
+    # src_url:①并购/退市→SEC 源的真实 filing url;②分红/拆股→refs.json 里**人工核实过**的
+    # filing_overrides(代码|除息日)。不再用 EFTS 全文猜(会命中章程/发债8-K/港交所月报)。
+    src = u or filing_overrides().get(f"{g.ticker}|{g.anchor_date}", "")
     return {"ticker": g.ticker, "etype": g.etype, "date": g.anchor_date,
-            "note": g.note, "amount": amt, "ratio": ratio, "sec_url": u, "src_url": u,
+            "note": g.note, "amount": amt, "ratio": ratio, "sec_url": u, "src_url": src,
             "conflicts": g.conflicts, "gaps": g.gaps}
 
 

@@ -77,5 +77,14 @@
     "by": "ou_05b39ad8ca3ef55e64d4af0ef956c88c",
     "by_name": "",
     "at": "2026-07-16T04:07:46+00:00"
+  },
+  {
+    "ticker": "BABA",
+    "value": "1.05",
+    "etype": "dividend",
+    "date": "2026-06-11",
+    "by": "ou_05b39ad8ca3ef55e64d4af0ef956c88c",
+    "by_name": "",
+    "at": "2026-07-16T04:08:57+00:00"
   }
 ]

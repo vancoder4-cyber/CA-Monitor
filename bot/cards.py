@@ -12,13 +12,17 @@ def date_label(etype):
     return DATE_LABEL.get(etype, "关键日")
 
 
-def _authoritative_link(g):
-    """给一条冲突配一个可点开核对的来源,带**置信度分级**:
-    1 公司IR → 2 具体SEC filing → 3 聚合页(1 没有看 2,2 没有看 3)。链接文字标出是第几档。"""
+def _authoritative_link(g, refs=None):
+    """冲突核对来源。置信度分级:1 公司IR → 2 具体SEC filing → 3 聚合页。
+    **要解决冲突时给两个源**:先最权威(T1/T2),再附聚合页快速核对 ——
+    尤其 ADR,权威源是本币公告(NT$/DKK),聚合页补上 USD 数值,两边交叉核对。
+    refs 传 data.json 的 refs(IR 映射),避免依赖机器人本地能否读到 refs.json。"""
     import ack  # 惰性导入(ack 依赖 requests);CI 的一致性检查在装依赖前 import cards,故不放模块顶层
-    url, label, _tier = ack.verify_link(
-        g.get("ticker", ""), g.get("etype"), g.get("src_url") or g.get("sec_url"))
-    return f"　🔗 [{label}]({url})"
+    tk, et = g.get("ticker", ""), g.get("etype")
+    url, label, tier = ack.verify_link(tk, et, g.get("src_url") or g.get("sec_url"), refs_ir=refs)
+    if tier <= 2:   # 有权威源:权威 + 聚合 两个都给
+        return f"　🔗 [{label}]({url}) · [聚合快速核对]({ack.quick_look(tk, et)})"
+    return f"　🔗 [{label}]({url})"   # 本就只有 T3,不重复
 
 # ===== 指令唯一来源(改指令只改这里;HELP_TEXT / 关于卡片 / parse_command 都由它生成)=====
 # 顺序即匹配优先级。key 必须在 bot.py 的 on_message 里有对应 dispatch 分支。
@@ -225,9 +229,10 @@ def risk_card(data, site_url):
         [_line(e, with_risk=True) for e in splits])
     sec("🤝 并购 / 退市(评估暂停·移仓·强结)",
         [_line(e) for e in structurals])
-    sec("❗ 数据冲突(动手前先核实,点下方链接核对权威源)",
+    _refs = data.get("refs", {})
+    sec("❗ 数据冲突(动手前先核实;先看权威源,再用聚合页交叉核对)",
         [f"• **{g['ticker']}** {ETYPE_CN.get(g['etype'], g['etype'])} {date_label(g['etype'])} {g['date']}: "
-         + "; ".join(g.get("conflicts", [])) + "\n" + _authoritative_link(g) for g in conflicts])
+         + "; ".join(g.get("conflicts", [])) + "\n" + _authoritative_link(g, _refs) for g in conflicts])
     if n == 0:
         elems.append({"tag": "div", "text": {"tag": "lark_md", "content": "✅ 当前无风控事项。"}})
     return _card("⚠️ 风控清单", template, elems, site_url, "打开预警面板")

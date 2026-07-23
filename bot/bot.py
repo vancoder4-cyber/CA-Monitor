@@ -12,6 +12,8 @@ import os
 import re
 import sys
 import json
+import time
+import threading
 import subprocess
 import requests
 import lark_oapi as lark
@@ -328,10 +330,28 @@ def on_message(data: P2ImMessageReceiveV1):
         print("on_message error:", e)
 
 
+def _heartbeat_loop():
+    """掉线告警:每 5 分钟 ping 一次 HEARTBEAT_URL(如 healthchecks.io 的 check URL)。
+    bot 一旦挂了/长连接断了/进程停了,就不再 ping,监控方超时后发邮件/Slack 告警。
+    未配置 HEARTBEAT_URL 则不启用(静默跳过)。"""
+    url = os.environ.get("HEARTBEAT_URL", "").strip()
+    if not url:
+        print("heartbeat: 未配置 HEARTBEAT_URL,跳过(掉线告警未启用)")
+        return
+    print("heartbeat: 已启用,每 5 分钟上报一次")
+    while True:
+        try:
+            requests.get(url, timeout=10)
+        except Exception as e:
+            print("heartbeat err:", e)
+        time.sleep(300)
+
+
 def main():
     global BOT_OPEN_ID
     BOT_OPEN_ID = get_bot_open_id()
     print("bot open_id:", BOT_OPEN_ID)
+    threading.Thread(target=_heartbeat_loop, daemon=True).start()  # 掉线告警心跳
     handler = (lark.EventDispatcherHandler.builder("", "")
                .register_p2_im_message_receive_v1(on_message).build())
     cli = lark.ws.Client(APP_ID, APP_SECRET, event_handler=handler, domain=lark.LARK_DOMAIN)

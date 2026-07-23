@@ -317,6 +317,8 @@ def on_message(data: P2ImMessageReceiveV1):
             send_card(chat_id, cards.today_card(d, SITE_URL))
         elif cmd == "week":
             send_card(chat_id, cards.week_card(d, SITE_URL))
+        elif cmd == "upcoming":
+            send_card(chat_id, cards.upcoming_card(d, SITE_URL))
         elif cmd == "announce":
             send_card(chat_id, cards.announce_card(d, SITE_URL))
         elif cmd == "coverage":

@@ -36,6 +36,7 @@ COMMANDS = [
     {"key": "today",    "kw": ["今日", "今天", "today"],                 "name": "今日",   "desc": "T0 前后24小时的关键日(除息/登记/派发/宣告)"},
     {"key": "announce", "kw": ["新公告", "公告", "announce"],            "name": "新公告", "desc": "最近 5 个宣告的事件(已派发完标『已结束』)"},
     {"key": "week",     "kw": ["本周", "week"],                          "name": "本周",   "desc": "未来 7 天的公司行动"},
+    {"key": "upcoming", "kw": ["临近催办", "催办", "临近", "待执行"],      "name": "临近催办", "desc": "已公告未发生的公司行动,按距除息天数排+催办文案(随时拉,不用等推送)"},
     {"key": "calendar", "kw": ["日历", "calendar", "cal"],              "name": "日历",   "desc": "当月公司行动月历(图)"},
     {"key": "coverage", "kw": ["覆盖", "资产", "标的", "coverage"],      "name": "覆盖",   "desc": "各标的在现货/合约的覆盖情况"},
     {"key": "lookup",   "kw": ["查代码", "查询", "代码", "查", "ticker", "lookup"], "name": "查代码", "desc": "@我 + 代码(如 AVGO)弹出该标的公司行动;只发『查代码』看用法"},
@@ -280,6 +281,28 @@ def today_card(data, site_url):
 
 def week_card(data, site_url):
     return _window_card(data, site_url, 0, 7, "本周(未来7天)")
+
+
+def upcoming_card(data, site_url):
+    """临近催办:已公告未发生的事件,按距除息天数排 + 催办文案(与推送同口径,随时可拉)。"""
+    import config as C  # config 纯数据无三方依赖,惰性导入(避免 CI 装依赖前 import cards 受影响)
+    gen = data.get("generated", "")
+    pend = sorted(data.get("pending", []), key=lambda x: x.get("days", 9999))
+    if not pend:
+        elems = [{"tag": "div", "text": {"tag": "lark_md", "content": "近期暂无已公告未执行的公司行动。"}}]
+        return _card(f"🔔 临近催办 · {gen}", "blue", elems, site_url, "打开网页面板")
+    lines = []
+    for x in pend[:30]:
+        prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
+        line = (f"• {prod}**{x['ticker']}** {ETYPE_CN.get(x['etype'], x['etype'])}{_val(x)} — "
+                f"<font color='red'>还剩 {x['days']} 天</font>\n　{_dates(x)}")
+        if x.get("days") is not None:
+            line += f"\n　👉 {C.alert_copy(x['days'])}"
+        if not x.get("confirmed", True):
+            line += ("\n　⚠️ <font color='orange'>未见宣告日/单源(可能是预估,公司尚未正式公告)—— 勿据此执行</font>")
+        lines.append(line)
+    elems = [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}]
+    return _card(f"🔔 临近催办(≤14天每天 · 30天知会)· {gen}", "blue", elems, site_url, "打开网页面板")
 
 
 def announce_card(data, site_url):

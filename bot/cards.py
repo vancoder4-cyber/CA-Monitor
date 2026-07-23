@@ -311,10 +311,16 @@ def upcoming_card(data, site_url):
         prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
         line = (f"• {prod}**{x['ticker']}** {ETYPE_CN.get(x['etype'], x['etype'])}{_val(x)} — "
                 f"<font color='red'>还剩 {x['days']} 天</font>\n　{_dates(x)}")
+        srcs = x.get("srcs") or []
+        if srcs:
+            n = len(srcs)
+            tag = "单源" if n == 1 else f"{n}源"
+            line += f"\n　📡 数据源({tag}):{', '.join(srcs)}"
         if x.get("days") is not None:
             line += f"\n　👉 {_alert_copy(x['days'])}"
         if not x.get("confirmed", True):
-            line += ("\n　⚠️ <font color='orange'>未见宣告日/单源(可能是预估,公司尚未正式公告)—— 勿据此执行</font>")
+            line += ("\n　⚠️ <font color='orange'>未见宣告日/单源(可能是预估,公司尚未正式公告)—— "
+                     "核对后发『确认 代码 值 日期』放行</font>")
         lines.append(line)
     elems = [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}]
     return _card(f"🔔 临近催办(≤14天每天 · 30天知会)· {gen}", "blue", elems, site_url, "打开网页面板")

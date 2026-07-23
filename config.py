@@ -23,15 +23,18 @@ _load_dotenv()
 # ---- 业务范围 ----
 # 现货:85 支美股(原 24 + 本轮新上 61;SPCX 已上线故保留;STRC 本轮不上,已下掉)
 # 注:Berkshire B 类代码写作 BRK-B(SEC/yfinance/Tiingo/FMP 都用这个格式;写 BRK.B 会全线抓不到)
+# 本期不上 ADR —— 已移除 8 个真 ADR:ARM/ASML/BABA/NOK/NVO/PAYP/SONY/TSM(2026-07-23)。
+# 下期要上再加回来即可;它们的母国/预扣税率仍保留在 ADR_WHT 里,方便复用。
+# 注:BB/BSP/NBIS/IREN 是海外公司但直接上普通股(非 ADR),继续保留监控。
 SPOT_TICKERS = {
-    "AAOI", "AAPL", "ADBE", "ALAB", "AMAT", "AMD", "AMZN", "ARM", "ASML", "ASTS",
-    "AVGO", "AXTI", "BABA", "BB", "BE", "BMNR", "BRK-B", "BSP", "BX", "CAT",
+    "AAOI", "AAPL", "ADBE", "ALAB", "AMAT", "AMD", "AMZN", "ASTS",
+    "AVGO", "AXTI", "BB", "BE", "BMNR", "BRK-B", "BSP", "BX", "CAT",
     "CBRS", "CIEN", "COHR", "COIN", "COST", "CRCL", "CRDO", "CRM", "CRWD", "CRWV",
     "CSCO", "DELL", "DIS", "DKNG", "EBAY", "FLEX", "FLNC", "GLW", "GME", "GOOGL",
     "HD", "HIMS", "HOOD", "HPE", "IBM", "INTC", "IREN", "JPM", "KLAC", "LITE",
-    "LLY", "LRCX", "META", "MRVL", "MSFT", "MSTR", "MU", "NBIS", "NFLX", "NOK",
-    "NOW", "NVDA", "NVO", "ONDS", "ORCL", "PAYP", "PLTR", "QCOM", "QNT", "RIVN",
-    "RKLB", "SMCI", "SNDK", "SONY", "SPCX", "TER", "TSLA", "TSM", "TTWO",
+    "LLY", "LRCX", "META", "MRVL", "MSFT", "MSTR", "MU", "NBIS", "NFLX",
+    "NOW", "NVDA", "ONDS", "ORCL", "PLTR", "QCOM", "QNT", "RIVN",
+    "RKLB", "SMCI", "SNDK", "SPCX", "TER", "TSLA", "TTWO",
     "TXN", "UBER", "V", "WDC", "WMT", "ZM",
 }
 # 合约:22(截图 23 行去掉已下架的 SOXL)

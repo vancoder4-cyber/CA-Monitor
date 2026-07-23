@@ -194,26 +194,34 @@ SRC_PRIORITY = ["Nasdaq", "FINX", "FMP", "Tiingo", "AlphaVantage", "SEC", "yfina
 # 消解方式只有一个:群里发「确认 代码 [正确值]」——不豁免、不自动消失。
 REVIEW_ESCALATE_DAYS = 3
 
-# ---- 预警节奏(距除息日天数,临近时只触发"最接近的一轮")----
+# ---- 预警节奏(合并了「临近预警 + 待执行」为一个催办清单)----
+# 规则:进入 30 天窗口时提醒一次(heads-up);15–29 天安静(已知会过);
+#       ≤14 天每天提醒一次(每天去重,不是每次跑都刷),直到除息日。
+ALERT_HEADSUP_DAY = 30      # 距除息 ≤ 这个天数时,首次提醒一次
+ALERT_DAILY_WITHIN = 14     # 距除息 ≤ 这个天数时,每天提醒一次
+ALERT_ANCHOR = "ex_date"    # 以除息日为基准
+# 旧节奏(已弃用,保留常量避免外部引用报错)
 ALERT_ROUNDS = [30, 14, 7, 3, 1]
-# 以哪个日期作为预警基准
-ALERT_ANCHOR = "ex_date"
-# 已公告未执行的事件:是否每次跑都持续推送(直到执行)
-PENDING_ALWAYS_PUSH = True
 
-# 各轮「运营」操作文案(随天数升级:30/14 仅知会,7/3/1 升级为催办)
-ROUND_OPS = {
-    30: "提前知会:距除息约 30 天,请运营留意并排入计划。",
-    14: "提前知会:距除息约 14 天,请运营确认本次活动安排。",
-    7:  "⏱ 催办:距除息 7 天 —— 请运营开始准备相关文案,并明确「具体哪天」执行各项操作、完成排期。",
-    3:  "⏱ 催办·收尾:距除息 3 天 —— 请确保相关文案全部写完。",
-    1:  "⏱ 最后确认:距除息仅 1 天 —— 确保运营文案已就绪,并备好定时发送事宜。",
-}
-# 风控文案:待风控团队明确(占位,各轮都带)
+# 风控文案:待风控团队明确(占位)
 ROUND_RISK_TBD = "风控提醒:待风控团队明确(占位)"
 
-def round_copy(rnd):
-    return ROUND_OPS.get(rnd, ""), ROUND_RISK_TBD
+
+def alert_copy(days):
+    """按「距除息天数」给运营催办文案。≤14 天每天推、随天数升级紧迫度;30 天那次是知会。"""
+    if days <= 1:
+        return "⏱ 最后确认:仅剩 1 天 —— 确保文案已就绪、定时发送已备好。"
+    if days <= 3:
+        return f"⏱ 收尾:剩 {days} 天 —— 确保相关文案全部写完。"
+    if days <= 7:
+        return f"⏱ 催办:剩 {days} 天 —— 准备文案、明确「具体哪天」执行各项操作、完成排期。"
+    if days <= ALERT_DAILY_WITHIN:
+        return f"进入 {ALERT_DAILY_WITHIN} 天窗口:剩 {days} 天 —— 每天跟进,确认本次活动安排。"
+    return f"提前知会:距除息约 {days} 天 —— 请留意并排入计划(之后 {ALERT_DAILY_WITHIN} 天内会每天催)。"
+
+
+def round_copy(rnd):  # 兼容旧调用
+    return alert_copy(rnd), ROUND_RISK_TBD
 
 # ---- 产品归属(用于风控运营提示;SPOT_TICKERS / CONTRACT_TICKERS 见文件上方业务范围)----
 def product_tags(ticker):

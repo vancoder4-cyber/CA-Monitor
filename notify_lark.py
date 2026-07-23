@@ -138,7 +138,7 @@ def _build_card(alerts, meta, dashboard_url=""):
     elements = [{
         "tag": "div",
         "text": {"tag": "lark_md",
-                 "content": f"📣 新公告 **{n_ann}**　⏳ 待执行 **{n_pending}**　🆕 新发现 **{n_new}**"
+                 "content": f"📣 新公告 **{n_ann}**　🔔 临近催办 **{n_round}**　🆕 新发现 **{n_new}**"
                             f"　❗冲突 **{n_conf}**　🕳 空缺 **{n_gap}**"}
     }, {"tag": "hr"}]
 
@@ -164,25 +164,29 @@ def _build_card(alerts, meta, dashboard_url=""):
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": head}})
         elements.append({"tag": "hr"})
 
-    # ⏰ 临近预警(运营催办)
+    # 🔔 临近催办(已合并「临近预警 + 待执行」:≤14 天每天推 · 30 天进窗知会一次)
     rl = []
     for x in alerts["rounds"]:
         dates = _dates(x)
         val = _val(x)
         prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
         line = (f"• {prod}**{x['ticker']}** {ETYPE_CN.get(x['etype'], x['etype'])}{val} — "
-                f"<font color='red'>D-{x['days']}</font>({x['round']}天轮)　{dates}")
+                f"<font color='red'>D-{x['days']}</font>　{dates}")
         if x.get("ops"):
             line += f"\n　👉 {x['ops']}"
-        if x.get("risk_copy"):
-            line += f"\n　🛡 {x['risk_copy']}"
+        if not x.get("confirmed", True):
+            line += (f"\n　⚠️ <font color='orange'>未见宣告日,仅 {'/'.join(x.get('srcs') or [])} 单源"
+                     f"(可能是预估,公司尚未正式公告)—— 请勿据此执行</font>")
+        for rn in x.get("risk", []):
+            line += f"\n　⚠️ {rn}"
+        line += _refs(x["ticker"], x["etype"], decl_url=x.get("decl_url"), ir_url=x.get("ir_url"))
         rl.append(line)
-    # 轮询预警 @:有催办事项且配置了名单时,在催办区顶部 @ 对应的人
+    # 催办 @:有催办事项且配置了名单时,在催办区顶部 @ 对应的人
     _mentions = _load_mentions()
     if rl and _mentions:
         elements.append({"tag": "div", "text": {"tag": "lark_md",
-                        "content": _at_tags(_mentions) + " ⏰ 有临近催办事项,请及时处理"}})
-    section("⏰ 临近预警(运营催办)", rl)
+                        "content": _at_tags(_mentions) + " 🔔 有临近催办事项,请及时处理"}})
+    section("🔔 临近催办(≤14天每天 · 30天知会)", rl)
 
     # 优先级互斥:已在催办里出现的事件,后面的区不再重复
     def _sig(x):
@@ -201,25 +205,7 @@ def _build_card(alerts, meta, dashboard_url=""):
         al.append(f"• {prod}**{x['ticker']}** {ETYPE_CN.get(x['etype'], x['etype'])}{val} —— "
                   f"宣告 {x.get('decl')} · 除息 {x['date']}{days}")
     section("📣 新公告(刚宣告)", al)
-
-    # ⏳ 待执行(已公告未发生)—— 跳过已在催办/新公告里出现的
-    pl = []
-    for x in alerts.get("pending", []):
-        if _sig(x) in claimed:
-            continue
-        prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
-        val = _val(x)
-        dates = _dates(x)
-        line = (f"• {prod}**{x['ticker']}** {ETYPE_CN.get(x['etype'], x['etype'])}{val} — "
-                f"<font color='red'>还剩 {x['days']} 天</font>　{dates}")
-        if not x.get("confirmed", True):
-            line += (f"\n　⚠️ <font color='orange'>未见宣告日,仅 {'/'.join(x.get('srcs') or [])} 单源"
-                     f"(可能是预估,公司尚未正式公告)—— 请勿据此执行</font>")
-        for rn in x.get("risk", []):
-            line += f"\n　⚠️ {rn}"
-        line += _refs(x["ticker"], x["etype"], decl_url=x.get("decl_url"), ir_url=x.get("ir_url"))
-        pl.append(line)
-    section("⏳ 待执行(已公告未发生)", pl)
+    # 「待执行」区已并入上面的「临近催办」,不再单列。
 
     # 字段冲突(零容忍:不豁免,每次都报,直到人工「确认」)
     def _aged(g):

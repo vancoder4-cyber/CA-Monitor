@@ -198,9 +198,12 @@ def build_dashboard(all_groups, source_health, alerts, meta):
             else:
                 ref = (f"<br><a href='https://www.nasdaq.com/market-activity/stocks/{x['ticker'].lower()}/dividend-history'"
                        f" target='_blank' rel='noopener'>🔗 Nasdaq 分红记录 ↗</a>")
+        tip = ""
+        if x.get("days") is not None:
+            tip = f"<br><span style='color:#0969da'>👉 {html.escape(C.alert_copy(x['days']))}</span>"
         return (f"{prod}<b>{x['ticker']}</b> {ETYPE_CN.get(x['etype'], x['etype'])}{val} — "
-                f"<b style='color:#cf222e'>还剩 {x['days']} 天</b>　<span style='color:#555;font-size:12px'>{html.escape(dates)}</span>{risk}{ref}")
-    pending_html = alert_block("⏳ 待执行(已公告未发生,持续提醒)", alerts.get("pending", []), _pending_render)
+                f"<b style='color:#cf222e'>还剩 {x['days']} 天</b>　<span style='color:#555;font-size:12px'>{html.escape(dates)}</span>{tip}{risk}{ref}")
+    pending_html = alert_block("🔔 临近催办 · 待执行(按距除息:≤14天每天催 · 30天知会)", alerts.get("pending", []), _pending_render)
 
     # 📣 新公告(刚扫到 declaration date)
     def _ann_render(x):
@@ -234,7 +237,7 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         if x.get("risk_copy"):
             s += f"<br><span style='color:#9a6700'>🛡 {html.escape(x['risk_copy'])}</span>"
         return s
-    round_html = alert_block("⏰ 临近预警(运营催办)", alerts["rounds"], _round_render)
+    round_html = ""  # 「临近预警」已并入上面的「临近催办 · 待执行」,网页不再单列
     # 零容忍:不做口径豁免。挂着就一直报,只有人工「确认」能消解 —— 挂越久标记越醒目。
     _rv = alerts.get("review") or {}
     _esc = _rv.get("escalate_days", 3)
@@ -494,17 +497,15 @@ def build_text_digest(alerts, meta):
     def _round_line(x):
         prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
         lab = "除息" if x.get("etype") == "dividend" else "生效"
-        s = (f"{prod}{x['ticker']} {ETYPE_CN.get(x['etype'],x['etype'])} D-{x['days']} ({x['round']}天轮) |"
+        s = (f"{prod}{x['ticker']} {ETYPE_CN.get(x['etype'],x['etype'])} D-{x['days']} |"
              + (f" 宣告 {x['decl']}" if x.get('decl') else "")
              + (f" 登记 {x['record']}" if x.get('record') else "")
              + f" {lab} {x['date']}"
              + (f" 派发 {x['pay']}" if x.get('pay') else ""))
         if x.get("ops"):
             s += f"\n      👉 {x['ops']}"
-        if x.get("risk_copy"):
-            s += f"\n      🛡 {x['risk_copy']}"
         return s
-    sec("临近预警(运营催办)", alerts["rounds"], _round_line)
+    sec("临近催办(≤14天每天 · 30天知会)", alerts["rounds"], _round_line)
 
     # 优先级互斥去重:催办 > 新公告 > 待执行
     def _sig(x):

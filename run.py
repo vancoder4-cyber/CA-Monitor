@@ -292,20 +292,29 @@ def build():
                                 "first": _decl or seen.get(s),
                                 "confirmed": _confirmed, "srcs": sorted(g.by_source.keys()),
                                 "products": C.product_tags(g.ticker), "risk": C.risk_note(g.ticker, g.etype)})
-                done = set(fired.get(s, []))
-                # 只触发「最接近的一轮」:跨过的更大轮次一并标记,避免补推一堆
-                cands = [r for r in C.ALERT_ROUNDS if r >= g.days_to and r not in done]
-                if cands:
-                    rnd = min(cands)
-                    ops, risk_copy = C.round_copy(rnd)
+                # 催办节奏(合并「临近预警+待执行」):≤14 天每天一次(每天去重);
+                # 15–29 天安静;进入 ≤30 天时提醒一次(heads-up)。
+                d2 = g.days_to
+                fs = fired.get(s)
+                fs = dict(fs) if isinstance(fs, dict) else {}   # 兼容旧 state(曾存 rounds 列表)
+                due = None
+                if d2 <= C.ALERT_DAILY_WITHIN:
+                    if fs.get("last_daily") != today:      # 每天只推一次(流水线一天跑 3 次)
+                        due = "daily"; fs["last_daily"] = today
+                elif d2 <= C.ALERT_HEADSUP_DAY:
+                    if not fs.get("headsup"):              # 进入 30 天窗口首次提醒
+                        due = "headsup"; fs["headsup"] = True
+                if due:
                     round_alerts.append({"ticker": g.ticker, "etype": g.etype,
-                                         "date": g.anchor_date, "days": g.days_to, "round": rnd,
+                                         "date": g.anchor_date, "days": d2, "round": d2,
                                          "decl": _pk("declaration_date"), "record": _pk("record_date"),
                                          "pay": _pk("pay_date"), "amount": _pk("amount"),
                                          "ratio": _pk("ratio"), "products": C.product_tags(g.ticker),
-                                         "ops": ops, "risk_copy": risk_copy})
-                    done |= {r for r in C.ALERT_ROUNDS if r >= g.days_to}
-                fired[s] = sorted(done, reverse=True)
+                                         "ops": C.alert_copy(d2), "risk_copy": C.ROUND_RISK_TBD,
+                                         "confirmed": _confirmed, "srcs": sorted(g.by_source.keys()),
+                                         "amt_srcs": _amt_srcs, "acked": getattr(g, "acked", False),
+                                         "risk": C.risk_note(g.ticker, g.etype)})
+                fired[s] = fs
 
     # 统一「首发日」:分红宣告日(declaration date)→ 否则监控首次发现日
     for tk, groups in all_groups.items():

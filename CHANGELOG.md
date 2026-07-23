@@ -2,6 +2,11 @@
 
 > 规则:每次 push 前在最上面加一条,格式 `## 日期 · 标题` + 几条 `- 要点`。日期用**真实当天日期**(可 `date +%F` 确认),别照抄上一条。保持简洁。
 
+## 2026-07-23 · 修:「临近催办」发指令无响应
+
+- Bug:`upcoming_card` 里 `import config` 在 bot 运行时报 `ModuleNotFoundError`(bot 跑在 `bot/` 目录,`config.py` 在仓库根、不在其 import 路径)—— 被 on_message 的 try 吞掉,发指令静默无回应(帮助却正常,因为不 import config)。
+- 修:把催办文案 `alert_copy` **内联进 cards.py**(`_alert_copy`),cards 不再依赖 config。
+
 ## 2026-07-23 · 新增指令「临近催办」(可主动拉,不用等推送)
 
 - 群里 @机器人 发 **临近催办 / 催办 / 临近 / 待执行** → 弹出已公告未发生的公司行动,按距除息天数排 + 催办文案(与推送同口径)。

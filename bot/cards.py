@@ -12,6 +12,22 @@ def date_label(etype):
     return DATE_LABEL.get(etype, "关键日")
 
 
+def _alert_copy(days):
+    """催办文案(与 config.alert_copy 同口径,内联在 bot 侧,避免 import config —— bot 跑在 bot/ 目录,
+    config.py 在仓库根不在其 import 路径)。改文案时两处保持一致。"""
+    if days is None:
+        return ""
+    if days <= 1:
+        return "⏱ 最后确认:仅剩 1 天 —— 确保文案已就绪、定时发送已备好。"
+    if days <= 3:
+        return f"⏱ 收尾:剩 {days} 天 —— 确保相关文案全部写完。"
+    if days <= 7:
+        return f"⏱ 催办:剩 {days} 天 —— 准备文案、明确「具体哪天」执行各项操作、完成排期。"
+    if days <= 14:
+        return f"进入 14 天窗口:剩 {days} 天 —— 每天跟进,确认本次活动安排。"
+    return f"提前知会:距除息约 {days} 天 —— 请留意并排入计划(之后 14 天内会每天催)。"
+
+
 def _authoritative_link(g, refs=None):
     """冲突核对来源。置信度分级:1 公司IR → 2 具体SEC filing → 3 聚合页。
     **要解决冲突时给两个源**:先最权威(T1/T2),再附聚合页快速核对 ——
@@ -285,7 +301,6 @@ def week_card(data, site_url):
 
 def upcoming_card(data, site_url):
     """临近催办:已公告未发生的事件,按距除息天数排 + 催办文案(与推送同口径,随时可拉)。"""
-    import config as C  # config 纯数据无三方依赖,惰性导入(避免 CI 装依赖前 import cards 受影响)
     gen = data.get("generated", "")
     pend = sorted(data.get("pending", []), key=lambda x: x.get("days", 9999))
     if not pend:
@@ -297,7 +312,7 @@ def upcoming_card(data, site_url):
         line = (f"• {prod}**{x['ticker']}** {ETYPE_CN.get(x['etype'], x['etype'])}{_val(x)} — "
                 f"<font color='red'>还剩 {x['days']} 天</font>\n　{_dates(x)}")
         if x.get("days") is not None:
-            line += f"\n　👉 {C.alert_copy(x['days'])}"
+            line += f"\n　👉 {_alert_copy(x['days'])}"
         if not x.get("confirmed", True):
             line += ("\n　⚠️ <font color='orange'>未见宣告日/单源(可能是预估,公司尚未正式公告)—— 勿据此执行</font>")
         lines.append(line)

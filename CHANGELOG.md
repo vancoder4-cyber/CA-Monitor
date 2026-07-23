@@ -2,6 +2,12 @@
 
 > 规则:每次 push 前在最上面加一条,格式 `## 日期 · 标题` + 几条 `- 要点`。日期用**真实当天日期**(可 `date +%F` 确认),别照抄上一条。保持简洁。
 
+## 2026-07-23 · 临近催办加「数据源 + 两个核对入口」
+
+- 每条显示 **📡 数据源**(单源/N源 + 具体源名),一眼看清值的出处。
+- 每条加 **🔗 核对:[公司filing/SEC] · [第三方数据]** —— 第一方(src_url 具体 filing → 公司 IR(refs)→ SEC EDGAR 备案)+ 第三方(stockanalysis 聚合页),方便交叉核对后再决定要不要「确认」放行。
+- refs(IR 映射)从 data.json 读,`ack` 惰性导入(bot 侧可用),不 import 仓库根的 config。
+
 ## 2026-07-23 · 修:「临近催办」发指令无响应
 
 - Bug:`upcoming_card` 里 `import config` 在 bot 运行时报 `ModuleNotFoundError`(bot 跑在 `bot/` 目录,`config.py` 在仓库根、不在其 import 路径)—— 被 on_message 的 try 吞掉,发指令静默无回应(帮助却正常,因为不 import config)。

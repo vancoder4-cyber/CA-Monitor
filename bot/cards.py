@@ -301,7 +301,9 @@ def week_card(data, site_url):
 
 def upcoming_card(data, site_url):
     """临近催办:已公告未发生的事件,按距除息天数排 + 催办文案(与推送同口径,随时可拉)。"""
+    import ack  # bot/ 内模块,可安全导入(核对来源解析)
     gen = data.get("generated", "")
+    refs_ir = data.get("refs", {})    # IR 映射从 data.json 读,避免依赖机器人本地 refs.json
     pend = sorted(data.get("pending", []), key=lambda x: x.get("days", 9999))
     if not pend:
         elems = [{"tag": "div", "text": {"tag": "lark_md", "content": "近期暂无已公告未执行的公司行动。"}}]
@@ -321,6 +323,11 @@ def upcoming_card(data, site_url):
         if not x.get("confirmed", True):
             line += ("\n　⚠️ <font color='orange'>未见宣告日/单源(可能是预估,公司尚未正式公告)—— "
                      "核对后发『确认 代码 值 日期』放行</font>")
+        # 两个核对入口:第一方(src_url 具体 filing → 公司 IR → SEC 备案)+ 第三方聚合页
+        import ack  # bot/ 内模块,可安全导入
+        first = x.get("src_url") or ack.authoritative_source(x["ticker"], x.get("etype"), refs_ir)
+        line += (f"\n　🔗 核对:[公司filing/SEC]({first}) · "
+                 f"[第三方数据]({ack.quick_look(x['ticker'], x.get('etype'))})")
         lines.append(line)
     elems = [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}]
     return _card(f"🔔 临近催办(≤14天每天 · 30天知会)· {gen}", "blue", elems, site_url, "打开网页面板")

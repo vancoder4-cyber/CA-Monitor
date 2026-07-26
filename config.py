@@ -164,12 +164,19 @@ SEC_UA = os.environ.get("SEC_UA", "ca-monitor vancoder4@gmail.com")
 # ---- 核对策略 ----
 # 跨源把"同一事件"归组的时间窗(天):除权日相差在此范围内视为同一事件候选
 GROUP_WINDOW_DAYS = 5
+# 拆股专用更宽的窗:同一次拆股的「登记日」和「除权/生效日」常差 7–8 天,不同源各报其一,
+# 5 天窗会把一次拆股拆成两条(登记日一条、除权日一条)→ 下游可能双算系数。放宽到 15 天让它俩并成一条。
+SPLIT_GROUP_WINDOW_DAYS = 15
 # 零容忍:归组后,比对字段只要有任何差异即判为冲突
 ZERO_TOLERANCE = True
 # 比对哪些字段(分红)
 DIV_COMPARE_FIELDS = ["ex_date", "record_date", "pay_date", "amount"]
-# 比对哪些字段(拆股)
-SPLIT_COMPARE_FIELDS = ["ex_date", "ratio"]
+# 比对哪些字段(拆股):只认**比例**。日期不进比对 —— 因为各源报的是 record vs ex(口径差,非错误),
+# 拆股事件统一锚定到「除权/生效日」(见 reconcile:拆股取 max ex_date)。真报错日期(差 >15 天)仍会因归不进组而成空缺被发现。
+SPLIT_COMPARE_FIELDS = ["ratio"]
+
+def group_window(etype):
+    return SPLIT_GROUP_WINDOW_DAYS if etype == "split" else GROUP_WINDOW_DAYS
 
 # 历史覆盖较短的源(如 FINX/demo 阶段:事件接口只回近期+未来):
 # 仅对「近 SHORT_HISTORY_GAP_DAYS 天内及未来」的事件参与「空缺」判定,

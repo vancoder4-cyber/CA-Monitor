@@ -173,12 +173,13 @@ def reconcile_ticker(results) -> List[EventGroup]:
 
         # 按时间窗聚类成"同一事件"
         clusters = []
+        win = C.group_window(etype)   # 拆股用更宽的窗,让登记日+除权日并成一条
         for e in evs:
             placed = False
             ed = _d(e.ex_date)
             for cl in clusters:
                 cd = _d(cl[0].ex_date)
-                if cd and ed and abs((ed - cd).days) <= C.GROUP_WINDOW_DAYS:
+                if cd and ed and abs((ed - cd).days) <= win:
                     # 同一源同类不重复并入同簇(避免季度内多次)
                     if e.source not in {x.source for x in cl}:
                         cl.append(e); placed = True; break
@@ -186,8 +187,11 @@ def reconcile_ticker(results) -> List[EventGroup]:
                 clusters.append([e])
 
         for cl in clusters:
+            # 拆股锚定到「除权/生效日」(取较晚那个);分红/filing 取较早那个。
+            _dates = [x.ex_date for x in cl]
+            anchor = max(_dates) if etype == "split" else min(_dates)
             g = EventGroup(ticker=cl[0].ticker, etype=etype,
-                           anchor_date=min(x.ex_date for x in cl),
+                           anchor_date=anchor,
                            sources_ok=ok_sources)
             for e in cl:
                 g.by_source[e.source] = _fields_of(e, etype)

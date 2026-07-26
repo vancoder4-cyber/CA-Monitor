@@ -95,5 +95,14 @@
     "by": "ou_05b39ad8ca3ef55e64d4af0ef956c88c",
     "by_name": "",
     "at": "2026-07-23T01:30:38+00:00"
+  },
+  {
+    "ticker": "CRWD",
+    "value": "4",
+    "etype": "split",
+    "date": "2026-07-02",
+    "by": "ou_05b39ad8ca3ef55e64d4af0ef956c88c",
+    "by_name": "",
+    "at": "2026-07-26T11:08:40+00:00"
   }
 ]

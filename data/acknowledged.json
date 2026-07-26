@@ -104,5 +104,14 @@
     "by": "ou_05b39ad8ca3ef55e64d4af0ef956c88c",
     "by_name": "",
     "at": "2026-07-26T11:08:40+00:00"
+  },
+  {
+    "ticker": "KLAC",
+    "value": "10",
+    "etype": "split",
+    "date": "2026-06-12",
+    "by": "ou_05b39ad8ca3ef55e64d4af0ef956c88c",
+    "by_name": "",
+    "at": "2026-07-26T11:09:28+00:00"
   }
 ]

@@ -1,0 +1,12 @@
+[
+  {
+    "ticker": "V",
+    "etype": "dividend",
+    "date": "2026-08-11",
+    "status": "watching",
+    "by": "system",
+    "by_name": "",
+    "note": "Alpaca 单源预测；等待 Visa 公司宣告或第二个独立源确认，禁止据此执行。",
+    "at": "2026-07-29T00:00:00+00:00"
+  }
+]

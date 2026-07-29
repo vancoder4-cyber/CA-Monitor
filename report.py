@@ -135,17 +135,22 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         if urgent:
             date_cell = f"<b style='color:#cf222e'>{g.anchor_date}</b><br><span style='color:#cf222e'>D-{days}</span>"
         srcs = ", ".join(sorted(g.by_source.keys()))
+        is_forecast = getattr(g, "forecast", False)
+        fields = ("<span style='color:#bf8700;font-weight:700'>🔎预测观察 · 不执行</span>"
+                  if is_forecast else _fmt_event_fields(g))
+        status = "预测观察(不执行)" if is_forecast else STATUS_CN.get(g.status, g.status)
+        status_color = "#9a6700" if is_forecast else STATUS_COLOR.get(g.status)
         conf = ""
         if g.conflicts:
             conf = "<br>".join("⚠ " + html.escape(c) for c in g.conflicts)
         rows_html.append(f"""
-        <tr style="background:{STATUS_BG.get(g.status,'#fff')}">
+        <tr style="background:{'#fff8e1' if is_forecast else STATUS_BG.get(g.status,'#fff')}">
           <td>{date_cell}</td>
           <td><b>{html.escape(g.ticker)}</b><br><span style='color:#666;font-size:12px'>{html.escape(C.NAMES.get(g.ticker,''))}</span></td>
           <td>{ETYPE_CN.get(g.etype,g.etype)}</td>
-          <td>{_fmt_event_fields(g)}</td>
+          <td>{fields}</td>
           <td style="line-height:1.7">{_fmt_key_dates(g)}</td>
-          <td><span style="color:{STATUS_COLOR.get(g.status)};font-weight:600">{STATUS_CN.get(g.status,g.status)}</span></td>
+          <td><span style="color:{status_color};font-weight:600">{status}</span></td>
           <td style="font-size:12px;color:#444">{html.escape(srcs)}</td>
           <td style="font-size:12px;color:#cf222e">{conf}</td>
         </tr>""")
@@ -183,12 +188,7 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         dates += f"{'除息' if x.get('etype') == 'dividend' else '生效'} {x['date']}"
         if x.get("pay"):
             dates += f" · 派发 {x['pay']}"
-        unconf = ""
-        if not x.get("confirmed", True):
-            unconf = ("<br><span style='color:#bf8700;font-weight:600'>⚠️ 未见宣告日,仅 "
-                      + html.escape("/".join(x.get("srcs") or []))
-                      + " 单源(可能是预估,公司尚未正式公告)—— 请勿据此执行</span>")
-        risk = unconf + "".join(f"<br><span style='color:#9a6700'>⚠️ {html.escape(r)}</span>" for r in x.get("risk", []))
+        risk = "".join(f"<br><span style='color:#9a6700'>⚠️ {html.escape(r)}</span>" for r in x.get("risk", []))
         ref = ""
         if x.get("etype") == "dividend":
             if x.get("decl_url"):
@@ -205,6 +205,34 @@ def build_dashboard(all_groups, source_health, alerts, meta):
                 f"<b style='color:#cf222e'>还剩 {x['days']} 天</b>　<span style='color:#555;font-size:12px'>{html.escape(dates)}</span>{tip}{risk}{ref}")
     pending_html = alert_block("🔔 临近催办 · 待执行(按距除息:≤14天每天催 · 30天知会)", alerts.get("pending", []), _pending_render)
 
+    # 🔎 单源且无宣告日 = 预测观察：保留追踪，但绝不进入执行催办。
+    def _forecast_render(x):
+        prod = ("<span style='background:#fff8c5;color:#7a4b00;border-radius:4px;padding:0 6px;font-size:12px'>"
+                + "+".join(x["products"]) + "</span> ") if x.get("products") else ""
+        value = x.get("amount") if x.get("amount") is not None else x.get("ratio")
+        val = f" 预测 {html.escape(str(value))}" if value is not None else ""
+        dates = " · ".join(p for p in [
+            f"登记 {x['record']}" if x.get("record") else "",
+            f"{'除息' if x.get('etype') == 'dividend' else '生效'} {x.get('date')}",
+            f"派发 {x['pay']}" if x.get("pay") else "",
+        ] if p)
+        srcs = html.escape(", ".join(x.get("srcs") or []) or "未知")
+        note = f"<br><span style='color:#555'>📝 {html.escape(x['watch_note'])}</span>" if x.get("watch_note") else ""
+        return (f"{prod}<b>{html.escape(x['ticker'])}</b> {ETYPE_CN.get(x['etype'], x['etype'])}{val} — "
+                f"<b style='color:#bf8700'>🔎 预测观察 · 不执行</b>　"
+                f"<span style='color:#555;font-size:12px'>{html.escape(dates)}</span>"
+                f"<br><span style='color:#555'>📡 数据源:{srcs}；等待公司宣告或第二个独立源后自动转正式催办</span>{note}")
+    forecast_html = alert_block("🔎 待核实预测(不进入执行催办)", alerts.get("forecasts", []), _forecast_render)
+
+    def _forecast_update_render(x):
+        if x.get("kind") == "promoted":
+            return f"✅ <b>{html.escape(x['ticker'])}</b> 预测已转正式：第二个独立源已确认，除息/生效 {html.escape(str(x.get('date')))}"
+        if x.get("kind") == "updated":
+            return (f"🔄 <b>{html.escape(x['ticker'])}</b> 预测更新：日期 {html.escape(str(x.get('previous_date') or '—'))} → "
+                    f"{html.escape(str(x.get('date')))}")
+        return f"❌ <b>{html.escape(x['ticker'])}</b> 预测失效：预计日 {html.escape(str(x.get('date')))} 已过仍未证实，不执行。"
+    forecast_updates_html = alert_block("🔄 预测状态更新(自动追踪)", alerts.get("forecast_updates", []), _forecast_update_render)
+
     # 📣 新公告(刚扫到 declaration date)
     def _ann_render(x):
         prod = ""
@@ -213,7 +241,8 @@ def build_dashboard(all_groups, source_health, alerts, meta):
                    + "+".join(x["products"]) + "</span> "
         val = _val_html(x)
         days = f" · <b style='color:#cf222e'>还剩 {x['days']} 天</b>" if x.get("days") is not None else ""
-        return (f"{prod}<b>{x['ticker']}</b> {ETYPE_CN.get(x['etype'], x['etype'])}{val} — "
+        prefix = "✅ 预测已转正式 · " if x.get("forecast_watch") else ""
+        return (f"{prefix}{prod}<b>{x['ticker']}</b> {ETYPE_CN.get(x['etype'], x['etype'])}{val} — "
                 f"<span style='color:#0969da'>宣告 {x.get('decl')}</span> · 除息 {x['date']}{days}")
     # 网页报警去重:已在「临近预警(催办)」里的事件,不在「新公告」重复;「待执行」整块由时间线覆盖,不再单列
     _round_sigs = {(x.get("ticker"), x.get("etype"), x.get("date")) for x in alerts.get("rounds", [])}
@@ -263,7 +292,7 @@ def build_dashboard(all_groups, source_health, alerts, meta):
     # 规则说明(常驻):让看网页的人知道「为什么有些金额不给数字」「怎么解除」
     rules_html = (
         "<details style='background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:10px 14px;margin:12px 0'>"
-        "<summary style='cursor:pointer;font-weight:600'>📖 规则说明:取值口径 · 金额门禁 · 人工确认(点开)</summary>"
+        "<summary style='cursor:pointer;font-weight:600'>📖 规则说明:取值口径 · 金额门禁 · 预测观察/人工确认(点开)</summary>"
         "<div style='font-size:13px;color:#444;line-height:1.9;margin-top:8px'>"
         "<b>取值</b>:金额/比例取<b>多数票 + 源优先级</b>(要的是公司宣告的<b>原值</b>)。各源口径不同——"
         "yfinance 会按拆股回溯调整历史分红、还四舍五入;Alpaca 对 ADR 报的是<b>扣预扣税后的净额</b>"
@@ -271,10 +300,12 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         "<b>🚦 金额门禁</b>:只有<b>多源交叉验证过且无冲突</b>的金额才显示确定值,否则一律封锁:<br>"
         "　• <span style='color:#cf222e;font-weight:600'>⚠️各源不一致(a / b)</span> —— 源之间对不上<br>"
         "　• <span style='color:#bf8700;font-weight:600'>⚠️单源未交叉验证(x)</span> —— 只有 1 个源报,没交叉验证过<br>"
-        "　• <span style='color:#bf8700;font-weight:600'>⚠️未见宣告日</span> —— 单源预估,公司尚未正式公告<br>"
-        "<b>这些数字没人核过,不要拿去执行。</b><br>"
-        "<b>🙋 人工介入(零容忍·不豁免)</b>:异常每次扫描都重报、一直挂着并显示「已挂 N 天」,"
-        "超 3 天没人确认会在推送里 @ 负责人。<b>唯一出口</b>:群里发 "
+        "　• <span style='color:#bf8700;font-weight:600'>🔎预测观察</span> —— 单源且未见宣告日的预估;"
+        "不进入执行催办，持续等公司宣告或第二个独立源。可发 <code>观察 代码 日期 [备注]</code> 标记重点跟踪;"
+        "改期/升级/失效会主动推送。<br>"
+        "<b>预测值不得据此执行。</b><br>"
+        "<b>🙋 人工介入(零容忍·不豁免)</b>:字段冲突和数据空缺每次扫描都重报、一直挂着并显示「已挂 N 天」,"
+        "超 3 天没人确认会在推送里 @ 负责人。消解方式:群里发 "
         "<code>确认 代码 [正确值]</code>(如 <code>确认 TSM 1.11362</code>)"
         "→ 门禁解除、停报警、按你给的值显示,并留痕(谁确认、何时)。"
         "</div></details>")
@@ -288,8 +319,8 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         review_html = (
             f"<div style='background:{bg};border-left:4px solid {bd};padding:12px 14px;border-radius:6px;margin:12px 0'>"
             f"<b style='font-size:15px'>🙋 待人工确认 {_rv['open']} 条</b>"
-            f"　<span style='color:#555'>字段冲突 {_rv.get('conflicts',0)} · 数据空缺 {_rv.get('gaps',0)} ·"
-            f" 未宣告预估 {_rv.get('unconfirmed',0)}　最久已挂 <b>{_rv.get('max_age',0)}</b> 天</span>{over}"
+            f"　<span style='color:#555'>字段冲突 {_rv.get('conflicts',0)} · 数据空缺 {_rv.get('gaps',0)}"
+            f"　最久已挂 <b>{_rv.get('max_age',0)}</b> 天</span>{over}"
             f"<div style='color:#555;font-size:13px;margin-top:6px'>零容忍:<b>不做口径豁免</b>。"
             f"核对后在群里发 <code>确认 代码 [正确值]</code>(例:<code>确认 TSM 1.11362</code>)才会消解;"
             f"不确认则每次扫描都会继续报。</div></div>")
@@ -430,8 +461,10 @@ def build_dashboard(all_groups, source_health, alerts, meta):
   {rules_html}
   {review_html}
   {round_html}
+  {forecast_updates_html}
   {announced_html}
   {pending_html}
+  {forecast_html}
   {new_html}
   {conf_html}
   {resolved_html}
@@ -535,6 +568,22 @@ def build_text_digest(alerts, meta):
             s += f"\n      ⚠️ {r}"
         return s
     sec("待执行(已公告未发生,持续提醒)", _pend, _pending_line)
+
+    def _forecast_line(x):
+        prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
+        value = x.get("amount") if x.get("amount") is not None else x.get("ratio")
+        lab = "除息" if x.get("etype") == "dividend" else "生效"
+        return (f"{prod}{x['ticker']} {ETYPE_CN.get(x['etype'],x['etype'])} 预测 {value if value is not None else '—'} | "
+                f"{lab} {x.get('date')} · 不执行;等待公司宣告或第二个独立源")
+    sec("待核实预测(不进入执行催办)", alerts.get("forecasts", []), _forecast_line)
+
+    def _forecast_update_line(x):
+        if x.get("kind") == "promoted":
+            return f"{x['ticker']} 预测已转正式：第二个独立源已确认，除息/生效 {x.get('date')}"
+        if x.get("kind") == "updated":
+            return f"{x['ticker']} 预测更新：日期 {x.get('previous_date') or '—'} → {x.get('date')}"
+        return f"{x['ticker']} 预测失效：预计日 {x.get('date')} 已过仍未证实，不执行"
+    sec("预测状态更新(自动追踪)", alerts.get("forecast_updates", []), _forecast_update_line)
     sec("新发现事件", alerts["new"],
         lambda g: f"{g.ticker} {ETYPE_CN.get(g.etype,g.etype)} {g.anchor_date} {(_strip(g))}")
     sec("字段冲突(零容忍·需人工确认)", alerts["conflicts"],
@@ -593,13 +642,16 @@ def _collect_calendar_marks(all_groups, start, end):
             decl = _pick(g, "declaration_date")
             first = getattr(g, "first_announced", None)
             # 门禁:未确认冲突 / 单源未交叉验证 → 格子里不给确定数字
-            if R.is_disputed(g):
+            if getattr(g, "forecast", False):
+                val = "🔎预测"
+            elif R.is_disputed(g):
                 val = "⚠️待确认"
             elif R.n_src(g.by_source, "amount") == 1 and amt is not None and not getattr(g, "acked", False):
                 val = "⚠️单源"
             else:
                 val = (f"${amt}" if amt is not None else "") + (f" {ratio}" if ratio else "")
-            tip = f"{g.ticker} {CAL_TYPE[g.etype]['label']} {val} | 首发 {first or '—'} · 宣告 {decl or '—'} · 除息 {ex or '—'} · 登记 {rec or '—'} · 派发 {pay or '—'} | {STATUS_CN.get(g.status)}"
+            forecast_tip = " · 预测观察(未证实，不执行)" if getattr(g, "forecast", False) else ""
+            tip = f"{g.ticker} {CAL_TYPE[g.etype]['label']} {val}{forecast_tip} | 首发 {first or '—'} · 宣告 {decl or '—'} · 除息 {ex or '—'} · 登记 {rec or '—'} · 派发 {pay or '—'} | {STATUS_CN.get(g.status)}"
             add(ex, {"tk": g.ticker, "kind": "ex", "etype": g.etype, "status": g.status,
                      "text": f"{val}", "tip": tip})
             add(rec, {"tk": g.ticker, "kind": "record", "etype": g.etype, "status": g.status,

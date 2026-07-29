@@ -131,10 +131,12 @@ def _val(x):
 def _build_card(alerts, meta, dashboard_url=""):
     n_new = len(alerts["new"]); n_round = len(alerts["rounds"])
     n_conf = len(alerts["conflicts"]); n_gap = len(alerts["gaps"])
+    n_forecast = len(alerts.get("forecasts", []))
+    n_forecast_updates = len(alerts.get("forecast_updates", []))
     # 有冲突/空缺 → 红;有临近/新发现 → 蓝;否则绿
     if n_conf or n_gap:
         template = "red"
-    elif n_round or n_new:
+    elif n_round or n_new or n_forecast_updates:
         template = "blue"
     else:
         template = "green"
@@ -145,7 +147,7 @@ def _build_card(alerts, meta, dashboard_url=""):
         "tag": "div",
         "text": {"tag": "lark_md",
                  "content": f"📣 新公告 **{n_ann}**　🔔 临近催办 **{n_round}**　🆕 新发现 **{n_new}**"
-                            f"　❗冲突 **{n_conf}**　🕳 空缺 **{n_gap}**"}
+                            f"　❗冲突 **{n_conf}**　🕳 空缺 **{n_gap}**　🔎 预测观察 **{n_forecast}**"}
     }, {"tag": "hr"}]
 
     def section(title, lines):
@@ -156,13 +158,32 @@ def _build_card(alerts, meta, dashboard_url=""):
         elements.append({"tag": "div", "text": {"tag": "lark_md",
                         "content": f"**{title}**\n{body}{more}"}})
 
+    def forecast_update_line(x):
+        kind = x.get("kind")
+        prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
+        label = ETYPE_CN.get(x.get("etype"), x.get("etype"))
+        if kind == "promoted":
+            return (f"• ✅ {prod}**{x['ticker']}** {label} 预测已转正式 — "
+                    f"除息/生效 {x.get('date')}；已获第二个独立源确认")
+        if kind == "updated":
+            old_date = x.get("previous_date") or "—"
+            old_amt = x.get("previous_amount")
+            value = x.get("amount") if x.get("amount") is not None else x.get("ratio")
+            return (f"• 🔄 {prod}**{x['ticker']}** {label} 预测更新 — "
+                    f"日期 {old_date} → {x.get('date')}；值 {old_amt if old_amt is not None else '—'} → {value if value is not None else '—'}")
+        return (f"• ❌ {prod}**{x['ticker']}** {label} 预测失效 — "
+                f"预计日 {x.get('date')} 已过仍未获公司宣告或独立源确认；不执行。")
+
+    section("🔄 预测状态更新(自动追踪)",
+            [forecast_update_line(x) for x in alerts.get("forecast_updates", [])])
+
     # 🙋 待人工确认(不豁免:挂着就一直报,只有「确认」能消解)—— 超期则 @ 人升级
     _rv = alerts.get("review") or {}
     _esc = _rv.get("escalate_days", 3)
     if _rv.get("open"):
         _m = _load_mentions()
         head = (f"🙋 **待人工确认 {_rv['open']} 条**"
-                f"(冲突 {_rv.get('conflicts',0)} · 空缺 {_rv.get('gaps',0)} · 未宣告预估 {_rv.get('unconfirmed',0)})"
+                f"(冲突 {_rv.get('conflicts',0)} · 空缺 {_rv.get('gaps',0)})"
                 f"　最久已挂 **{_rv.get('max_age',0)} 天**")
         if _rv.get("overdue") and _m:
             head = (_at_tags(_m) + f" ❗ 有 **{_rv['overdue']}** 条异常超过 {_esc} 天没人确认,请尽快处理\n" + head)
@@ -180,9 +201,6 @@ def _build_card(alerts, meta, dashboard_url=""):
                 f"<font color='red'>D-{x['days']}</font>　{dates}")
         if x.get("ops"):
             line += f"\n　👉 {x['ops']}"
-        if not x.get("confirmed", True):
-            line += (f"\n　⚠️ <font color='orange'>未见宣告日,仅 {'/'.join(x.get('srcs') or [])} 单源"
-                     f"(可能是预估,公司尚未正式公告)—— 请勿据此执行</font>")
         for rn in x.get("risk", []):
             line += f"\n　⚠️ {rn}"
         line += _refs(x["ticker"], x["etype"], decl_url=x.get("decl_url"), ir_url=x.get("ir_url"))
@@ -208,7 +226,8 @@ def _build_card(alerts, meta, dashboard_url=""):
         prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
         val = _val(x)
         days = f" · <font color='red'>还剩 {x['days']} 天</font>" if x.get("days") is not None else ""
-        al.append(f"• {prod}**{x['ticker']}** {ETYPE_CN.get(x['etype'], x['etype'])}{val} —— "
+        prefix = "✅ 预测已转正式 · " if x.get("forecast_watch") else ""
+        al.append(f"• {prefix}{prod}**{x['ticker']}** {ETYPE_CN.get(x['etype'], x['etype'])}{val} —— "
                   f"宣告 {x.get('decl')} · 除息 {x['date']}{days}")
     section("📣 新公告(刚宣告)", al)
     # 「待执行」区已并入上面的「临近催办」,不再单列。
@@ -276,7 +295,8 @@ def notify(alerts, meta):
         return False, "未配置 LARK_WEBHOOK,跳过推送"
 
     total = (len(alerts["new"]) + len(alerts["rounds"]) + len(alerts["conflicts"])
-             + len(alerts["gaps"]) + len(alerts.get("pending", [])) + len(alerts.get("announced", [])))
+             + len(alerts["gaps"]) + len(alerts.get("pending", [])) + len(alerts.get("announced", []))
+             + len(alerts.get("forecast_updates", [])))
     if total == 0 and not cfg["notify_empty"]:
         return False, "无预警内容,跳过(设 LARK_NOTIFY_EMPTY=1 可强制推送)"
 

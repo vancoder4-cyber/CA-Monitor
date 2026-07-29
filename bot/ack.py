@@ -20,6 +20,7 @@ GH_REPO = os.environ.get("GH_REPO", "vancoder4-cyber/CA-Monitor").strip()
 GH_BRANCH = os.environ.get("GH_BRANCH", "main").strip()
 ACK_PATH = "data/acknowledged.json"   # 当前生效值(同标的+同日去重,pipeline 读这个)
 LOG_PATH = "data/ack_log.json"        # 留痕库:只追加、永不删,记录每一次确认(含改值前后)
+FORECAST_PATH = "data/forecast_watch.json"  # 人工观察的预测；不是确认，不改变数据本身
 API = "https://api.github.com"
 _BJ = dt.timezone(dt.timedelta(hours=8))
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -112,6 +113,17 @@ def get_acks():
         return []
 
 
+def get_forecasts():
+    """读取预测观察项，供交互机器人在 Pages 尚未刷新时即时叠加状态。"""
+    if not GH_TOKEN:
+        return []
+    try:
+        data, _ = _get_file(FORECAST_PATH)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
 def get_ack_log(limit=None):
     """读取留痕库(只追加日志),按时间**倒序**返回(最新在前)。无 token/文件则 []。"""
     if not GH_TOKEN:
@@ -164,6 +176,41 @@ def add_ack(ticker, value=None, etype=None, date=None, by="lark", by_name="", no
         return True, f"已记录确认并留痕{chg}"
     except Exception as e:
         return False, f"确认写入异常: {e}"
+
+
+def add_forecast(ticker, etype, date, by="lark", by_name="", note=""):
+    """把单源预测置为「观察中」。
+
+    观察不会把事件当成已确认公司行动：流水线仍会持续抓取，后续有宣告日/第二源时自动升级。
+    """
+    if not GH_TOKEN:
+        return False, "未配置 GH_TOKEN —— 请在 Railway 加一个对本仓库 Contents 有写权限的细粒度 PAT"
+    if not ticker or not etype or not date:
+        return False, "用法:`观察 代码 日期 [备注]`,例:`观察 V 2026-08-11 等待公司宣告`"
+    try:
+        now = dt.datetime.now(dt.timezone.utc)
+        data, sha = _get_file(FORECAST_PATH)
+        data = [e for e in data if not (e.get("ticker") == ticker and e.get("etype") == etype
+                                        and e.get("date") == date)]
+        data.append({"ticker": ticker, "etype": etype, "date": date, "status": "watching",
+                     "by": by or "", "by_name": by_name or "", "note": (note or "").strip(),
+                     "at": now.isoformat(timespec="seconds")})
+
+        log, log_sha = _get_file(LOG_PATH)
+        log.append({"at_bj": now.astimezone(_BJ).isoformat(timespec="seconds"),
+                    "at_utc": now.isoformat(timespec="seconds"), "ticker": ticker,
+                    "etype": etype, "date": date, "value": None, "prev_value": None,
+                    "by_name": by_name or "", "by": by or "", "source": authoritative_source(ticker, etype),
+                    "note": (note or "").strip(), "action": "watch_forecast"})
+        rlog = _put_file(LOG_PATH, log, log_sha, f"forecast-watch-log: {ticker} @{date}")
+        if rlog.status_code not in (200, 201):
+            return False, f"留痕写入失败 HTTP {rlog.status_code}: {rlog.text[:140]}"
+        r = _put_file(FORECAST_PATH, data, sha, f"forecast-watch: {ticker} @{date}")
+        if r.status_code not in (200, 201):
+            return True, "观察已留痕，但观察状态写入失败；稍后请重试。"
+        return True, "已标记为预测观察：不会进入执行催办；出现公司宣告或第二个独立源时会自动升级并推送。"
+    except Exception as e:
+        return False, f"观察写入异常: {e}"
 
 
 REQ_PATH = "requests.md"

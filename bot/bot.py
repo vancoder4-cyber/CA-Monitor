@@ -87,7 +87,7 @@ def fetch_data():
     try:
         r = requests.get(DATA_URL, timeout=15)
         if r.status_code == 200:
-            return apply_acks(r.json())
+            return apply_forecasts(apply_acks(r.json()))
     except Exception as e:
         print("fetch data.json err:", e)
     return {}
@@ -123,6 +123,40 @@ def apply_acks(d):
             c["conflicts"] = len(d["conflicts"])
         if isinstance(d.get("gaps"), list):
             c["gaps"] = len(d["gaps"])
+    return d
+
+
+def apply_forecasts(d):
+    """将刚通过机器人写入的「观察」即时叠加到网页快照。
+
+    Pages 下次流水线前，避免旧 data.json 继续把单源预测展示为执行催办。
+    """
+    if not isinstance(d, dict):
+        return d
+    try:
+        watches = ack.get_forecasts()
+    except Exception as e:
+        print("apply_forecasts get_forecasts err:", e)
+        watches = []
+    watchset = {(w.get("ticker"), w.get("etype"), w.get("date"))
+                for w in watches if w.get("status", "watching") == "watching"}
+    if not watchset:
+        return d
+    forecasts = list(d.get("forecasts") or [])
+    pending = []
+    for x in d.get("pending", []) or []:
+        key = (x.get("ticker"), x.get("etype"), x.get("date"))
+        if key in watchset and not x.get("confirmed", False):
+            x["watching"] = True
+            x.setdefault("watch_note", "已人工标记观察，等待公司宣告")
+            forecasts.append(x)
+        else:
+            pending.append(x)
+    for x in forecasts:
+        if (x.get("ticker"), x.get("etype"), x.get("date")) in watchset:
+            x["watching"] = True
+    d["pending"] = pending
+    d["forecasts"] = forecasts
     return d
 
 
@@ -218,6 +252,31 @@ def on_message(data: P2ImMessageReceiveV1):
         d = fetch_data()
         ticker = cards.find_ticker(text, d)
         # 查代码:显式『查』指令,或直接发了一个已覆盖的代码(未命中其它指令时)
+        if cmd == "forecast":
+            clean = re.sub(r"@_user_\d+|@_all", "", text or "")
+            m = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", clean)
+            date = m.group(1) if m else ""
+            if not (ticker and date):
+                send_card(chat_id, cards.forecast_card(d, SITE_URL))
+                return
+            etype = "dividend"
+            for key in ("forecasts", "pending", "calendar"):
+                hit = next((x for x in d.get(key, []) or []
+                            if x.get("ticker") == ticker and x.get("date") == date), None)
+                if hit:
+                    etype = hit.get("etype") or etype
+                    break
+            note = clean
+            for kw in ("观察", "预测", "等待宣告", "watch"):
+                note = re.sub(kw, "", note, flags=re.I)
+            note = re.sub(rf"\b{re.escape(ticker)}\b", "", note, flags=re.I)
+            note = note.replace(date, "").strip(" :：")
+            by_name = get_user_name(sender_oid)
+            print(f"[msg] chat={chat_id} -> forecast {ticker} {etype} @{date}")
+            ok, msg = ack.add_forecast(ticker, etype, date, by=sender_oid or "",
+                                       by_name=by_name, note=note)
+            send_card(chat_id, cards.forecast_mark_card(ok, msg, ticker, date, SITE_URL))
+            return
         if cmd == "confirm":
             clean = re.sub(r"@_user_\d+|@_all", "", text or "")  # 去掉 @ 占位符再取数值,避免误读
             # 先摘出日期(YYYY-MM-DD)再取数值 —— 否则「2026」会被当成金额。

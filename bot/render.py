@@ -35,6 +35,8 @@ def _font(size):
 
 def _label(e):
     t = e.get("etype")
+    if e.get("forecast"):
+        return f"{e['ticker']} {TYPE_LABEL.get(t, '事件')} 🔎预测"
     if t == "dividend":
         v = f"${e['amount']}" if e.get("amount") is not None else ""
         return f"{e['ticker']} 分红 {v}".strip()

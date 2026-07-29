@@ -66,10 +66,14 @@ def _nasdaq_div(ticker):
     return f"https://www.nasdaq.com/market-activity/stocks/{ticker.lower()}/dividend-history"
 
 
+def _quick_look(ticker, etype):
+    """第三方交叉核对入口：分红优先落到分红历史页，其它事件落到标的总览。"""
+    base = f"https://stockanalysis.com/stocks/{ticker.lower()}"
+    return f"{base}/dividend/" if etype == "dividend" else f"{base}/"
+
+
 def _refs(ticker, etype, g=None, decl_url=None, ir_url=None):
-    """核对链接:指向『对应那一条公司行动』本身,而非整列表。
-       filing → 该 filing 的 SEC 原文文件;
-       dividend → 宣告 8-K(精确匹配)> 公司 IR 分红页(refs.json)> Nasdaq 分红记录。"""
+    """核对链接:第一方/权威入口 + 第三方聚合页，方便人工交叉核对。"""
     if g is not None:
         u = _sec_url(g)
         if u:
@@ -78,10 +82,12 @@ def _refs(ticker, etype, g=None, decl_url=None, ir_url=None):
         ir_url = ir_url or getattr(g, "ir_url", "")
     if etype == "dividend":
         if decl_url:
-            return f"\n　📄 [宣告 8-K(本次分红)]({decl_url})"
-        if ir_url:
-            return f"\n　🏛 [公司IR 分红页]({ir_url})"
-        return f"\n　🔗 [Nasdaq 分红记录]({_nasdaq_div(ticker)})"
+            primary = f"📄 [宣告 8-K(本次分红)]({decl_url})"
+        elif ir_url:
+            primary = f"🏛 [公司IR 分红页]({ir_url})"
+        else:
+            primary = f"🔗 [Nasdaq 分红记录]({_nasdaq_div(ticker)})"
+        return f"\n　🔗 核对: {primary} · [第三方数据]({_quick_look(ticker, etype)})"
     return ""
 
 

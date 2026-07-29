@@ -82,11 +82,11 @@ def _refs(ticker, etype, g=None, decl_url=None, ir_url=None):
         ir_url = ir_url or getattr(g, "ir_url", "")
     if etype == "dividend":
         if decl_url:
-            primary = f"📄 [宣告 8-K(本次分红)]({decl_url})"
+            primary = f"[宣告 8-K(本次分红)]({decl_url})"
         elif ir_url:
-            primary = f"🏛 [公司IR 分红页]({ir_url})"
+            primary = f"[公司IR 分红页]({ir_url})"
         else:
-            primary = f"🔗 [Nasdaq 分红记录]({_nasdaq_div(ticker)})"
+            primary = f"[Nasdaq 分红记录]({_nasdaq_div(ticker)})"
         return f"\n　🔗 核对: {primary} · [第三方数据]({_quick_look(ticker, etype)})"
     return ""
 

@@ -19,6 +19,7 @@ import hmac
 import datetime as dt
 
 import requests
+import reconcile as R
 
 ETYPE_CN = {"dividend": "分红", "split": "拆股", "filing": "并购/公告"}
 
@@ -40,7 +41,8 @@ def _sign(timestamp, secret):
 
 
 def _pick(src_fields, field):
-    return next((v.get(field) for v in src_fields.values() if v.get(field)), None)
+    """与网页/交互 Bot 共用多数票 + 源优先级取值，不能再按字典顺序取第一条。"""
+    return R.pick_value(src_fields, field)
 
 
 def _sec_url(g):
@@ -72,22 +74,25 @@ def _quick_look(ticker, etype):
     return f"{base}/dividend/" if etype == "dividend" else f"{base}/"
 
 
-def _refs(ticker, etype, g=None, decl_url=None, ir_url=None):
-    """核对链接:第一方/权威入口 + 第三方聚合页，方便人工交叉核对。"""
+def _refs(ticker, etype, g=None, decl_url=None, ir_url=None, references=None):
+    """核对链接:消费 run.py 预先生成的统一引用契约，避免不同卡片各自回退。"""
     if g is not None:
         u = _sec_url(g)
         if u:
             return f"\n　📄 [SEC原文(本事件)]({u})"
+        references = references or getattr(g, "references", None)
         decl_url = decl_url or getattr(g, "decl_url", "")
         ir_url = ir_url or getattr(g, "ir_url", "")
     if etype == "dividend":
-        if decl_url:
-            primary = f"[宣告 8-K(本次分红)]({decl_url})"
-        elif ir_url:
-            primary = f"[公司IR 分红页]({ir_url})"
-        else:
-            primary = f"[Nasdaq 分红记录]({_nasdaq_div(ticker)})"
-        return f"\n　🔗 核对: {primary} · [第三方数据]({_quick_look(ticker, etype)})"
+        links = references or []
+        if links:
+            body = " · ".join(f"[{x['label']}]({x['url']})" for x in links if x.get("url"))
+            return f"\n　🔗 核对: {body}"
+        primary = (f"[SEC·本次宣告 8-K]({decl_url})" if decl_url else
+                   f"[官方·IR 分红页]({ir_url})" if ir_url else
+                   f"[SEC·公司备案](https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&ticker={ticker}&type=&dateb=&owner=include&count=40)")
+        return (f"\n　🔗 核对: {primary} · "
+                f"[第三方·StockAnalysis（交叉核对，可能滞后）]({_quick_look(ticker, etype)})")
     return ""
 
 
@@ -114,7 +119,7 @@ def _dates(x):
 def _val(x):
     """金额/比例门禁:有未确认冲突 → 不给确定值,标『待人工确认·勿据此执行』。
     人工「确认」后冲突消解,才会恢复显示确定值。"""
-    if not x.get("acked") and not x.get("disputed") and (x.get("amt_srcs") or 0) == 1 and (
+    if not x.get("official") and not x.get("acked") and not x.get("disputed") and (x.get("amt_srcs") or 0) == 1 and (
             x.get("amount") is not None or x.get("ratio")):
         v = x.get("amount") if x.get("amount") is not None else x.get("ratio")
         return f" <font color='orange'>⚠️单源未交叉验证({v})· 待人工确认,勿据此执行</font>"
@@ -162,9 +167,10 @@ def _build_card(alerts, meta, dashboard_url=""):
         kind = x.get("kind")
         prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
         label = ETYPE_CN.get(x.get("etype"), x.get("etype"))
-        if kind == "promoted":
+        if kind in ("promoted", "declared"):
+            why = "已获公司官方宣告" if kind == "declared" else "已获第二个独立源确认"
             return (f"• ✅ {prod}**{x['ticker']}** {label} 预测已转正式 — "
-                    f"除息/生效 {x.get('date')}；已获第二个独立源确认")
+                    f"除息/生效 {x.get('date')}；{why}")
         if kind == "updated":
             old_date = x.get("previous_date") or "—"
             old_amt = x.get("previous_amount")
@@ -175,7 +181,8 @@ def _build_card(alerts, meta, dashboard_url=""):
                 f"预计日 {x.get('date')} 已过仍未获公司宣告或独立源确认；不执行。")
 
     section("🔄 预测状态更新(自动追踪)",
-            [forecast_update_line(x) for x in alerts.get("forecast_updates", [])])
+            [forecast_update_line(x) + _refs(x["ticker"], x.get("etype"), references=x.get("references"))
+             for x in alerts.get("forecast_updates", [])])
 
     # 🙋 待人工确认(不豁免:挂着就一直报,只有「确认」能消解)—— 超期则 @ 人升级
     _rv = alerts.get("review") or {}
@@ -203,7 +210,8 @@ def _build_card(alerts, meta, dashboard_url=""):
             line += f"\n　👉 {x['ops']}"
         for rn in x.get("risk", []):
             line += f"\n　⚠️ {rn}"
-        line += _refs(x["ticker"], x["etype"], decl_url=x.get("decl_url"), ir_url=x.get("ir_url"))
+        line += _refs(x["ticker"], x["etype"], decl_url=x.get("decl_url"), ir_url=x.get("ir_url"),
+                      references=x.get("references"))
         rl.append(line)
     # 催办 @:有催办事项且配置了名单时,在催办区顶部 @ 对应的人
     _mentions = _load_mentions()
@@ -227,8 +235,9 @@ def _build_card(alerts, meta, dashboard_url=""):
         val = _val(x)
         days = f" · <font color='red'>还剩 {x['days']} 天</font>" if x.get("days") is not None else ""
         prefix = "✅ 预测已转正式 · " if x.get("forecast_watch") else ""
-        al.append(f"• {prefix}{prod}**{x['ticker']}** {ETYPE_CN.get(x['etype'], x['etype'])}{val} —— "
-                  f"宣告 {x.get('decl')} · 除息 {x['date']}{days}")
+        line = (f"• {prefix}{prod}**{x['ticker']}** {ETYPE_CN.get(x['etype'], x['etype'])}{val} —— "
+                f"宣告 {x.get('decl')} · 除息 {x['date']}{days}")
+        al.append(line + _refs(x["ticker"], x["etype"], references=x.get("references")))
     section("📣 新公告(刚宣告)", al)
     # 「待执行」区已并入上面的「临近催办」,不再单列。
 
@@ -266,6 +275,8 @@ def _build_card(alerts, meta, dashboard_url=""):
             u = _sec_url(g)
             if u:
                 line += f" [SEC原文]({u})"
+        if g.etype == "dividend":
+            line += _refs(g.ticker, g.etype, g)
         nl.append(line)
     section("🆕 新发现事件", nl)
 

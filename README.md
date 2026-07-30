@@ -1,6 +1,6 @@
 # 公司行动预警面板(多源交叉核对)
 
-盯住一篮子标的(**现货 85 + 合约 22**)的公司行动(分红 / 拆股·合股 / 并购 / 分拆 / 退市),**8 源并行抓取 → 归一化 → 零容忍交叉核对 → 预测观察 / 报警 / 人工确认**。逻辑接近机构的 golden-copy 做法。
+盯住一篮子标的(**现货 71 + 合约 22，共 82 个覆盖资产，其中 75 个可监控证券**)的公司行动(分红 / 拆股·合股 / 并购 / 分拆 / 退市),**8 源并行抓取 → 归一化 → 零容忍交叉核对 → 预测观察 / 报警 / 人工确认**。逻辑接近机构的 golden-copy 做法。
 
 三个核心设计:
 1. **零容忍**:同一事件多源比对,任一字段不一致或某源缺失就报警,**不做任何口径豁免**。
@@ -9,17 +9,23 @@
 
 产出:一屏看全的 HTML 面板(日历 + 预警 + 更新日志)+ Lark 推送 + @机器人问答。
 
+### 分红的官方化与核对链接（所有展示面一致）
+
+`run.py` 为每条分红预先生成同一份 `references`：**已逐项核验的官方本次公告/IR → SEC 本次宣告 8-K → 公司 IR 分红页 → SEC 公司备案**，并始终附 **StockAnalysis（交叉核对，可能滞后）**。网页、定时推送、单标的查询、临近催办、今日/本周、日历和新公告均消费这同一份数据；**Nasdaq 仅为采集源，绝不再作为唯一核对链接**。
+
+已经确认公司正式宣告、但采集源尚未补齐字段时，在 `refs.json` 的 `official_event_overrides` 登记该事件的官方 URL、核验日期和已确认字段。它会参与零容忍核对；与采集源不一致仍会报警，不会静默覆盖。当前 V 的 2026-08-11 分红已按此机制登记：Visa 官方 IR 显示 2026-07-28 宣告、2026-08-11 登记、2026-09-01 派发、$0.6700。
+
 ## 数据源(8 源,3 类角色)
 
 | 源 | 角色 | Key | 覆盖 |
 |---|---|---|---|
-| **yfinance** | 分红/拆股(历史) | 免 | 24/24 稳定 |
-| **Nasdaq** | 分红(按票)+ 拆股(市场日历) | 免 | 24/24 稳定 |
-| **Tiingo** | 分红/拆股交叉源 | 免费 token | 24/24 稳定 |
-| **Alpaca** | 分红/拆股 + **并购/分拆/退市结构化** | 免费 key(ID+Secret) | 24/24 稳定 |
+| **yfinance** | 分红/拆股(历史) | 免 | 尽力覆盖 |
+| **Nasdaq** | 分红(按票)+ 拆股(市场日历) | 免 | 尽力覆盖；仅采集，不作唯一核对页 |
+| **Tiingo** | 分红/拆股交叉源 | 免费 token | 尽力覆盖 |
+| **Alpaca** | 分红/拆股 + **并购/分拆/退市结构化** | 免费 key(ID+Secret) | 尽力覆盖；单源无宣告日只作预测 |
 | **FMP** | 分红/拆股 | 免费 key | 部分票(免费版 402 限额) |
 | **Alpha Vantage** | 分红/拆股 | 免费 key | 尽力(免费 25 次/天,易限流) |
-| **SEC EDGAR** | 并购/退市 filing(权威) | 免 | 24/24,8-K/S-4/25-NSE 等 |
+| **SEC EDGAR** | 并购/退市 filing(权威) | 免 | 覆盖可监控的美股/ETF，8-K/S-4/25-NSE 等 |
 | **FINX(TRKD-HS)** | 分红/拆股/并购(JWT) | `FINX_USER`+`FINX_PASS` | 已上线;供方接口仍在调整期。**未配置凭证则静默跳过,不影响其它源** |
 
 > 关键设计:源被限流/付费墙时标「**不可用**」而非「空缺」,绝不把"没查到"误判成"源说没有"。
@@ -43,7 +49,7 @@ python run.py build                       # 用缓存合并 → dashboard.html +
 ```
 
 产出:
-- `dashboard.html` —— **单页站点,顶部标签切换两个视图**:
+- `dashboard.html` —— **单页站点,顶部标签切换三个视图**:
   - 📅 **公司行动日历**:月历视图,分红/拆股/并购按日期铺格;每个事件标除息(主块带金额)/ 登记 / 派发三个关键日,悬停看完整日期;冲突红框、单源黄框
   - 🔔 **预警面板**:未来事件时间线 + 报警区(新发现/临近/冲突/空缺)+ 源健康矩阵
 - `data/latest_digest.txt` —— 定时推送用的纯文本预警清单
@@ -53,8 +59,8 @@ python run.py build                       # 用缓存合并 → dashboard.html +
 ## 报警逻辑
 
 - **新发现**:本次出现、上次没见过的事件(近 30 天内)
-- **临近预警(运营催办)**:距除权日 `30/14/7/3/1` 天各触发一轮(去重,每轮只报一次)
-- **待执行**:已公告未发生的事件,持续提醒 + 倒计时
+- **临近预警(运营催办)**:进入距除息/生效日 **30 天**窗口知会一次；15–29 天安静；**≤14 天每天**催办一次（一天三次扫描也只推一次），7/3/1 天仅升级催办文案
+- **待执行**:已公告未发生的事件，持续展示 + 倒计时；未解决冲突绝不进入催办
 - **预测观察**:单源且未见宣告日的预估，**不进入执行催办**；等待公司宣告或第二个独立源，改期/升级/失效会主动推送
 - **字段冲突(零容忍)**:≥2 源对同一事件的 除权日/登记日/派发日/金额/拆股比例 有任何差异
 - **数据空缺**:近 200 天内,某个"在覆盖该票"的源缺了别的源有的事件
@@ -77,7 +83,7 @@ python run.py build                       # 用缓存合并 → dashboard.html +
 **🚦 金额门禁**:只有「**多源交叉验证过 且 无未确认冲突**」的金额才显示确定值。其它值均不可执行:
 
 - 各源不一致 → `⚠️各源不一致(a / b)· 待人工确认,勿据此执行`
-- 只有 1 个源报 → `⚠️单源未交叉验证(x)· 待人工确认,勿据此执行`
+- 只有 1 个采集源报 → `⚠️单源未交叉验证(x)· 待人工确认,勿据此执行`；已逐项核验的公司官方公告/IR 例外，但仍保留全部来源与核对链接
 - 无宣告日 + 单源 → `🔎预测观察(可能是预估,公司尚未正式公告；不执行)`；为便于追踪变动会保留为「预测值」，但绝不是确认金额
 
 目的:**防止运营照着一个没人核过的数字去执行**。
@@ -95,19 +101,19 @@ python run.py build                       # 用缓存合并 → dashboard.html +
 
 ## 配置(`config.py`)
 
-- `SPOT_TICKERS` / `CONTRACT_TICKERS` —— 现货 **85 个股** / 合约 22(含 ETF 与商品/海外)
-- `TICKERS` —— 实际监控标的 **88 支**(现货 85 个股 + QQQ/EWY/DRAM 三个 ETF;商品/海外列入覆盖但不监控)
+- `SPOT_TICKERS` / `CONTRACT_TICKERS` —— 现货 **71 支** / 合约 22(含 ETF 与商品/海外)，合计 82 个覆盖资产
+- `TICKERS` —— 实际监控标的 **75 支**(现货个股 + QQQ/EWY/DRAM 等 ETF；商品/海外列入覆盖但不监控)
   - 代码格式坑:Berkshire B 类必须写 **`BRK-B`**(SEC/yfinance/Tiingo/FMP 都用这个;写 `BRK.B` 会全线抓不到)
   - `BASELINE_NEW_TICKERS` —— 新标的首次纳入时,历史事件是否静默建基线。`False`(默认)= 照常推「新发现」(上一批新标的会刷屏但能看全);`True` = 记为已见但不推(不刷屏)。上 62 个新现货实测:False→72 条,True→0 条
-- `ALERT_ROUNDS` —— 预警节奏 `[30,14,7,3,1]`
+- `ALERT_HEADSUP_DAY` / `ALERT_DAILY_WITHIN` —— 30 天一次知会 / 14 天内每日催办；`ALERT_ROUNDS` 仅保留给兼容旧调用
 - `GROUP_WINDOW_DAYS` —— 跨源归组时间窗(默认 5 天)
 - API key —— **全部从 `.env` / 环境变量读取,代码里不留明文**:
-  `FMP` / `ALPHAVANTAGE` / `FINNHUB` / `TIINGO` / `ALPACA_KEY_ID` / `ALPACA_SECRET` / `SEC_UA` / `FINX_USER` / `FINX_PASS`(可选,FINX 第 8 源;`FINX_BASE` 可改 UAT)
+  `FMP` / `ALPHAVANTAGE` / `TIINGO` / `ALPACA_KEY_ID` / `ALPACA_SECRET` / `SEC_UA` / `FINX_USER` / `FINX_PASS`(可选,FINX 第 8 源;`FINX_BASE` 可改 UAT)
 - `GH_TOKEN` —— 细粒度 PAT(Contents 读写),供「确认 / 预测观察 / 需求提报」写回仓库(配在 Railway)
 
 **一键触发 Action**:`./tools/trigger.sh`(触发 + 等跑完 + 核验网页刷新;需 `brew install gh && gh auth login`)。
 
-**可维护文件(改完提交即可)**:`refs.json`(IR 分红页 + 催办 @ 名单)、`CHANGELOG.md`(每次必记一条)、`UPDATE_CHECKLIST.md`(收尾检查清单)、`requests.md`(需求自动汇总)、`TODO.md`(内部技术待办/后续跟进)。
+**可维护文件(改完提交即可)**:`refs.json`(官方 IR / 已核验事件 / 催办 @ 名单)、`CHANGELOG.md`(每次必记一条)、`UPDATE_CHECKLIST.md`(收尾检查清单)、`TODO.md`(内部技术待办/后续跟进)。`requests.md` 会在首次「需求」提报时自动创建。
 
 ## 密钥与安全
 
@@ -115,16 +121,16 @@ python run.py build                       # 用缓存合并 → dashboard.html +
 - 部署到生产时,优先用平台的 Secrets / 环境变量注入,而不是把 `.env` 打进镜像。
 - 免费 key 申请:Alpha Vantage `alphavantage.co/support/#api-key`、FMP `site.financialmodelingprep.com`、Tiingo `tiingo.com`、Alpaca `alpaca.markets`(paper 账号,要 ID+Secret)。
 
-## 定时运行(盘前 + 收盘,T0 扫描)
+## 定时运行（每交易日 3 次，按美东 ET）
 
-每个交易日跑两次:盘前抓「已 announce 未发生」的临近预警,收盘后抓当天「新 announce」。`state.json` 自动去重,同一预警轮次不会重复推。
+GitHub Actions 在开盘后 **09:35**、盘中 **12:45**、收盘后 **16:05**（美东）扫描；工作流同时登记 EDT/EST 两套 UTC cron，并用 ET 守门避免夏冬令时重复。`state.json` 自动去重，同一日的每日催办不会重复推。
 
 ```bash
 # crontab(注意:cron 用服务器本地时区,下面按服务器=美东 ET 计;非 ET 请换算)
-# 盘前 08:00 ET
-0 8 * * 1-5 cd /path/to/ca_monitor && /usr/bin/python3 run.py >> data/cron.log 2>&1
-# 收盘后 18:00 ET
-0 18 * * 1-5 cd /path/to/ca_monitor && /usr/bin/python3 run.py >> data/cron.log 2>&1
+# 开盘后 09:35 / 盘中 12:45 / 收盘后 16:05 ET（服务器须设 TZ=America/New_York）
+35 9 * * 1-5 cd /path/to/ca_monitor && /usr/bin/python3 run.py >> data/cron.log 2>&1
+45 12 * * 1-5 cd /path/to/ca_monitor && /usr/bin/python3 run.py >> data/cron.log 2>&1
+5 16 * * 1-5 cd /path/to/ca_monitor && /usr/bin/python3 run.py >> data/cron.log 2>&1
 ```
 
 > 服务器非美东时区时,建议设 `TZ=America/New_York` 或用 UTC 换算(ET 比 UTC 慢 4–5 小时)。
@@ -142,7 +148,7 @@ python run.py build                       # 用缓存合并 → dashboard.html +
 ```
 LARK_WEBHOOK=https://open.larksuite.com/open-apis/bot/v2/hook/xxxx
 LARK_SECRET=（开了签名校验才填,否则留空）
-LARK_DASHBOARD_URL=https://你的面板地址/dashboard.html   # 可选,卡片底部按钮
+LARK_DASHBOARD_URL=https://你的面板地址/   # 可选,卡片底部按钮（Pages 根路径）
 LARK_NOTIFY_EMPTY=0   # 1=没预警也推一条
 ```
 
@@ -152,18 +158,18 @@ LARK_NOTIFY_EMPTY=0   # 1=没预警也推一条
 
 ## 云端托管:GitHub Actions + GitHub Pages
 
-`.github/workflows/monitor.yml` 已配好:盘前/收盘各跑一次,自动抓取 → 核对 → 推 Lark → 把 `dashboard.html` 部署到 GitHub Pages(在线网页,自动更新)。
+`.github/workflows/monitor.yml` 已配好:每交易日 3 次（09:35 / 12:45 / 16:05 ET）自动抓取 → 核对 → 推 Lark → 把 `dashboard.html` 和 `site_data.json` 部署到 GitHub Pages（在线网页，自动更新）。工作流会在 Pages 数据缺失时失败，避免网页刷新但交互 Bot 没有可读数据。
 
 启用步骤(一次性):
 
 1. **加密钥**:repo → Settings → Secrets and variables → **Actions** → New repository secret,逐个加:
-   `ALPHAVANTAGE` `FMP` `FINNHUB` `TIINGO` `ALPACA_KEY_ID` `ALPACA_SECRET` `SEC_UA` `LARK_WEBHOOK`(开了签名校验再加 `LARK_SECRET`)。
+   `ALPHAVANTAGE` `FMP` `TIINGO` `ALPACA_KEY_ID` `ALPACA_SECRET` `SEC_UA` `LARK_WEBHOOK`(开了签名校验再加 `LARK_SECRET`)。
 2. **启用 Pages**:repo → Settings → **Pages** → Source 选 **GitHub Actions**。
 3. (可选)加仓库变量 `LARK_DASHBOARD_URL` = 你的 Pages 网址(见下),Lark 卡片按钮就指向它。
 4. **手动触发一次**:repo → Actions → CA Monitor → Run workflow。跑完后网页地址为
    `https://vancoder4-cyber.github.io/CA-Monitor/`。
 
-> 定时用 UTC;ET 夏令时已对应 12:00/22:00 UTC,冬令时改成 13:00/23:00。
+> **提交到 GitHub 不会立即刷新 Pages 或 Lark**：工作流只在定时或手动 Run workflow 时运行。推送后请手动触发一次（或等待下一扫描窗口）并确认 Actions 绿灯；Railway 交互 Bot 也要确认已拉到同一提交/镜像。
 > ⚠️ 公开 Pages = 网址公开可见,持仓清单会公开。要私有请改用 Cloudflare Pages/Netlify 加访问控制。
 
 ## CA问答助手 指令清单
@@ -199,7 +205,7 @@ LARK_NOTIFY_EMPTY=0   # 1=没预警也推一条
 3. 上面这张 **指令清单**(README);
 4. 跑检查:**`python tools/check_commands.py`** —— 必须输出 `✅`。
 
-`check_commands.py` 会校验 COMMANDS / bot.py 分发 / HELP_TEXT / README 四处是否一致,不一致就报出差异并以非零码退出;**CI(monitor.yml)里也会自动跑这个检查**,不一致会让 Action 失败,从而强制同步。
+`check_commands.py` 会校验 COMMANDS / bot.py 分发 / HELP_TEXT / README / bot README 是否一致；`check_surface_consistency.py` 会用 Visa 官方宣告 fixture 校验网页、推送、交互 Bot 和月历均有同一套官方 + 第三方链接。二者都由 CI 强制执行。
 
 ### ⚠️ 更新日志规则:每次 push 必须记一条
 
@@ -217,8 +223,8 @@ LARK_NOTIFY_EMPTY=0   # 1=没预警也推一条
 
 ## 免费源额度提醒(生产注意)
 
-- **Alpha Vantage** 免费 25 次/天:88 支远超额,代码已限量(`av_limit=24`,只给前 24 支)+ 限流自动标「不可用」。生产建议升级或仅作补充。
-- **抓取耗时**:88 支 × 8 并发 ≈ 3–4 分钟(原 27 支约 1 分钟),Action 时长会相应变长。
+- **Alpha Vantage** 免费 25 次/天:75 支监控标的远超额,代码已限量(`av_limit=24`,只给前 24 支)+ 限流自动标「不可用」。生产建议升级或仅作补充。
+- **抓取耗时**:75 支 × 8 并发，Action 时长会受源限流与网络情况影响。
 - **FMP** 免费版对部分票返回 402(额度/覆盖限制),已按「不可用」处理。要全覆盖需付费档。
 - **yfinance / Nasdaq / Tiingo / Alpaca** 实测对个股稳定全绿,是当前核对主力。
 

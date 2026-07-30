@@ -54,6 +54,33 @@ def _sec_url(g):
     return (g.by_source.get("SEC") or {}).get("url", "") or g.by_source.get("Alpaca", {}).get("url", "")
 
 
+def _reference_html(x):
+    """统一渲染 run.py 下发的分红核对链接；网页不再自行回退到 Nasdaq。"""
+    if isinstance(x, dict):
+        etype, ticker = x.get("etype"), x.get("ticker", "")
+        links = x.get("references") or []
+        primary = x.get("primary_url") or x.get("decl_url") or x.get("ir_url")
+    else:
+        etype, ticker = getattr(x, "etype", ""), getattr(x, "ticker", "")
+        links = getattr(x, "references", []) or []
+        primary = getattr(x, "primary_url", "") or getattr(x, "decl_url", "") or getattr(x, "ir_url", "")
+    if etype != "dividend":
+        return ""
+    if not links:
+        primary = primary or ("https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany"
+                              f"&ticker={ticker}&type=&dateb=&owner=include&count=40")
+        links = [
+            {"label": "SEC·公司备案", "url": primary},
+            {"label": "第三方·StockAnalysis（交叉核对，可能滞后）",
+             "url": f"https://stockanalysis.com/stocks/{ticker.lower()}/dividend/"},
+        ]
+    anchors = " · ".join(
+        f"<a href='{html.escape(str(r['url']))}' target='_blank' rel='noopener'>{html.escape(str(r['label']))} ↗</a>"
+        for r in links if r.get("url")
+    )
+    return f"<br><span style='font-size:12px'>🔗 核对: {anchors}</span>" if anchors else ""
+
+
 def _fmt_event_fields(g):
     """金额/比例(详情列用):未确认冲突 → 不给确定值。"""
     if g.etype == "filing":
@@ -100,7 +127,7 @@ def _fmt_key_dates(g):
 
 def _val_html(x):
     """金额/比例门禁(官网):未确认冲突 / 单源未交叉验证 → 一律不给确定值。"""
-    if not x.get("acked") and not x.get("disputed") and (x.get("amt_srcs") or 0) == 1 and (
+    if not x.get("official") and not x.get("acked") and not x.get("disputed") and (x.get("amt_srcs") or 0) == 1 and (
             x.get("amount") is not None or x.get("ratio")):
         v = x.get("amount") if x.get("amount") is not None else x.get("ratio")
         return ("<span style='color:#bf8700;font-weight:700'> ⚠️单源未交叉验证(" + html.escape(str(v))
@@ -138,6 +165,7 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         is_forecast = getattr(g, "forecast", False)
         fields = ("<span style='color:#bf8700;font-weight:700'>🔎预测观察 · 不执行</span>"
                   if is_forecast else _fmt_event_fields(g))
+        fields += _reference_html(g)
         status = "预测观察(不执行)" if is_forecast else STATUS_CN.get(g.status, g.status)
         status_color = "#9a6700" if is_forecast else STATUS_COLOR.get(g.status)
         conf = ""
@@ -167,6 +195,7 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         u = _sec_url(g) if g.etype == "filing" else ""
         if u:
             base += f" <a href='{html.escape(u)}' target='_blank' rel='noopener'>原文 ↗</a>"
+        base += _reference_html(g)
         return base
     new_html = alert_block("🆕 新发现事件", alerts["new"], _new_render)
 
@@ -189,15 +218,7 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         if x.get("pay"):
             dates += f" · 派发 {x['pay']}"
         risk = "".join(f"<br><span style='color:#9a6700'>⚠️ {html.escape(r)}</span>" for r in x.get("risk", []))
-        ref = ""
-        if x.get("etype") == "dividend":
-            if x.get("decl_url"):
-                ref = f"<br><a href='{html.escape(x['decl_url'])}' target='_blank' rel='noopener'>📄 宣告 8-K ↗</a>"
-            elif x.get("ir_url"):
-                ref = f"<br><a href='{html.escape(x['ir_url'])}' target='_blank' rel='noopener'>🏛 公司IR 分红页 ↗</a>"
-            else:
-                ref = (f"<br><a href='https://www.nasdaq.com/market-activity/stocks/{x['ticker'].lower()}/dividend-history'"
-                       f" target='_blank' rel='noopener'>🔗 Nasdaq 分红记录 ↗</a>")
+        ref = _reference_html(x)
         tip = ""
         if x.get("days") is not None:
             tip = f"<br><span style='color:#0969da'>👉 {html.escape(C.alert_copy(x['days']))}</span>"
@@ -221,16 +242,19 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         return (f"{prod}<b>{html.escape(x['ticker'])}</b> {ETYPE_CN.get(x['etype'], x['etype'])}{val} — "
                 f"<b style='color:#bf8700'>🔎 预测观察 · 不执行</b>　"
                 f"<span style='color:#555;font-size:12px'>{html.escape(dates)}</span>"
-                f"<br><span style='color:#555'>📡 数据源:{srcs}；等待公司宣告或第二个独立源后自动转正式催办</span>{note}")
+                f"<br><span style='color:#555'>📡 数据源:{srcs}；等待公司宣告或第二个独立源后自动转正式催办</span>{note}{_reference_html(x)}")
     forecast_html = alert_block("🔎 待核实预测(不进入执行催办)", alerts.get("forecasts", []), _forecast_render)
 
     def _forecast_update_render(x):
-        if x.get("kind") == "promoted":
-            return f"✅ <b>{html.escape(x['ticker'])}</b> 预测已转正式：第二个独立源已确认，除息/生效 {html.escape(str(x.get('date')))}"
+        if x.get("kind") in ("promoted", "declared"):
+            why = "公司官方宣告" if x.get("kind") == "declared" else "第二个独立源已确认"
+            return (f"✅ <b>{html.escape(x['ticker'])}</b> 预测已转正式：{why}，除息/生效 "
+                    f"{html.escape(str(x.get('date')))}{_reference_html(x)}")
         if x.get("kind") == "updated":
             return (f"🔄 <b>{html.escape(x['ticker'])}</b> 预测更新：日期 {html.escape(str(x.get('previous_date') or '—'))} → "
                     f"{html.escape(str(x.get('date')))}")
-        return f"❌ <b>{html.escape(x['ticker'])}</b> 预测失效：预计日 {html.escape(str(x.get('date')))} 已过仍未证实，不执行。"
+        return (f"❌ <b>{html.escape(x['ticker'])}</b> 预测失效：预计日 "
+                f"{html.escape(str(x.get('date')))} 已过仍未证实，不执行。{_reference_html(x)}")
     forecast_updates_html = alert_block("🔄 预测状态更新(自动追踪)", alerts.get("forecast_updates", []), _forecast_update_render)
 
     # 📣 新公告(刚扫到 declaration date)
@@ -243,7 +267,8 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         days = f" · <b style='color:#cf222e'>还剩 {x['days']} 天</b>" if x.get("days") is not None else ""
         prefix = "✅ 预测已转正式 · " if x.get("forecast_watch") else ""
         return (f"{prefix}{prod}<b>{x['ticker']}</b> {ETYPE_CN.get(x['etype'], x['etype'])}{val} — "
-                f"<span style='color:#0969da'>宣告 {x.get('decl')}</span> · 除息 {x['date']}{days}")
+                f"<span style='color:#0969da'>宣告 {x.get('decl')}</span> · 除息 {x['date']}{days}"
+                f"{_reference_html(x)}")
     # 网页报警去重:已在「临近预警(催办)」里的事件,不在「新公告」重复;「待执行」整块由时间线覆盖,不再单列
     _round_sigs = {(x.get("ticker"), x.get("etype"), x.get("date")) for x in alerts.get("rounds", [])}
     _ann_web = [x for x in alerts.get("announced", [])
@@ -283,7 +308,7 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         return (f"<br><span style='color:#cf222e'>{html.escape(n)}</span>") if n else ""
     conf_html = alert_block("❗ 字段冲突(零容忍 · 需人工确认)", alerts["conflicts"],
         lambda g: f"<b>{g.ticker}</b> {ETYPE_CN.get(g.etype,g.etype)} {g.anchor_date}: "
-                  + "; ".join(html.escape(c) for c in g.conflicts) + _aged(g) + _adr_html(g))
+                  + "; ".join(html.escape(c) for c in g.conflicts) + _aged(g) + _adr_html(g) + _reference_html(g))
     gap_html = alert_block("🕳 数据空缺(需人工确认)", alerts["gaps"],
         lambda g: f"<b>{g.ticker}</b> {ETYPE_CN.get(g.etype,g.etype)} {g.anchor_date}: "
                   + "; ".join(html.escape(x) for x in g.gaps) + _aged(g))
@@ -384,7 +409,7 @@ def build_dashboard(all_groups, source_health, alerts, meta):
     for tk in sorted(_refs_ir):
         u = _refs_ir.get(tk) or ""
         cell = (f"<a href='{html.escape(u)}' target='_blank' rel='noopener'>IR 分红页 ↗</a>"
-                if u else "<span style='color:#9a6700'>未维护 → 回退 Nasdaq</span>")
+                if u else "<span style='color:#9a6700'>未维护 → 回退 SEC 公司备案 + 第三方交叉核对</span>")
         ref_rows.append(f"<tr><td><b>{html.escape(tk)}</b></td><td>{cell}</td></tr>")
     ref_html = ("".join(ref_rows) if ref_rows
                 else "<tr><td colspan='2' style='color:#888'>refs.json 暂无条目</td></tr>")
@@ -500,7 +525,7 @@ def build_changelog_panel(meta):
     for tk in sorted(refs):
         u = refs.get(tk) or ""
         cell = (f"<a href='{html.escape(u)}' target='_blank' rel='noopener'>IR 分红页 ↗</a>"
-                if u else "<span style='color:#9a6700'>未维护 → 回退 Nasdaq</span>")
+                if u else "<span style='color:#9a6700'>未维护 → 回退 SEC 公司备案 + 第三方交叉核对</span>")
         ref_rows.append(f"<tr><td><b>{html.escape(tk)}</b></td><td>{cell}</td></tr>")
     ref_html = "".join(ref_rows) if ref_rows else "<tr><td colspan='2' style='color:#888'>refs.json 暂无条目</td></tr>"
 
@@ -510,7 +535,7 @@ def build_changelog_panel(meta):
   {chg_html}
 
   <h2>🔗 参考链接维护台</h2>
-  <div class="sub2">分红核对链接优先级:宣告 8-K(自动)→ 下表 IR 分红页 → Nasdaq(回退)。维护:编辑仓库根目录 <code>refs.json</code> 的 <code>ir_dividend</code>,提交即可。</div>
+  <div class="sub2">分红核对链接统一由 <code>run.py</code> 下发：已核验的官方本次公告/IR → 宣告 8-K → 下表公司 IR 分红页 → SEC 公司备案，并始终附 StockAnalysis 交叉核对（可能滞后）。维护官方页请编辑 <code>refs.json</code> 的 <code>ir_dividend</code>；仅已逐项核验的官方事件填 <code>official_event_overrides</code>。</div>
   <table>
     <tr><th>标的</th><th>IR 分红页</th></tr>
     {ref_html}
@@ -578,8 +603,9 @@ def build_text_digest(alerts, meta):
     sec("待核实预测(不进入执行催办)", alerts.get("forecasts", []), _forecast_line)
 
     def _forecast_update_line(x):
-        if x.get("kind") == "promoted":
-            return f"{x['ticker']} 预测已转正式：第二个独立源已确认，除息/生效 {x.get('date')}"
+        if x.get("kind") in ("promoted", "declared"):
+            why = "公司官方宣告" if x.get("kind") == "declared" else "第二个独立源已确认"
+            return f"{x['ticker']} 预测已转正式：{why}，除息/生效 {x.get('date')}"
         if x.get("kind") == "updated":
             return f"{x['ticker']} 预测更新：日期 {x.get('previous_date') or '—'} → {x.get('date')}"
         return f"{x['ticker']} 预测失效：预计日 {x.get('date')} 已过仍未证实，不执行"
@@ -646,18 +672,22 @@ def _collect_calendar_marks(all_groups, start, end):
                 val = "🔎预测"
             elif R.is_disputed(g):
                 val = "⚠️待确认"
-            elif R.n_src(g.by_source, "amount") == 1 and amt is not None and not getattr(g, "acked", False):
+            elif (not R.has_official_source(g.by_source) and R.n_src(g.by_source, "amount") == 1
+                  and amt is not None and not getattr(g, "acked", False)):
                 val = "⚠️单源"
             else:
                 val = (f"${amt}" if amt is not None else "") + (f" {ratio}" if ratio else "")
             forecast_tip = " · 预测观察(未证实，不执行)" if getattr(g, "forecast", False) else ""
             tip = f"{g.ticker} {CAL_TYPE[g.etype]['label']} {val}{forecast_tip} | 首发 {first or '—'} · 宣告 {decl or '—'} · 除息 {ex or '—'} · 登记 {rec or '—'} · 派发 {pay or '—'} | {STATUS_CN.get(g.status)}"
             add(ex, {"tk": g.ticker, "kind": "ex", "etype": g.etype, "status": g.status,
-                     "text": f"{val}", "tip": tip})
+                     "text": f"{val}", "tip": tip,
+                     "url": getattr(g, "primary_url", "") if g.etype == "dividend" else ""})
             add(rec, {"tk": g.ticker, "kind": "record", "etype": g.etype, "status": g.status,
-                      "text": "", "tip": tip})
+                      "text": "", "tip": tip,
+                      "url": getattr(g, "primary_url", "") if g.etype == "dividend" else ""})
             add(pay, {"tk": g.ticker, "kind": "pay", "etype": g.etype, "status": g.status,
-                      "text": "", "tip": tip})
+                      "text": "", "tip": tip,
+                      "url": getattr(g, "primary_url", "") if g.etype == "dividend" else ""})
     return marks
 
 
@@ -708,9 +738,13 @@ def _render_month(year, month, marks, today):
                     pills.append(pill)
                 else:
                     lbl = KIND_LABEL[m["kind"]]
-                    pills.append(f"<div class='pill sub' style='color:{col['fg']}' title='{tip}'>"
-                                 f"<span class='tk'>{html.escape(m['tk'])}</span>"
-                                 f"<span class='sublbl'>{lbl}</span></div>")
+                    pill = (f"<div class='pill sub' style='color:{col['fg']}' title='{tip}'>"
+                            f"<span class='tk'>{html.escape(m['tk'])}</span>"
+                            f"<span class='sublbl'>{lbl}</span></div>")
+                    u = m.get("url")
+                    if u:
+                        pill = f"<a href='{html.escape(u)}' target='_blank' rel='noopener' style='text-decoration:none'>{pill}</a>"
+                    pills.append(pill)
             cls = "today" if is_today else ""
             tds.append(f"<td class='{cls}'><div class='dn'>{day}</div>{''.join(pills)}</td>")
         body.append("<tr>" + "".join(tds) + "</tr>")

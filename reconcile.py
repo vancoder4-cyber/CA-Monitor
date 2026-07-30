@@ -45,6 +45,11 @@ def n_src(by_source, field):
     return sum(1 for v in by_source.values() if v.get(field) is not None)
 
 
+def has_official_source(by_source):
+    """是否有人工逐项核验后合入的公司官方公告/IR 覆盖层。"""
+    return bool((by_source or {}).get("CompanyIR"))
+
+
 def is_disputed(g):
     """该事件是否还有「未经人工确认」的冲突(run.py 会给已确认的打 acked=True)。"""
     return bool(g.conflicts) and not getattr(g, "acked", False)
@@ -240,7 +245,10 @@ def _evaluate(g: EventGroup, etype):
     # ---- 状态 ----
     if has_conflict:
         g.status = "conflict"
-    elif len(srcs) >= 2:
+    # 人工逐项核验后写入的 CompanyIR 覆盖层本身就是公司的一手正式记录。
+    # 它是唯一来源时仍可正式化；一旦和任何采集源冲突，前面的 has_conflict
+    # 分支会优先把事件维持为 conflict，绝不会静默覆盖。
+    elif len(srcs) >= 2 or has_official_source(g.by_source):
         g.status = "confirmed"
     else:
         g.status = "single"
@@ -256,6 +264,18 @@ def _evaluate(g: EventGroup, etype):
                        if s not in C.SHORT_HISTORY_SOURCES or (g.anchor_date or "") >= sh_cut]
         if missing and len(g.by_source) >= 1:
             g.gaps.append(f"{'/'.join(missing)} 缺失此事件(其它源有)")
+
+
+def evaluate_group(g: EventGroup):
+    """重新计算一个已有事件组的核对状态。
+
+    ``run.py`` 会把人工已核验的公司公告作为 ``CompanyIR`` 覆盖层合入缓存事件。
+    覆盖后不能沿用缓存里的旧 conflicts/gaps，否则会把已经失效的判断带到所有展示面。
+    这个公开入口也避免下游直接调用私有的 ``_evaluate``。
+    """
+    g.conflicts = []
+    g.gaps = []
+    _evaluate(g, g.etype)
 
 
 def summarize(all_groups: Dict[str, List[EventGroup]]):

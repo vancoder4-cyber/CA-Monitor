@@ -1,37 +1,20 @@
 # 待办 / 后续跟进
 
-## 数据质量:待人工确认的存量异常
+> 这里只放仍然有效的技术或运营跟进，不保存某一次扫描的静态异常清单。实时冲突、空缺和预测观察以 Pages `data.json` / 群内卡片为准；解决后移入 `CHANGELOG.md`。
 
-线上目前挂着一批异常(冲突 / 空缺 / 单源未交叉验证),**零容忍不豁免,只有人工发『确认』才消解**。
-已定性、可以直接确认的几类(核对后在群里发 `确认 代码 [正确值]`):
+## 发布闭环
 
-- [ ] **ADR 扣税差异**(TSM / ASML / NVO / NOK / BABA):Alpaca 报的是扣预扣税后的净额,**以宣告原值为准**
-- [ ] **拆股回溯调整**(KLAC 等):yfinance 把历史分红按拆股比例除过,**以当时实际宣告值为准**
-- [ ] **四舍五入**(WMT / HPE):yfinance 只保留 3 位小数,**以多源一致的精确值为准**
-- [ ] **单源未交叉验证**(TSM 9/16、CRWD 4:1、KLAC 10:1 等):只有 1 个源报,核对后放行
-- [ ] **未见宣告日的单源预估**(LLY 8/14、CAT 7/20、DELL 7/21、GLW 8/31):Nasdaq 无记录,大概率是 Alpaca 的预估 —— 确认公司是否真的公告了
-- [ ] **拆股被拆成两组**(CRWD 07-02/06-25、KLAC 06-12/06-04):同一次拆股各源报的生效日差几天,`GROUP_WINDOW_DAYS=5` 没兜住。先核实真实生效日,再决定要不要把归组窗口调大(注意:调大会削弱「日期冲突」的检出能力,不能无脑加)
+- [ ] **Railway Bot 版本可见性**：下一次 Bot 发版时，在 Railway 增加可见的 build/commit 标识，或在 `关于`卡片显示当前 Bot build。验收必须同时检查 Actions、Pages 和 Railway，而不是只看其中一个。
+- [ ] **自动化生产 smoke**：在不发送真实群消息的前提下，增加可选 smoke，读取生产 `data.json` 并验证 Pages 中的 V 事件是正式而非预测、主链接为 canonical Visa IR。
 
-> 明细逐条对照见 `CA_确认清单.md`(A 可直接确认 / B 查公司IR / C 空缺 / D 未宣告预估勿盲confirm)。
-> 确认语法:`确认 代码 [正确值] [日期]`,同一标的多条**值不同**时必须带日期,如 `确认 KLAC 2.3 2026-05-18`。
+## 官方事件与核对来源
 
+- [ ] **补齐高优先级标的的官方 IR**：有明确分红政策或 ADR 毛额口径的标的，先填 `refs.json.ir_dividend`；没有可靠链接就保留为空，由系统回退 SEC 公司备案 + 第三方交叉核对，不能伪造或使用滞后的 Nasdaq 页面。
+- [ ] **逐项覆盖层治理**：`official_event_overrides` 只收录人工打开并确认过的具体公司事件。源端补齐后继续保留为可追溯记录；若与自动源不一致，优先调查冲突，不能删除覆盖层来消警。
+- [ ] **ADR 毛额**：对仍在范围内、未来会派息的海外直接上市标的，确认公司公告本币毛额与存托凭证 USD 的差异，避免将预扣税后净额写成最终值。
 
-> 不是 bug、但需要在某个时机回来处理的事项。完成后移到 CHANGELOG 并从这里删除。
-> (群里大家提的功能需求在 `requests.md`;这里放的是内部技术跟进项。)
+## FINX（TRKD-HS）接口稳定后
 
-## FINX(TRKD-HS)接口稳定后复核 —— 约 2026-07 上旬
-
-供方告知接口仍在调整、约 2 周(demo 阶段)。等稳定后回来做:
-
-- [ ] **核对 RIC 映射**:`config.FINX_RIC` 里几个非 Nasdaq 标的(LLY/CRCL→`.N`、EWY→`.K` 等),用实际能取到数据验证;默认 `.O` 的也抽查。取不到数据的调整后缀。
-- [ ] **复核历史空缺降噪**:目前 FINX 仅对近 `SHORT_HISTORY_GAP_DAYS`(45)天内及未来的事件参与空缺判定(见 `config.py` / `reconcile.py`)。接口补齐历史后,看是否可放宽或取消这个豁免,让 FINX 也纳入历史一致性核对。
-- [ ] **字段再核对**:`sources.fetch_finx` 的字段是按当前 demo 返回写的(`dividendExDate/dividendRecordDate/dividendPaymentDate`、`splitAnnouncement` 等),已做防御式多名兼容;稳定后对照正式文档再确认一遍。
-- [ ] **轮换 FINX 密码**:demo 密码曾在沟通中明文出现,确认已在 Railway + GitHub secret 两处换成新密码。
-- [ ] **拆股/并购验证**:目前主要用 AAPL/MSFT 分红验证过;等有拆股或并购样本时,验证 `STOCK_SPLIT` / `MA` / `OTHER_CORPORATE_ACTION` 解析正确。
-
-## 核对来源:补齐 ADR 的 T1/T2
-
-- [ ] NOK / SONY 的宣告 filing 或公司 IR 分红页核实后,补进 `refs.json`(filing_overrides 或 ir_dividend),让其核对来源从 T3 聚合页升到 T2/T1。
-- [ ] 其余 ADR(ASML 等)同理,尤其毛额只在本币公告里的。
-
-- [ ] **SONY/NOK 本币毛额**:从各自 6-K 精确核出年末息/分期息的 JPY/EUR per share,填 refs.json(filing_overrides + 校准 gross);当前靠源侧毛额近似。
+- [ ] 抽查 `config.FINX_RIC`（NYSE / ETF 等非 `.O` 后缀）和 dividend / split / corporate-action 字段，按正式文档修正解析。
+- [ ] 重新评估 `SHORT_HISTORY_SOURCES` / `SHORT_HISTORY_GAP_DAYS`：若 FINX 已补齐历史覆盖，再将其纳入更长历史的空缺检测。
+- [ ] 确认 Railway 与 GitHub Secrets 中的 FINX 凭证已轮换，且不出现在日志、文档或提交中。

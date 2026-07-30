@@ -33,12 +33,31 @@ def _authoritative_link(g, refs=None):
     **要解决冲突时给两个源**:先最权威(T1/T2),再附聚合页快速核对 ——
     尤其 ADR,权威源是本币公告(NT$/DKK),聚合页补上 USD 数值,两边交叉核对。
     refs 传 data.json 的 refs(IR 映射),避免依赖机器人本地能否读到 refs.json。"""
+    links = g.get("references") or []
+    if links:
+        return "　🔗 核对:" + " · ".join(f"[{x['label']}]({x['url']})" for x in links if x.get("url"))
     import ack  # 惰性导入(ack 依赖 requests);CI 的一致性检查在装依赖前 import cards,故不放模块顶层
     tk, et = g.get("ticker", ""), g.get("etype")
     url, label, tier = ack.verify_link(tk, et, g.get("src_url") or g.get("sec_url"), refs_ir=refs)
     if tier <= 2:   # 有权威源:权威 + 聚合 两个都给
         return f"　🔗 [{label}]({url}) · [聚合快速核对]({ack.quick_look(tk, et)})"
     return f"　🔗 [{label}]({url})"   # 本就只有 T3,不重复
+
+
+def _reference_line(e, refs=None, indent="　"):
+    """统一渲染 run.py 预先生成的核对引用；兼容尚未刷新到新 schema 的 Pages 数据。"""
+    if e.get("etype") != "dividend":
+        return ""
+    links = e.get("references") or []
+    if links:
+        return indent + "🔗 核对:" + " · ".join(
+            f"[{x['label']}]({x['url']})" for x in links if x.get("url")
+        )
+    import ack
+    primary = (e.get("primary_url") or e.get("decl_url") or e.get("ir_url")
+               or ack.authoritative_source(e.get("ticker", ""), e.get("etype"), refs))
+    return (indent + f"🔗 核对:[官方·公司公告/IR/SEC]({primary}) · "
+            f"[第三方·StockAnalysis（交叉核对，可能滞后）]({ack.quick_look(e.get('ticker', ''), e.get('etype'))})")
 
 # ===== 指令唯一来源(改指令只改这里;HELP_TEXT / 关于卡片 / parse_command 都由它生成)=====
 # 顺序即匹配优先级。key 必须在 bot.py 的 on_message 里有对应 dispatch 分支。
@@ -78,7 +97,7 @@ def _val(x):
     人工发「确认 代码 值」消解冲突后,才恢复显示确定值。"""
     if x.get("forecast"):
         return " <font color='orange'>🔎预测观察·不执行</font>"
-    if not x.get("acked") and not x.get("disputed") and (x.get("amt_srcs") or 0) == 1 and (
+    if not x.get("official") and not x.get("acked") and not x.get("disputed") and (x.get("amt_srcs") or 0) == 1 and (
             x.get("amount") is not None or x.get("ratio")):
         v = x.get("amount") if x.get("amount") is not None else x.get("ratio")
         return f" <font color='orange'>⚠️单源未交叉验证({v})· 待人工确认,勿据此执行</font>"
@@ -134,11 +153,16 @@ def calendar_card(data, site_url):
     lines = []
     for x in pending[:30]:
         prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
-        lines.append(f"• {prod}**{x['ticker']}** {ETYPE_CN.get(x['etype'], x['etype'])}{_val(x)} — "
-                     f"<font color='red'>还剩 {x['days']} 天</font>\n　{_dates(x)}")
+        line = (f"• {prod}**{x['ticker']}** {ETYPE_CN.get(x['etype'], x['etype'])}{_val(x)} — "
+                f"<font color='red'>还剩 {x['days']} 天</font>\n　{_dates(x)}")
+        ref = _reference_line(x, data.get("refs", {}))
+        lines.append(line + ("\n" + ref if ref else ""))
     if forecasts:
-        lines += [f"• **{x['ticker']}** {ETYPE_CN.get(x['etype'], x['etype'])} <font color='orange'>🔎预测观察·不执行</font>\n　预计 {_dates(x)}"
-                  for x in forecasts]
+        for x in forecasts:
+            line = (f"• **{x['ticker']}** {ETYPE_CN.get(x['etype'], x['etype'])} "
+                    f"<font color='orange'>🔎预测观察·不执行</font>\n　预计 {_dates(x)}")
+            ref = _reference_line(x, data.get("refs", {}))
+            lines.append(line + ("\n" + ref if ref else ""))
     elems = [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}]
     return _card(f"📅 公司行动日历 · {gen}", "blue", elems, site_url, "打开网页日历")
 
@@ -181,9 +205,13 @@ COMMAND_NAMES = " · ".join(c["name"] for c in COMMANDS)
 # ---------------- 关于 / 介绍 ----------------
 def about_card(data, site_url):
     gen = data.get("generated", "")
+    cov = data.get("coverage", [])
+    n_spot = sum(1 for x in cov if x.get("spot"))
+    n_contract = sum(1 for x in cov if x.get("contract"))
+    n_monitored = sum(1 for x in cov if x.get("monitored"))
     content = (
         "**CA问答助手** —— 公司行动(Corporate Actions)监控\n"
-        "盯 **现货(85 支美股)+ 合约范围(22 个)**标的的:分红 / 拆股·合股 / 并购 / 分拆 / 退市·代码变更。"
+        f"盯 **现货({n_spot} 支)+ 合约范围({n_contract} 个)**标的中的 **{n_monitored} 个可监控证券**:分红 / 拆股·合股 / 并购 / 分拆 / 退市·代码变更。"
         "合约里的 ETF(QQQ/EWY/DRAM)监控分红;商品/海外(XAU/WTI/SKHYNIX 等)无公司行动,仅列入覆盖。\n\n"
         "**数据源(8 源,多源交叉核对·零容忍)**\n"
         "yfinance · FMP · Alpha Vantage · Nasdaq · Tiingo · Alpaca · SEC EDGAR · FINX(TRKD-HS)\n\n"
@@ -201,7 +229,7 @@ def about_card(data, site_url):
         "消解方式:群里发 **确认 代码 [正确值] [日期] [备注]**(如 `确认 TSM 1.11362`;同一标的多条不同值时带日期,如 `确认 KLAC 2.3 2026-05-18`)"
         "—— 确认后门禁解除、按你给的值显示。每次确认**只追加、不删**地写入留痕库(谁/何时/改值前后/核对来源/备注),"
         "群里发 **留痕** 可随时调取,离线表用 `tools/export_ack_log.py` 导 Excel。\n\n"
-        "**核对链接**:每条事件附原始出处(并购/退市→SEC 原文;分红→宣告 8-K / 公司 IR / Nasdaq),方便你核完再确认。\n\n"
+        "**核对链接**:并购/退市直达 SEC 原文；分红统一给 **官方本次公告/IR/SEC** + **StockAnalysis 交叉核对**。第三方可能滞后，不能作为正式化依据。\n\n"
         "**更新**:每交易日 3 次 —— 开盘后 9:35 / 盘中 12:45 / 收盘后 16:05(美东)。\n\n"
         "**提前预警(运营催办)**:仅对已宣告或双源确认的事件，以除息日为准,距 **30/14** 天提前知会;**7** 天开始准备文案并明确排期;"
         "**3** 天确保文案全部写完;**1** 天确认文案就绪并备好定时发送。每条标明现货/合约;临近时只推最接近的一轮(风控提醒待定)。\n\n"
@@ -294,7 +322,9 @@ def _window_card(data, site_url, lo_days, hi_days, title):
     for d, label, e in hits[:40]:
         prod = ("[" + "+".join(e["products"]) + "] ") if e.get("products") else ""
         flag = "🔴 今天 " if d == today.isoformat() else ""
-        lines.append(f"• {flag}{d} {prod}**{e['ticker']}** {ETYPE_CN.get(e['etype'], e['etype'])}{_val(e)} —— **{label}日**")
+        line = f"• {flag}{d} {prod}**{e['ticker']}** {ETYPE_CN.get(e['etype'], e['etype'])}{_val(e)} —— **{label}日**"
+        ref = _reference_line(e, data.get("refs", {}))
+        lines.append(line + ("\n" + ref if ref else ""))
     elems = [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}]
     return _card(f"🗓 {title}", "blue", elems, site_url, "打开网页日历")
 
@@ -310,9 +340,7 @@ def week_card(data, site_url):
 
 def upcoming_card(data, site_url):
     """临近催办:已公告未发生的事件,按距除息天数排 + 催办文案(与推送同口径,随时可拉)。"""
-    import ack  # bot/ 内模块,可安全导入(核对来源解析)
     gen = data.get("generated", "")
-    refs_ir = data.get("refs", {})    # IR 映射从 data.json 读,避免依赖机器人本地 refs.json
     pend = sorted(data.get("pending", []), key=lambda x: x.get("days", 9999))
     if not pend:
         elems = [{"tag": "div", "text": {"tag": "lark_md", "content": "近期暂无已公告未执行的公司行动。"}}]
@@ -329,10 +357,9 @@ def upcoming_card(data, site_url):
             line += f"\n　📡 数据源({tag}):{', '.join(srcs)}"
         if x.get("days") is not None:
             line += f"\n　👉 {_alert_copy(x['days'])}"
-        # 两个核对入口:第一方(src_url 具体 filing → 公司 IR → SEC 备案)+ 第三方聚合页
-        first = x.get("src_url") or ack.authoritative_source(x["ticker"], x.get("etype"), refs_ir)
-        line += (f"\n　🔗 核对:[公司filing/SEC]({first}) · "
-                 f"[第三方数据]({ack.quick_look(x['ticker'], x.get('etype'))})")
+        ref = _reference_line(x, data.get("refs", {}))
+        if ref:
+            line += "\n" + ref
         lines.append(line)
     elems = [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}]
     return _card(f"🔔 临近催办(≤14天每天 · 30天知会)· {gen}", "blue", elems, site_url, "打开网页面板")
@@ -340,9 +367,7 @@ def upcoming_card(data, site_url):
 
 def forecast_card(data, site_url):
     """待核实预测：只观察，不得据此执行；正式化和字段变化均由流水线主动推送。"""
-    import ack
     gen = data.get("generated", "")
-    refs_ir = data.get("refs", {})
     forecasts = sorted(data.get("forecasts", []), key=lambda x: x.get("days", 9999))
     if not forecasts:
         body = ("当前没有待核实预测。\n"
@@ -363,9 +388,9 @@ def forecast_card(data, site_url):
                 "　👉 等待公司宣告或第二个独立源；确认后会自动转正式催办")
         if x.get("watch_note"):
             line += f"\n　📝 {x['watch_note']}"
-        first = x.get("src_url") or ack.authoritative_source(x["ticker"], x.get("etype"), refs_ir)
-        line += (f"\n　🔗 [公司/SEC]({first}) · "
-                 f"[第三方数据]({ack.quick_look(x['ticker'], x.get('etype'))})")
+        ref = _reference_line(x, data.get("refs", {}))
+        if ref:
+            line += "\n" + ref
         lines.append(line)
     return _card(f"🔎 预测观察 · {gen}", "orange",
                  [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}],
@@ -399,8 +424,10 @@ def announce_card(data, site_url):
             status = f" · 还剩 {x['days']} 天"
         else:
             status = ""
-        lines.append(f"• {prod}**{x['ticker']}** {ETYPE_CN.get(x['etype'], x['etype'])}{_val(x)} —— "
-                     f"宣告 {x.get('decl')} · 除息 {x['date']}{status}")
+        line = (f"• {prod}**{x['ticker']}** {ETYPE_CN.get(x['etype'], x['etype'])}{_val(x)} —— "
+                f"宣告 {x.get('decl')} · 除息 {x['date']}{status}")
+        ref = _reference_line(x, data.get("refs", {}))
+        lines.append(line + ("\n" + ref if ref else ""))
     return _card("📣 新公告(最近 5 个宣告)", "blue",
                  [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}],
                  site_url, "打开网页面板")
@@ -560,13 +587,9 @@ def lookup_card(data, ticker, site_url):
         hint = "" if e.get("forecast") else _ops_hint(days)
         if hint:
             lines.append(f"　📌 {hint}")
-        if e.get("etype") == "dividend":
-            if e.get("decl_url"):
-                lines.append(f"　📄 [宣告 8-K(本次分红)]({e['decl_url']})")
-            elif e.get("ir_url"):
-                lines.append(f"　🏛 [公司IR 分红页]({e['ir_url']})")
-            else:
-                lines.append(f"　🔗 [Nasdaq 分红记录](https://www.nasdaq.com/market-activity/stocks/{e['ticker'].lower()}/dividend-history)")
+        ref = _reference_line(e, data.get("refs", {}))
+        if ref:
+            lines.append(ref)
         return "\n".join(lines)
 
     if divsplit:

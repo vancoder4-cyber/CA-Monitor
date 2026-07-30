@@ -92,7 +92,7 @@ def forecast_key(watch):
     return f"{watch.get('ticker')}|{watch.get('etype')}|{watch.get('date')}"
 
 
-def match_forecast_watch(watches, ticker, etype, date, window_days=14):
+def match_forecast_watch(watches, ticker, etype, date, window_days=14, statuses=("watching",)):
     """按标的/类型匹配观察项，允许供应商小幅改期，避免新日期漏掉旧预测。"""
     try:
         event_day = dt.date.fromisoformat(date)
@@ -100,7 +100,7 @@ def match_forecast_watch(watches, ticker, etype, date, window_days=14):
         return None
     candidates = []
     for w in watches:
-        if (w.get("status", "watching") != "watching" or w.get("ticker") != ticker
+        if (w.get("status", "watching") not in statuses or w.get("ticker") != ticker
                 or w.get("etype") != etype):
             continue
         try:
@@ -157,7 +157,7 @@ def build_sec8k_index(all_groups):
 def match_decl_8k(idx, ticker, decl_date):
     """匹配该标的的『宣告分红 8-K』:仅认 Item 8.01(宣告分红的标准载体),窗口 ±3 天取最近。
     用元数据(item 代码)判定,不抓正文——既根治误挂(如投票结果 Item 5.07 被排除),又不依赖网络。
-    匹配不到返回 ''(前端回退 IR / Nasdaq)。宁可少挂,也不挂错。"""
+    匹配不到返回 ''(前端再选公司 IR / SEC 公司备案)。宁可少挂,也不挂错。"""
     if not decl_date:
         return ""
     try:
@@ -179,10 +179,125 @@ def match_decl_8k(idx, ticker, decl_date):
     return best[1] if best else ""
 
 
+def _event_key(ticker, etype, date):
+    return f"{ticker}|{etype}|{date}"
+
+
+def _stockanalysis_url(ticker, etype):
+    base = f"https://stockanalysis.com/stocks/{ticker.lower()}"
+    return f"{base}/dividend/" if etype == "dividend" else f"{base}/"
+
+
+def _sec_company_url(ticker):
+    return ("https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany"
+            f"&ticker={ticker}&type=&dateb=&owner=include&count=40")
+
+
+def apply_official_event_overrides(all_groups, refs=None):
+    """合入人工逐项核验的公司官方事件覆盖层。
+
+    某些供应商会先给出下一次分红日期，却迟迟没有 declaration date。只有明确登记在
+    refs.json 的官方公告才能补这一空白；覆盖仍走 reconcile 的零容忍规则，若采集源
+    与官方值冲突会正常报警，不会悄悄替换。
+    """
+    refs = refs if isinstance(refs, dict) else load_refs()
+    overrides = refs.get("official_event_overrides", {}) or {}
+    for key, raw in overrides.items():
+        if not isinstance(raw, dict):
+            continue
+        try:
+            ticker, etype, anchor = key.split("|", 2)
+        except ValueError:
+            print(f"[refs] 跳过格式错误的 official_event_overrides key: {key}")
+            continue
+        if not raw.get("url"):
+            print(f"[refs] 跳过缺官方 URL 的 official_event_overrides: {key}")
+            continue
+        groups = all_groups.setdefault(ticker, [])
+        g = next((x for x in groups if x.etype == etype and x.anchor_date == anchor), None)
+        if g is None:
+            g = R.EventGroup(ticker=ticker, etype=etype, anchor_date=anchor)
+            groups.append(g)
+        fields = {"ex_date": anchor, "url": raw["url"], "verified_at": raw.get("verified_at", ""),
+                  "label": raw.get("label", "官方公告/IR")}
+        for fld in ("declaration_date", "record_date", "pay_date", "amount", "ratio"):
+            if raw.get(fld) is not None:
+                fields[fld] = raw[fld]
+        g.by_source["CompanyIR"] = fields
+        g.sources_ok = sorted(set(g.sources_ok) | {"CompanyIR"})
+        R.evaluate_group(g)
+    for groups in all_groups.values():
+        groups.sort(key=lambda g: (g.anchor_date or ""), reverse=True)
+
+
+def _dividend_references(ticker, date, decl, refs, sec8k):
+    """返回同一份引用契约，供网页、推送和交互 Bot 共用。
+
+    第三方仅用于交叉核对，明确标注可能滞后；正式化永远以官方公告/IR 或 SEC 为准。
+    """
+    refs = refs or {}
+    override = (refs.get("official_event_overrides", {}) or {}).get(
+        _event_key(ticker, "dividend", date), {}) or {}
+    ir_map = refs.get("ir_dividend", {}) or {}
+    filing_url = (refs.get("filing_overrides", {}) or {}).get(f"{ticker}|{date}", "")
+    exact_8k = filing_url or match_decl_8k(sec8k, ticker, decl)
+    rows, seen = [], set()
+
+    def add(label, url, kind):
+        if url and url not in seen:
+            rows.append({"label": label, "url": url, "kind": kind})
+            seen.add(url)
+
+    if override.get("url"):
+        add(override.get("label") or "官方·本次公告/IR", override["url"], "official_event")
+    if exact_8k:
+        add("SEC·本次宣告 8-K", exact_8k, "official_filing")
+    ir_url = ir_map.get(ticker, "")
+    if ir_url:
+        add("官方·IR 分红页", ir_url, "official_ir")
+    if not rows:
+        add("SEC·公司备案", _sec_company_url(ticker), "official_company")
+    add("第三方·StockAnalysis（交叉核对，可能滞后）", _stockanalysis_url(ticker, "dividend"), "third_party")
+    return rows
+
+
+def attach_event_references(target, refs, sec8k):
+    """给 dict 或 EventGroup 预先写入统一引用字段，渲染器不得各自猜回退链接。"""
+    if isinstance(target, dict):
+        etype = target.get("etype")
+        ticker = target.get("ticker", "")
+        date = target.get("date", "")
+        decl = target.get("decl")
+    else:
+        etype = getattr(target, "etype", "")
+        ticker = getattr(target, "ticker", "")
+        date = getattr(target, "anchor_date", "")
+        decl = R.pick_value(getattr(target, "by_source", {}), "declaration_date")
+    if etype != "dividend":
+        return
+    links = _dividend_references(ticker, date, decl, refs, sec8k)
+    primary = next((x for x in links if x["kind"] != "third_party"), None)
+    third = next((x for x in links if x["kind"] == "third_party"), None)
+    fields = {
+        "references": links,
+        "primary_url": (primary or {}).get("url", ""),
+        "primary_label": (primary or {}).get("label", ""),
+        "third_party_url": (third or {}).get("url", ""),
+        # 保留兼容字段，旧部署读取也至少能落到官方链接，绝不再退到 Nasdaq。
+        "decl_url": next((x["url"] for x in links if x["kind"] in ("official_event", "official_filing")), ""),
+        "ir_url": next((x["url"] for x in links if x["kind"] == "official_ir"), ""),
+    }
+    if isinstance(target, dict):
+        target.update(fields)
+    else:
+        for k, v in fields.items():
+            setattr(target, k, v)
+
+
 def _grp_brief(g):
     u = (g.by_source.get("SEC") or {}).get("url", "") if g.etype == "filing" else ""
-    amt = next((v.get("amount") for v in g.by_source.values() if v.get("amount") is not None), None)
-    ratio = next((v.get("ratio") for v in g.by_source.values() if v.get("ratio")), None)
+    amt = R.pick_value(g.by_source, "amount")
+    ratio = R.pick_value(g.by_source, "ratio")
     # src_url:①并购/退市→SEC 源的真实 filing url;②分红/拆股→refs.json 里**人工核实过**的
     # filing_overrides(代码|除息日)。不再用 EFTS 全文猜(会命中章程/发债8-K/港交所月报)。
     src = u or filing_overrides().get(f"{g.ticker}|{g.anchor_date}", "")
@@ -190,6 +305,13 @@ def _grp_brief(g):
     _adr = R.adr_tax(g.ticker, g.by_source) if g.etype == "dividend" else None
     return {"ticker": g.ticker, "etype": g.etype, "date": g.anchor_date,
             "note": g.note, "amount": amt, "ratio": ratio, "sec_url": u, "src_url": src,
+            "references": getattr(g, "references", []),
+            "primary_url": getattr(g, "primary_url", ""),
+            "primary_label": getattr(g, "primary_label", ""),
+            "third_party_url": getattr(g, "third_party_url", ""),
+            "srcs": sorted(g.by_source.keys()),
+            "amt_srcs": max(R.n_src(g.by_source, "amount"), R.n_src(g.by_source, "ratio")),
+            "official": R.has_official_source(g.by_source),
             "adr_note": (R.adr_tax_note(g.ticker, g.by_source) if g.etype == "dividend" else ""),
             "adr_gross": (_adr["gross"] if _adr else None),
             "conflicts": g.conflicts, "gaps": g.gaps}
@@ -259,6 +381,15 @@ def build():
         all_groups[tk] = [R.EventGroup.from_dict(x) for x in d["groups"]]
         source_health[tk] = d["health"]
 
+    # 官方逐项核验覆盖层必须在所有判定之前合入：它既补足官方 declaration date，
+    # 又继续参与零容忍冲突检测，不能只在渲染层偷偷换链接。
+    refs_config = load_refs()
+    apply_official_event_overrides(all_groups, refs_config)
+    sec8k_index = build_sec8k_index(all_groups)
+    for groups in all_groups.values():
+        for g in groups:
+            attach_event_references(g, refs_config, sec8k_index)
+
     # 人工确认:给「所有」匹配的事件组打 acked —— 不只是冲突,单源事件也要能被人工放行
     acks = load_acknowledged()
     if acks:
@@ -306,7 +437,12 @@ def build():
                 return R.n_src(_g.by_source, f)
 
             _amt_srcs = max(_nsrc("amount"), _nsrc("ratio"))
+            _official = R.has_official_source(g.by_source)
             watch = match_forecast_watch(watches, g.ticker, g.etype, g.anchor_date or "")
+            prior_watch = match_forecast_watch(
+                watches, g.ticker, g.etype, g.anchor_date or "",
+                statuses=("watching", "confirmed", "expired"),
+            )
             # 只有仍在未来的事件才算持续命中观察项。过期却仍留在历史缓存的
             # 单源记录不能阻止「预测失效」提醒。
             if watch and g.is_future:
@@ -324,7 +460,8 @@ def build():
                                       "record": _pk("record_date"), "pay": _pk("pay_date"),
                                       "amount": _pk("amount"), "ratio": _pk("ratio"), "amt_srcs": _amt_srcs,
                                       "acked": getattr(g, "acked", False),
-                                      "forecast_watch": bool(watch),
+                                      "official": _official,
+                                      "forecast_watch": bool(prior_watch),
                                       "products": C.product_tags(g.ticker)})
 
             if g.is_future and g.etype != "filing" and g.days_to is not None:
@@ -332,12 +469,13 @@ def build():
                 _decl = _pk("declaration_date")
                 # 「真·已宣告」判定:有宣告日,或 ≥2 源都有这个事件。
                 # 否则多半是单源(Alpaca)按节奏推的**预估**,公司并未实际公告 —— 不能当已公告让运营去准备。
-                _confirmed = bool(_decl) or len(g.by_source) >= 2
+                _confirmed = (bool(_decl) or len(g.by_source) >= 2) and not R.is_disputed(g)
                 event = {"ticker": g.ticker, "etype": g.etype, "date": g.anchor_date,
                          "days": g.days_to, "status": g.status,
                          "decl": _decl, "record": _pk("record_date"),
                          "pay": _pk("pay_date"), "amount": _pk("amount"), "ratio": _pk("ratio"),
                          "amt_srcs": _amt_srcs, "acked": getattr(g, "acked", False),
+                         "official": _official,
                          "first": _decl or seen.get(s), "confirmed": _confirmed,
                          "srcs": sorted(g.by_source.keys()), "products": C.product_tags(g.ticker),
                          "risk": C.risk_note(g.ticker, g.etype), "watching": bool(watch),
@@ -359,13 +497,15 @@ def build():
                     continue
 
                 pending.append(event)
-                if watch:
-                    wk = forecast_key(watch)
+                if prior_watch:
+                    wk = forecast_key(prior_watch)
                     prev = forecast_state.get(wk) or {}
-                    if prev.get("status") != "confirmed" and not _decl:
-                        forecast_updates.append({**event, "kind": "promoted",
-                                                 "previous_date": prev.get("date") or watch.get("date"),
-                                                 "previous_amount": prev.get("amount")})
+                    if prev.get("status") != "confirmed":
+                        forecast_updates.append({**event,
+                                                 "kind": "declared" if _decl else "promoted",
+                                                 "previous_date": prev.get("date") or prior_watch.get("date"),
+                                                 "previous_amount": prev.get("amount"),
+                                                 "confirmation_source": getattr(g, "primary_url", "")})
                     forecast_state[wk] = {"status": "confirmed", "date": g.anchor_date,
                                           "amount": event.get("amount"), "last_seen": today}
                 # 催办节奏(合并「临近预警+待执行」):≤14 天每天一次(每天去重);
@@ -389,6 +529,7 @@ def build():
                                          "ops": C.alert_copy(d2), "risk_copy": C.ROUND_RISK_TBD,
                                          "confirmed": _confirmed, "srcs": sorted(g.by_source.keys()),
                                          "amt_srcs": _amt_srcs, "acked": getattr(g, "acked", False),
+                                         "official": _official,
                                          "risk": C.risk_note(g.ticker, g.etype)})
                 fired[s] = fs
 
@@ -409,8 +550,7 @@ def build():
     for tk, groups in all_groups.items():
         for g in groups:
             g.forecast = sig(g) in forecast_sigs
-            decl = next((v.get("declaration_date") for v in g.by_source.values()
-                         if v.get("declaration_date")), None)
+            decl = R.pick_value(g.by_source, "declaration_date")
             g.first_announced = decl or seen.get(sig(g))
 
     cutoff = (dt.date.today() - dt.timedelta(days=30)).isoformat()
@@ -454,13 +594,13 @@ def build():
                 _active_gaps.append(g)
         gaps = _active_gaps
 
-    # 给「待执行」分红预挂核对链接(供网页预警面板显示):8-K(Item8.01) / IR(refs) / 否则前端回退 Nasdaq
-    _ir_map = load_refs().get("ir_dividend", {})
-    _sec8k = build_sec8k_index(all_groups)
-    for e in pending + forecasts + forecast_updates:
-        if e.get("etype") == "dividend":
-            e["decl_url"] = match_decl_8k(_sec8k, e["ticker"], e.get("decl"))
-            e["ir_url"] = _ir_map.get(e["ticker"], "")
+    # 所有展示面共用同一份引用契约：先把 event group 和每类 dict 都补全，
+    # 避免「单标的卡/推送/网页」各自回退到不同链接。
+    for groups in all_groups.values():
+        for g in groups:
+            attach_event_references(g, refs_config, sec8k_index)
+    for e in pending + forecasts + forecast_updates + round_alerts + announced:
+        attach_event_references(e, refs_config, sec8k_index)
 
     # ---- 人工介入闭环:每条异常挂多久没人确认(不豁免、不自动消失、每次跑都重报)----
     # 异常 = 字段冲突 / 数据空缺。未宣告的单源预估走「预测观察」自动追踪，
@@ -525,17 +665,24 @@ def build():
                 continue
             def _ck(f, _g=g):
                 return R.pick_value(_g.by_source, f)
-            calendar_events.append({"ticker": g.ticker, "etype": g.etype, "date": ad,
-                                    "amount": _ck("amount"), "ratio": _ck("ratio"), "note": g.note,
-                                    "amt_srcs": max(R.n_src(g.by_source, "amount"), R.n_src(g.by_source, "ratio")),
-                                    "acked": getattr(g, "acked", False),
-                                    "record": _ck("record_date"), "pay": _ck("pay_date"),
-                                    "decl": _ck("declaration_date"),
-                                    "first": getattr(g, "first_announced", None),
-                                    "status": g.status, "risk": C.risk_note(g.ticker, g.etype),
-                                    "forecast": (g.ticker, g.etype, ad) in forecast_event_keys,
-                                    "url": (g.by_source.get("SEC") or {}).get("url", "") if g.etype == "filing" else "",
-                                    "products": C.product_tags(g.ticker)})
+            entry = {"ticker": g.ticker, "etype": g.etype, "date": ad,
+                     "amount": _ck("amount"), "ratio": _ck("ratio"), "note": g.note,
+                     "amt_srcs": max(R.n_src(g.by_source, "amount"), R.n_src(g.by_source, "ratio")),
+                     "acked": getattr(g, "acked", False),
+                     "official": R.has_official_source(g.by_source),
+                     "record": _ck("record_date"), "pay": _ck("pay_date"),
+                     "decl": _ck("declaration_date"),
+                     "first": getattr(g, "first_announced", None),
+                     "status": g.status, "risk": C.risk_note(g.ticker, g.etype),
+                     "forecast": (g.ticker, g.etype, ad) in forecast_event_keys,
+                     "url": (g.by_source.get("SEC") or {}).get("url", "") if g.etype == "filing" else "",
+                     "srcs": sorted(g.by_source.keys()),
+                     "products": C.product_tags(g.ticker)}
+            attach_event_references(entry, refs_config, sec8k_index)
+            # 月历主块点击官方来源；filing 仍指向 SEC 原文。
+            if entry.get("primary_url"):
+                entry["url"] = entry["primary_url"]
+            calendar_events.append(entry)
 
     # 人工确认带「正确值」时,用确认值覆盖该标的事件的金额(网页/卡片显示 finalize 后的值)
     for a in acks:
@@ -582,12 +729,11 @@ def build():
     recent_declares = []
     for tk, groups in all_groups.items():
         for g in groups:
-            decl = next((v.get("declaration_date") for v in g.by_source.values()
-                         if v.get("declaration_date")), None)
+            decl = R.pick_value(g.by_source, "declaration_date")
             if not decl:
                 continue
             def _dk(f, _g=g):
-                return next((v.get(f) for v in _g.by_source.values() if v.get(f)), None)
+                return R.pick_value(_g.by_source, f)
             pay = _dk("pay_date")
             end_date = pay or g.anchor_date or ""
             ended = bool(end_date) and end_date < today_iso
@@ -595,27 +741,21 @@ def build():
                 days = (dt.date.fromisoformat(g.anchor_date) - dt.date.today()).days if g.anchor_date else None
             except Exception:
                 days = None
-            recent_declares.append({"ticker": g.ticker, "etype": g.etype, "date": g.anchor_date,
-                                    "decl": decl, "record": _dk("record_date"), "pay": pay,
-                                    "amount": _dk("amount"), "ratio": _dk("ratio"),
-                                    "days": days, "ended": ended,
-                                    "products": C.product_tags(g.ticker)})
+            entry = {"ticker": g.ticker, "etype": g.etype, "date": g.anchor_date,
+                     "decl": decl, "record": _dk("record_date"), "pay": pay,
+                     "amount": _dk("amount"), "ratio": _dk("ratio"),
+                     "amt_srcs": max(R.n_src(g.by_source, "amount"), R.n_src(g.by_source, "ratio")),
+                     "official": R.has_official_source(g.by_source),
+                     "srcs": sorted(g.by_source.keys()), "days": days, "ended": ended,
+                     "products": C.product_tags(g.ticker)}
+            attach_event_references(entry, refs_config, sec8k_index)
+            recent_declares.append(entry)
     recent_declares.sort(key=lambda x: x.get("decl") or "", reverse=True)
     recent_declares = recent_declares[:5]
 
-    # 分红 → 宣告 8-K 精确匹配:给每条分红挂上那份 8-K 的 SEC 链接(匹配不到则为空,前端回退 Nasdaq)
-    ir_map = load_refs().get("ir_dividend", {})
-    sec8k = build_sec8k_index(all_groups)
-    for lst in (calendar_events, recent_declares):  # pending 已在 build_site 前预挂
-        for e in lst:
-            if e.get("etype") == "dividend":
-                e["decl_url"] = match_decl_8k(sec8k, e["ticker"], e.get("decl"))
-                e["ir_url"] = ir_map.get(e["ticker"], "")
-    for g in conflicts:  # 冲突组(供 notify_lark 推送用)
-        if g.etype == "dividend":
-            decl = next((v.get("declaration_date") for v in g.by_source.values() if v.get("declaration_date")), None)
-            g.decl_url = match_decl_8k(sec8k, g.ticker, decl)
-            g.ir_url = ir_map.get(g.ticker, "")
+    # conflicts/new 已从 all_groups 预挂引用；此处保留扁平 IR 映射给独立部署的 Bot
+    # 写审计日志时使用，避免 Railway 容器依赖仓库根目录的 refs.json。
+    ir_map = refs_config.get("ir_dividend", {})
 
     # 发布给交互机器人读取的数据(随 Pages 一起部署为 data.json)
     site_data = {

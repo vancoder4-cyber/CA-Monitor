@@ -1,5 +1,5 @@
 {
-  "_说明": "参考链接维护台(核对来源置信度分级 T1)。核对链接优先级 = 公司IR(此处 ir_dividend,T1·最权威) > 具体SEC filing(T2) > 聚合页 stockanalysis(T3·快速核对)。改完这一个文件提交即可:run.py 读取,机器人风险卡『核对来源』就用它。URL 留空则自动降到 T2/T3。",
+  "_说明": "参考链接维护台。分红每个展示面统一输出：已核验的官方本次公告/IR → SEC 本次宣告 8-K → 官方 IR 分红页 → SEC 公司备案（仅当前述官方入口都没有时）+ 第三方 StockAnalysis 交叉核对。第三方可能滞后，绝不作为正式化依据；Nasdaq 仅是采集源，不再作为唯一核对链接。改完提交后由 run.py 统一下发给网页、推送和交互机器人。",
   "_维护方法": "把标的官方 IR『分红/股息』页 URL 填进 ir_dividend;不确定就留空。**ADR 尤其要填**——因为 ADR 的 USD 是净额、聚合页(T3)显示的是税后净额,而我们认毛额(gross),毛额只在公司 IR 的本币公告里(如 NVO 的 DKK 7.95/股、TSM 的 NT$6.0/股)。填前先在浏览器打开确认页面真有分红数据。",
   "_alert_mention说明": "推送『临近预警(催办)』时 @ 谁。填 open_id(ou_xxx,让对方 @ 一次机器人即可从 Railway 日志取到);填 \"all\" = @所有人;留空 = 不 @。",
   "alert_mention_open_ids": ["ou_05b39ad8ca3ef55e64d4af0ef956c88c", "ou_93fee48eefca514e73e17c58d622cb18"],
@@ -11,6 +11,19 @@
     "TSM|2026-03-17": "https://www.sec.gov/Archives/edgar/data/1046179/000104617926000027/tsm-dividendadjustmentx202.htm",
     "BABA|2026-06-11": "https://www.sec.gov/Archives/edgar/data/1577552/000110465926060224/tm2614494d1_ex99-1.htm"
   },
+  "_official_event_overrides说明": "人工逐项核验过的公司官方事件覆盖层,key=代码|类型|除息/生效日。用于源端还没补 declaration date 时，仍把已确认的官方公司行动转为正式事件；须填写官方 URL、核验日期及已确认字段。会参与零容忍核对，若与采集源冲突仍会报警，不会静默覆盖。",
+  "official_event_overrides": {
+    "V|dividend|2026-08-11": {
+      "url": "https://investor.visa.com/stock-information/dividends/default.aspx?LanguageId=1",
+      "label": "Visa 官方股息记录（本次宣告）",
+      "verified_at": "2026-07-30",
+      "declaration_date": "2026-07-28",
+      "record_date": "2026-08-11",
+      "pay_date": "2026-09-01",
+      "amount": 0.67,
+      "note": "Visa 官方 IR 股息表列明 Declared 07-28-26 / Record 08-11-26 / Payable 09-01-26 / $0.6700。"
+    }
+  },
   "ir_dividend": {
     "AAPL": "https://investor.apple.com/dividend-history/default.aspx",
     "MSFT": "https://www.microsoft.com/en-us/investor/dividends-and-stock-history",
@@ -21,6 +34,7 @@
     "META": "",
     "LLY": "",
     "MU": "",
-    "INTC": ""
+    "INTC": "",
+    "V": "https://investor.visa.com/stock-information/dividends/default.aspx?LanguageId=1"
   }
 }

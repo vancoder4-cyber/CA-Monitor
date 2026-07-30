@@ -136,7 +136,7 @@ def get_ack_log(limit=None):
         return []
 
 
-def add_ack(ticker, value=None, etype=None, date=None, by="lark", by_name="", note=""):
+def add_ack(ticker, value=None, etype=None, date=None, by="lark", by_name="", note="", *, refs_ir=None):
     """记录一条确认。写两处:留痕库(只追加)+ 生效值(去重)。返回 (ok, msg)。"""
     if not GH_TOKEN:
         return False, "未配置 GH_TOKEN —— 请在 Railway 加一个对本仓库 Contents 有写权限的细粒度 PAT"
@@ -155,7 +155,7 @@ def add_ack(ticker, value=None, etype=None, date=None, by="lark", by_name="", no
             "ticker": ticker, "etype": etype, "date": date,
             "value": value, "prev_value": prev,
             "by_name": by_name or "", "by": by or "",
-            "source": authoritative_source(ticker, etype),
+            "source": authoritative_source(ticker, etype, refs_ir=refs_ir),
             "note": (note or "").strip(),
             "action": "confirm",
         }
@@ -178,7 +178,7 @@ def add_ack(ticker, value=None, etype=None, date=None, by="lark", by_name="", no
         return False, f"确认写入异常: {e}"
 
 
-def add_forecast(ticker, etype, date, by="lark", by_name="", note=""):
+def add_forecast(ticker, etype, date, by="lark", by_name="", note="", *, refs_ir=None):
     """把单源预测置为「观察中」。
 
     观察不会把事件当成已确认公司行动：流水线仍会持续抓取，后续有宣告日/第二源时自动升级。
@@ -200,7 +200,8 @@ def add_forecast(ticker, etype, date, by="lark", by_name="", note=""):
         log.append({"at_bj": now.astimezone(_BJ).isoformat(timespec="seconds"),
                     "at_utc": now.isoformat(timespec="seconds"), "ticker": ticker,
                     "etype": etype, "date": date, "value": None, "prev_value": None,
-                    "by_name": by_name or "", "by": by or "", "source": authoritative_source(ticker, etype),
+                    "by_name": by_name or "", "by": by or "",
+                    "source": authoritative_source(ticker, etype, refs_ir=refs_ir),
                     "note": (note or "").strip(), "action": "watch_forecast"})
         rlog = _put_file(LOG_PATH, log, log_sha, f"forecast-watch-log: {ticker} @{date}")
         if rlog.status_code not in (200, 201):

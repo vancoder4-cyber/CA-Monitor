@@ -250,6 +250,7 @@ def on_message(data: P2ImMessageReceiveV1):
             pass
         cmd = parse_command(text)
         d = fetch_data()
+        refs_ir = (d.get("refs") if isinstance(d, dict) and isinstance(d.get("refs"), dict) else None)
         ticker = cards.find_ticker(text, d)
         # 查代码:显式『查』指令,或直接发了一个已覆盖的代码(未命中其它指令时)
         if cmd == "forecast":
@@ -274,7 +275,7 @@ def on_message(data: P2ImMessageReceiveV1):
             by_name = get_user_name(sender_oid)
             print(f"[msg] chat={chat_id} -> forecast {ticker} {etype} @{date}")
             ok, msg = ack.add_forecast(ticker, etype, date, by=sender_oid or "",
-                                       by_name=by_name, note=note)
+                                       by_name=by_name, note=note, refs_ir=refs_ir)
             send_card(chat_id, cards.forecast_mark_card(ok, msg, ticker, date, SITE_URL))
             return
         if cmd == "confirm":
@@ -334,7 +335,7 @@ def on_message(data: P2ImMessageReceiveV1):
                 pass
             by_name = get_user_name(sender_oid)
             ok, msg = ack.add_ack(ticker, value, etype, date,
-                                  by=sender_oid or "", by_name=by_name, note=note)
+                                  by=sender_oid or "", by_name=by_name, note=note, refs_ir=refs_ir)
             send_card(chat_id, cards.confirm_card(ok, msg, ticker, value, SITE_URL, date, etype, warn))
             return
         if cmd == "audit":

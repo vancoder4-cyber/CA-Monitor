@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-"""指令一致性检查:确保 CA问答助手的指令在四处保持同步——
+"""指令一致性检查:确保 CA问答助手的指令在五处保持同步——
   ① 唯一来源 bot/cards.py 的 COMMANDS
   ② bot/bot.py on_message 的 dispatch 分支
   ③ HELP_TEXT(自动生成,顺带校验)
   ④ README.md 的「指令清单」
+  ⑤ bot/README.md 的部署/使用说明
 
 用法:  python tools/check_commands.py   (一致 → 退出码 0;不一致 → 打印差异并退出码 1)
 建议每次改指令后都跑一遍(CI 里也会自动跑)。
@@ -41,7 +42,14 @@ for c in cards.COMMANDS:
     if not (c["name"] in readme or c["key"] in readme or c["kw"][0] in readme):
         errors.append(f"[readme] 指令 '{c['name']}'({c['key']}) 未写进 README.md")
 
-# ⑤ CHANGELOG.md 存在且可解析(至少一条 `## ` 条目)
+# ① vs ⑤ —— bot README 不能继续保留旧指令表
+bot_readme_path = os.path.join(ROOT, "bot", "README.md")
+bot_readme = open(bot_readme_path, encoding="utf-8").read() if os.path.exists(bot_readme_path) else ""
+for c in cards.COMMANDS:
+    if not (c["name"] in bot_readme or c["key"] in bot_readme or c["kw"][0] in bot_readme):
+        errors.append(f"[bot-readme] 指令 '{c['name']}'({c['key']}) 未写进 bot/README.md")
+
+# ⑥ CHANGELOG.md 存在且可解析(至少一条 `## ` 条目)
 changelog_path = os.path.join(ROOT, "CHANGELOG.md")
 if not os.path.exists(changelog_path):
     errors.append("[changelog] 缺少 CHANGELOG.md(每次 push 必须记一条)")
@@ -56,5 +64,5 @@ if errors:
         print("   -", e)
     sys.exit(1)
 
-print(f"✅ 指令一致性检查通过:{len(keys)} 个指令在 COMMANDS / bot.py / HELP_TEXT / README 四处一致。")
+print(f"✅ 指令一致性检查通过:{len(keys)} 个指令在 COMMANDS / bot.py / HELP_TEXT / README / bot README 五处一致。")
 print("   指令:", ", ".join(keys))

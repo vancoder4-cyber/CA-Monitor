@@ -21,7 +21,7 @@ def _load_dotenv():
 _load_dotenv()
 
 # ---- 业务范围 ----
-# 现货:85 支美股(原 24 + 本轮新上 61;SPCX 已上线故保留;STRC 本轮不上,已下掉)
+# 现货:71 支美股(SPCX 已上线故保留;STRC 本轮不上,已下掉)
 # 注:Berkshire B 类代码写作 BRK-B(SEC/yfinance/Tiingo/FMP 都用这个格式;写 BRK.B 会全线抓不到)
 # 本期现货范围调整(2026-07-23):
 #  - 移除 8 个真 ADR:ARM/ASML/BABA/NOK/NVO/PAYP/SONY/TSM(母国/税率仍存 ADR_WHT,下期复用)。
@@ -129,7 +129,7 @@ NAMES = {
 # ---- API keys ----
 # 全部从环境变量 / .env 读取,代码里不留明文(避免提交到 GitHub)。
 # 本地用:复制 .env.example 为 .env 并填入你的 key(.env 已在 .gitignore)。
-_KEY_NAMES = ["ALPHAVANTAGE", "FMP", "FINNHUB", "TIINGO", "ALPACA_KEY_ID", "ALPACA_SECRET",
+_KEY_NAMES = ["ALPHAVANTAGE", "FMP", "TIINGO", "ALPACA_KEY_ID", "ALPACA_SECRET",
               "FINX_USER", "FINX_PASS", "FINX_BASE"]
 
 def get_keys():
@@ -194,10 +194,11 @@ BASELINE_NEW_TICKERS = False
 #   - yfinance 会按拆股回溯调整历史分红(KLAC 10:1 后 2.3 被报成 0.23),且四舍五入到 3 位
 #   - Alpaca 对 ADR 报的是扣预扣税后的净额(ASML=gross×0.85 荷兰15%;TSM 台湾21%)
 # 所以把「报宣告原值」的源排前面。
-SRC_PRIORITY = ["Nasdaq", "FINX", "FMP", "Tiingo", "AlphaVantage", "SEC", "yfinance", "Alpaca"]
+SRC_PRIORITY = ["CompanyIR", "Nasdaq", "FINX", "FMP", "Tiingo", "AlphaVantage", "SEC", "yfinance", "Alpaca"]
 
 # ---- 人工介入闭环(不做口径豁免:每条异常都必须有人看过并「确认」)----
-# 异常 = 字段冲突 / 数据空缺 / 待执行里「未见宣告日的单源预估」。
+# 异常 = 字段冲突 / 数据空缺。未见宣告日的单源预估走「预测观察」自动追踪，
+# 不进入人工确认积压，也不会触发执行催办。
 # 每条异常记录「首次出现日」,算出挂了多少天没人确认;超过下面的天数就在推送里 @ 负责人升级。
 # 消解方式只有一个:群里发「确认 代码 [正确值]」——不豁免、不自动消失。
 REVIEW_ESCALATE_DAYS = 3

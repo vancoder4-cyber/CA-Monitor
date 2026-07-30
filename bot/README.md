@@ -1,57 +1,65 @@
-# 交互式 Lark 机器人(@指令)
+# 交互式 Lark 机器人（CA 问答助手）
 
-在 Lark 群里 **@机器人 + 关键词**,它回你内容:
+它是**按需查询入口**，和定时推送机器人不同：运行时只读取 GitHub Pages 的 `data.json`，不抓行情、不重算公司行动。这样同一份发布数据会被网页、定时推送和交互卡片共同使用。
 
-| 指令 | 回复 |
+## 能做什么
+
+在群里 `@CA问答助手 + 关键词`（私聊可不 @）。当前 15 个指令的唯一来源是 `cards.py` 的 `COMMANDS`：
+
+| 指令 | 用途 |
 |---|---|
-| `@机器人 日历` | 近期公司行动卡片 + **网页日历截图** |
-| `@机器人 预警`(或 `面板`) | 当前待执行/冲突/空缺摘要 + 面板链接 |
-| `@机器人 帮助` | 指令说明 |
+| 关于 / 帮助 / 最近更新 | 范围、规则、数据更新时间、版本记录 |
+| 风险 / 今日 / 本周 | 风控清单及窗口内关键日 |
+| 新公告 / 临近催办 | 最近公司宣告、已正式确认的待执行事项 |
+| 观察预测 | `观察 CODE YYYY-MM-DD [备注]`；预测不执行，后续正式化/改期/失效会推送 |
+| 日历 / 覆盖 | 月历图和资产覆盖范围 |
+| 查代码 | 单标的完整卡片，含宣告/登记/除息/派发、风险提示和核对链接 |
+| 确认 / 留痕 | 人工确认异常及审计记录 |
+| 需求提报 | `需求 你的想法` 写入需求队列 |
 
-数据来源:直接读 GitHub Pages 发布的 `data.json`,截图截 Pages 日历页 —— 与定时管道解耦,这里**不需要任何行情 API key**。
+分红卡片统一显示：**官方本次公告/IR/SEC** 链接 + **StockAnalysis 交叉核对（可能滞后）**。第三方不是正式化依据。若 Pages 已刷新而卡片仍显示旧样式，优先检查 Railway 是否已部署到当前 GitHub 提交。
 
----
+日历图片由 `render.py` + Pillow 在 Bot 容器中生成，**不再截图网页**。
 
-## 一、创建 Lark 自定义应用(拿 App ID / Secret)
+## Lark 应用设置
 
-> 注意:这是「自定义应用 App」,跟之前推送用的「自定义机器人 Webhook」不是一回事。两者可并存。
+这是「自定义应用 App」，不同于定时推送用的 Webhook 自定义机器人；两者可以并存。
 
-1. 打开 **Lark 开发者后台** https://open.larksuite.com/app → **创建企业自建应用**。
-2. 应用详情页拿到 **App ID** 和 **App Secret**。
-3. 左侧 **添加应用能力 → 机器人**,启用。
-4. 左侧 **权限管理**,开通以下权限(scope):
-   - `im:message`(接收消息)
-   - `im:message:send_as_bot`(以机器人身份发消息)
-   - `im:resource`(上传图片)
-5. 左侧 **事件与回调 → 事件配置**:订阅方式选 **长连接(Long Connection)**(无需回调地址),
-   添加事件 **接收消息 `im.message.receive_v1`**。
-6. **创建版本并发布**(企业内部应用走发布审核/自动通过)。
-7. 把机器人**加进你的目标群**(群设置 → 机器人 → 添加)。
+1. 在 [Lark 开发者后台](https://open.larksuite.com/app) 创建企业自建应用，取得 App ID / App Secret。
+2. 启用机器人能力；订阅长连接事件 `im.message.receive_v1`。
+3. 开通 `im:message`、`im:message:send_as_bot`、`im:resource`。
+4. 发布应用并把机器人加入目标群。
 
-## 二、部署到 PaaS(以 Railway 为例)
+## Railway 部署与变量
 
-本目录(`bot/`)含 `Dockerfile`,任意支持 Docker 的平台都能跑。
+1. 选择 GitHub 仓库 `CA-Monitor`，将 **Root Directory** 设为 `bot`；该目录的 `Dockerfile` 会安装中文字体和 Bot 依赖。
+2. 设置以下变量：
 
-1. 把整个仓库推到 GitHub(已在做)。
-2. Railway → New Project → **Deploy from GitHub repo** → 选 CA-Monitor。
-3. Settings → **Root Directory** 设为 `bot`(让它用 `bot/Dockerfile`)。
-4. **Variables** 加环境变量:
-   - `LARK_APP_ID` = 你的 App ID
-   - `LARK_APP_SECRET` = 你的 App Secret
-   - `SITE_URL` = `https://vancoder4-cyber.github.io/CA-Monitor/`
-5. Deploy。日志出现「等待 @ 指令……」即成功。无需开放端口(长连接是出站的)。
+| 变量 | 是否必需 | 用途 |
+|---|---:|---|
+| `LARK_APP_ID` / `LARK_APP_SECRET` | 是 | Lark 长连接凭证 |
+| `SITE_URL` | 是 | Pages 根地址，例如 `https://vancoder4-cyber.github.io/CA-Monitor/` |
+| `GH_TOKEN` | 确认/观察/需求需要 | 仅此仓库 Contents 读写的细粒度 PAT |
+| `GH_REPO` / `GH_BRANCH` | 可选 | 默认 `vancoder4-cyber/CA-Monitor` / `main` |
+| `HEARTBEAT_URL` | 建议 | healthchecks 等死信监控地址；每 5 分钟 ping 一次 |
 
-> Render / fly.io 同理:用 Dockerfile 部署,设这三个环境变量,常驻运行即可。
+3. 每次改动 `bot/` 后确认 Railway 自动部署完成；如果未绑定自动部署，手动点 **Deploy**。不要只看 GitHub Pages 绿灯：Pages 与 Railway 是两个独立发布面。
 
-## 三、验证
+## 发布后验收
 
-群里 `@机器人 日历` → 应回一张卡片 + 一张日历截图。
-`@机器人 帮助` → 列出指令。
+1. GitHub Actions 先跑绿，确认 Pages 的 `/data.json` 已刷新。
+2. Railway 日志应出现「等待 @ 指令」且没有 import / 连接错误。
+3. 群里依次测试：`帮助`、`查 V`、`临近催办`、`观察预测`。
+4. `查 V` 应显示 Visa 官方股息链接与 StockAnalysis 交叉核对链接；正式事件不应带「预测观察·不执行」或运营催办与状态矛盾。
 
 ## 本地调试
 
 ```bash
-pip install -r requirements.txt && playwright install chromium
-export LARK_APP_ID=... LARK_APP_SECRET=... SITE_URL=https://vancoder4-cyber.github.io/CA-Monitor/
-python bot.py
+cd bot
+pip install -r requirements.txt
+export LARK_APP_ID=... LARK_APP_SECRET=... \
+  SITE_URL=https://vancoder4-cyber.github.io/CA-Monitor/
+python3 bot.py
 ```
+
+在仓库根目录运行 `python3 tools/check_commands.py` 与 `python3 tools/check_surface_consistency.py`，可在发版前检查指令和统一链接契约。

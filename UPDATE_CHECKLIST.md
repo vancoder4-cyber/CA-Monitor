@@ -1,84 +1,59 @@
-# 更新收尾检查清单(每次改完、推送前过一遍)
+# 更新收尾检查清单
 
-目的:任何改动后,确保「四处一致 + 文档同步 + 真正验证」,避免改了 A 忘了同步 B,或只查语法没查运行期(惨痛教训见末尾)。
+目的：每次改动后验证 **GitHub 代码、Pages、定时推送、交互 Bot、文档和审计写回** 是同一版本与同一口径。不能只看语法、也不能只看网页。
 
-## 0. 三个展示面并行检查(最容易漏!)
+## 1. 先判定影响面
 
-同一个能力/口径,往往要在**三个面**同时体现。改任何面向用户的东西,先问:**另外两个面要不要同步改?**
+| 改了什么 | 必须同步检查 |
+|---|---|
+| 指令 / Bot 文案 | `bot/cards.py`、`bot/bot.py`、根 `README.md`、`bot/README.md`、`CHANGELOG.md` |
+| 事件字段 / 取值 / 门禁 | `run.py` 产出 ↔ `report.py` 网页 ↔ `notify_lark.py` 推送 ↔ `bot/cards.py` 交互卡 ↔ 月历 / `calendar_events` |
+| 分红核对链接 / 官方宣告 | `refs.json`、单标的查询、今日/本周、临近催办、预测、日历、公告、网页、定时推送、确认留痕 |
+| 标的数 / 数据源 / 时点 | `config.py`、根 README、`about_card`、操作手册、群 briefing、workflow |
+| Railway / Bot 运行方式 | `bot/README.md`、环境变量、心跳、生产验证步骤 |
 
-| 展示面 | 文件 | 展示什么 |
-|---|---|---|
-| **交互机器人**(@指令卡片) | `bot/cards.py` | 关于/风险/今日/本周/新公告/日历/覆盖/查代码/确认/预测观察/最近更新 |
-| **推送机器人**(定时预警卡片) | `notify_lark.py` | 临近催办 / 新公告 / 待执行 / 冲突 / 空缺 / 新发现 / 预测状态更新 |
-| **官网面板**(dashboard) | `report.py` | 预警面板 + 资产覆盖 + 更新日志 + 参考链接维护台 + SEC 原文表 + **规则说明** |
-| **⚠️ 日历视图**(容易漏的第四条路径) | `report._collect_calendar_marks` + `run.py` 的 `calendar_events` | 月历格子。**它有独立的取值代码,改取值/门禁时必须一起改** |
+## 2. 分红引用契约（尤其容易漂移）
 
-数据来自同一份 `data.json`(由 `run.py` 产出),所以新增字段时**三个消费端都要对齐**。
-举例(本次):核对链接已加到「交互bot 查代码 + 推送bot」,**官网的分红条目是否也要显示核对链接 / 已确认状态?**——这类「第三个面漏了」是常见坑,改完务必三面都过一遍。
+每一条分红都由 `run.py.attach_event_references()` 生成，消费端不得自己拼回退链接。
 
-## 0.5 取值/门禁:只有一个真相(血泪教训)
+1. 官方顺序：已核验的官方本次公告/IR → 精确 8-K → 公司 IR 分红页 → SEC 公司备案。
+2. 始终附 `StockAnalysis`，标签必须写明「交叉核对，可能滞后」。它不能作为正式化依据。
+3. Nasdaq 只可作为采集源/健康矩阵，不能成为唯一分红核对链接。
+4. 已核验官方事件填 `refs.json.official_event_overrides`；须有 URL、核验日期、事件字段。它仍参与零容忍冲突检测。
+5. 所有分红路径都要核：**网页未来时间线 / 预警 / 月历、定时 Lark 推送、Bot 查代码 / 今日 / 本周 / 日历 / 临近催办 / 新公告 / 预测、审计写回来源**。
 
-**任何「某个字段该显示哪个值」的逻辑,只能写在 `reconcile.pick_value()` 一处。**
+## 3. 状态与金额门禁
 
-踩过的坑:改完「待执行/催办/新公告」的取值和门禁后,以为改完了 —— 结果**日历视图是另一条路径**
-(`run.py._ck` + `report._pick`,各自都是「第一个源赢」),完全绕过了多数票、人工确认覆盖和金额门禁,
-线上照样印错值。**取值路径不止一条,改之前先全局搜。**
+- 未见宣告日且单源：`预测观察·不执行`，不能进入催办或运营动作。
+- 有官方宣告或双源确认，但仍有未确认冲突：保持异常，不能进入催办。
+- 只有一个采集源的金额：默认门禁；逐项核验的 `CompanyIR` 官方覆盖层可以显示正式值，但必须展示官方链接和来源。
+- `reconcile.pick_value()` 是字段取值唯一真相；检查是否又出现了 `next((v.get(...` 的平行取值逻辑。
+
+## 4. 本地自动检查（必须全绿）
 
 ```bash
-# 改取值/门禁前必搜:还有没有别处在自己取值?
-grep -rn "next((v.get(" run.py report.py bot/cards.py notify_lark.py    # 应只剩历史遗留/无关字段
-grep -rn "pick_value\|is_disputed\|n_src" run.py report.py              # 消费端都应走这三个
+python3 tools/check_commands.py
+python3 tools/check_surface_consistency.py
+python3 -m py_compile run.py reconcile.py report.py notify_lark.py bot/cards.py bot/ack.py bot/bot.py
+python3 run.py build       # 有缓存时验证真实产物；会跳过未配置的 Lark webhook
 ```
 
-**门禁三条**(缺一不可,三面 + 日历都要):
-- 有未确认冲突 → `⚠️各源不一致(a / b)`,不给确定值
-- 金额只有 1 个源(`n_src < 2`)→ `⚠️单源未交叉验证(x)`,不给确定值
-- 人工 `acked` → 放行,按确认值显示(**acked 必须对所有事件组生效,不只是冲突组**)
-- 单源且未见宣告日 → **预测观察**，不得显示为待执行/运营动作；在网页、推送、交互卡片和月历中均须标「不执行」
+`check_surface_consistency.py` 使用 V 的官方 Visa IR fixture，验证正式化、双链接和网页 / 推送 / Bot / 月历一致性。修改引用契约、预测逻辑或渲染器时，必须先更新该测试。
 
-## 1. 判定这次改了什么(对照决定要同步哪些)
+## 5. 文档与提交
 
-| 你改了… | 必须同步检查 |
-|---|---|
-| **指令**(增/删/改名/改关键词) | `bot/cards.py` 的 `COMMANDS`(唯一来源)→ `bot/bot.py` 的 `on_message` 加/改 `cmd == "<key>"` 分支 → README「指令清单」表 → HELP_TEXT / 关于卡片(自动生成,确认 COMMANDS 的 `desc` 描述准确) |
-| **某指令的行为/口径**(如今日窗口、新公告条数) | 改该指令的 `desc`(COMMANDS)+ 卡片标题/正文;看 **关于卡片正文** 是否需呼应;README 对应行 |
-| **新能力/规则**(如人工确认、核对链接、预警节奏) | **关于卡片正文 `about_card`**(它是总览,最容易漏)+ README |
-| **data.json 字段**(新增/改名) | 产出端 `run.py` ↔ 消费端 `bot/cards.py`、`notify_lark.py`、`report.py` 三处对齐 |
-| **新标的 / IR 分红页** | `refs.json` 的 `ir_dividend`;`config.py` 的标的清单/类型 |
-| **数据源 / 时点 / 标的范围** | `config.py` + 关于卡片正文(数据源、更新时点、覆盖口径) |
+- [ ] `CHANGELOG.md` 顶部添加真实日期的条目。
+- [ ] 根 README、`bot/README.md`、`TODO.md` 与本次事实一致；运营文档和群 briefing 同步。
+- [ ] `refs.json` JSON 格式有效；不提交密钥、webhook、PAT 或 state/cache 临时文件。
+- [ ] 检查 `git diff`，确保没有将历史审计日志当作“修复”回写。
 
-## 2. 文档同步(每次必做)
+## 6. 发布后验收（四个独立面）
 
-- [ ] **CHANGELOG.md 顶部加一条**(`## 日期 · 标题` + 要点)。这是「最近更新」指令 + 网页更新日志 + 关于的唯一来源。
-- [ ] README「指令清单」与 COMMANDS 一致。
-- [ ] 关于卡片正文是否需要呼应本次改动(数据源/规则/能力/时点/覆盖)。
-
-## 3. 自动一致性检查(必须绿)
-
-```
-python tools/check_commands.py    # 校验 COMMANDS / bot.py / HELP_TEXT / README / CHANGELOG 五处一致
-```
-
-CI(monitor.yml)里也会跑;不绿不推。
-
-## 4. 真正验证(不要只看语法!)
-
-- [ ] **真正导入并跑**,不是只 `ast.parse`:
-  ```
-  python -c "import run"          # 暴露缺失 import 等运行期错误(语法检查查不出)
-  python -c "import sys; sys.path.insert(0,'bot'); import cards, bot"
-  ```
-- [ ] 关键函数抽测一遍(改了哪块测哪块):卡片渲染 / 匹配逻辑 / 解析。
-- [ ] 改了抓取/产出可本地试跑:`python run.py build`(用缓存),看 data.json/dashboard 正常生成。
-
-> ⚠️ 教训:曾经只用 `ast.parse` 查了语法就发版,结果 `run.py` 漏 `import re/requests`,每次 Action 都 NameError 崩溃、data.json 停更。**语法对 ≠ 跑得起来,必须真 import / 真跑。**
-
-## 5. 推送后
-
-- [ ] 触发一次 Action(或等定时),确认**跑绿**。
-- [ ] 复查 `data.json` / 网页 / 机器人卡片符合预期(尤其本次改的部分)。
-- [ ] 改了机器人代码 → Railway 自动重部署;改了环境变量 → 记得在 Railway 点 **Deploy** 应用(否则不生效)。
+1. **GitHub Actions**：手动 Run workflow 或等待下一 ET 扫描窗口；确认 Actions 绿灯。单纯 `git push` 不会立即刷新 Pages / 推送。
+2. **Pages**：打开根地址，检查 `data.json` 生成时间与本次 Actions 一致；V 应为正式事件，Visa 官方链接和 StockAnalysis 均可见。
+3. **定时推送**：下一次有内容的运行检查官方链接、第三方链接、预测/催办状态和 @ 名单。
+4. **Railway Bot**：确认已部署到同一提交/镜像；在群里测试 `帮助`、`查 V`、`临近催办`、`观察预测`。Pages 更新不代表 Railway 已更新。
 
 ## 一句话流程
 
-判定影响面 → 同步四处 + CHANGELOG + 关于 → `check_commands` 绿 → **真 import/真跑** → 推送 → 触发 Action 复查。
+判定影响面 → 统一事件数据 → 自动检查 → 文档/CHANGELOG → 提交推送 → Run workflow → 同时验收 Actions、Pages、Lark 推送与 Railway Bot。

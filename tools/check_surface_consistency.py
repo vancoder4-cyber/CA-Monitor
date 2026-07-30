@@ -84,6 +84,15 @@ def main():
     run.attach_event_references(event, refs, {})
     must(event.get("primary_url") == VISA_URL, "统一主链接不是 Visa 官方页")
     must(event.get("third_party_url") == STOCKANALYSIS_URL, "统一第三方链接不正确")
+    must(event.get("decl_url") == "" and event.get("ir_url") == VISA_URL,
+         "旧版 Bot 的兼容字段把官方 IR 错标为宣告 8-K")
+
+    # 有真实 SEC 8-K 时，旧 Bot 的「宣告 8-K」标签必须指向它；没有时才退到 IR。
+    fixture_filing = "https://www.sec.gov/Archives/edgar/data/1403161/fixture-v-dividend.htm"
+    legacy_event = dict(event)
+    run.attach_event_references(legacy_event, refs, {"V": [("2026-07-28", fixture_filing, "8.01")]})
+    must(legacy_event.get("decl_url") == fixture_filing and legacy_event.get("ir_url") == VISA_URL,
+         "旧版 Bot 的 filing / IR 兼容字段不准确")
     must("单源未交叉验证" not in cards._val(event), "官方已核验事件仍被金额门禁拦截")
 
     data = {

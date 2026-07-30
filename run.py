@@ -283,9 +283,11 @@ def attach_event_references(target, refs, sec8k):
         "primary_url": (primary or {}).get("url", ""),
         "primary_label": (primary or {}).get("label", ""),
         "third_party_url": (third or {}).get("url", ""),
-        # 保留兼容字段，旧部署读取也至少能落到官方链接，绝不再退到 Nasdaq。
-        "decl_url": next((x["url"] for x in links if x["kind"] in ("official_event", "official_filing")), ""),
-        "ir_url": next((x["url"] for x in links if x["kind"] == "official_ir"), ""),
+        # 兼容旧版 Railway Bot：它会把 decl_url 标为「宣告 8-K」，因此这里只能放
+        # 真正的 SEC 本次 filing；官方事件/IR 则落到 ir_url，避免链接正确但标签误导。
+        "decl_url": next((x["url"] for x in links if x["kind"] == "official_filing"), ""),
+        "ir_url": next((x["url"] for x in links
+                        if x["kind"] in ("official_ir", "official_event")), ""),
     }
     if isinstance(target, dict):
         target.update(fields)

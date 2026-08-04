@@ -24,12 +24,17 @@ import reconcile as R
 ETYPE_CN = {"dividend": "分红", "split": "拆股", "filing": "并购/公告"}
 
 
+class LarkDeliveryError(RuntimeError):
+    """已配置推送通道但投递失败，调用方必须停止推进去重状态。"""
+
+
 def _cfg():
     return {
         "webhook": os.environ.get("LARK_WEBHOOK", "").strip(),
         "secret": os.environ.get("LARK_SECRET", "").strip(),
         "dashboard": os.environ.get("LARK_DASHBOARD_URL", "").strip(),
         "notify_empty": os.environ.get("LARK_NOTIFY_EMPTY", "0").strip() == "1",
+        "required": os.environ.get("LARK_REQUIRED", "0").strip() == "1",
     }
 
 
@@ -53,7 +58,8 @@ def _load_mentions():
     """从 refs.json 读 alert_mention_open_ids:催办推送要 @ 的 open_id 列表('all'=@所有人)。"""
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "refs.json")
     try:
-        ids = json.load(open(path, encoding="utf-8")).get("alert_mention_open_ids") or []
+        with open(path, encoding="utf-8") as f:
+            ids = json.load(f).get("alert_mention_open_ids") or []
         return [str(x).strip() for x in ids if str(x).strip()]
     except Exception:
         return []
@@ -300,9 +306,15 @@ def _build_card(alerts, meta, dashboard_url=""):
 
 
 def notify(alerts, meta):
-    """根据 .env 配置推送到 Lark。返回 (sent: bool, info: str)。"""
+    """根据 .env 配置推送到 Lark。
+
+    本地未配置和无预警静默是合法跳过；已配置通道后的任何投递失败都抛出
+    LarkDeliveryError，让定时任务变红并保留上一份去重状态供下次重试。
+    """
     cfg = _cfg()
     if not cfg["webhook"]:
+        if cfg["required"]:
+            raise LarkDeliveryError("LARK_REQUIRED=1 但未配置 LARK_WEBHOOK")
         return False, "未配置 LARK_WEBHOOK,跳过推送"
 
     total = (len(alerts["new"]) + len(alerts["rounds"]) + len(alerts["conflicts"])
@@ -320,12 +332,14 @@ def notify(alerts, meta):
     try:
         r = requests.post(cfg["webhook"], json=payload, timeout=15)
         j = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
-        code = j.get("code", j.get("StatusCode", -1))
-        if r.status_code == 200 and code in (0, None):
+        code = j.get("code", j.get("StatusCode", None))
+        if r.status_code == 200 and type(code) is int and code == 0:
             return True, f"已推送 {total} 条预警到 Lark"
-        return False, f"Lark 返回异常: HTTP {r.status_code} {r.text[:160]}"
+        raise LarkDeliveryError(f"Lark 返回异常: HTTP {r.status_code} {r.text[:160]}")
+    except LarkDeliveryError:
+        raise
     except Exception as e:
-        return False, f"推送失败: {e}"
+        raise LarkDeliveryError(f"推送失败: {e}") from e
 
 
 if __name__ == "__main__":

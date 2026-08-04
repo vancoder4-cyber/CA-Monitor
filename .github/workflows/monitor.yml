@@ -1,16 +1,15 @@
 name: CA Monitor
 
-# 定时(cron 用 UTC)。美股常规时段 9:30–16:00 ET,每个交易日扫 3 次:
+# 定时使用 America/New_York，美股常规时段 9:30–16:00 ET,每个交易日扫 3 次:
 #   开盘后 9:35 ET、盘中 12:45 ET、收盘后 16:05 ET。
-# cron 没有时区，夏令时/冬令时各排一次；schedule_gate 只放行真正落在 ET 目标窗口的一次。
 on:
   schedule:
-    - cron: "35 13 * * 1-5"   # EDT 09:35 / EST 08:35
-    - cron: "35 14 * * 1-5"   # EST 09:35 / EDT 10:35
-    - cron: "45 16 * * 1-5"   # EDT 12:45 / EST 11:45
-    - cron: "45 17 * * 1-5"   # EST 12:45 / EDT 13:45
-    - cron: "5 20 * * 1-5"    # EDT 16:05 / EST 15:05
-    - cron: "5 21 * * 1-5"    # EST 16:05 / EDT 17:05
+    - cron: "35 9 * * 1-5"
+      timezone: "America/New_York"
+    - cron: "45 12 * * 1-5"
+      timezone: "America/New_York"
+    - cron: "5 16 * * 1-5"
+      timezone: "America/New_York"
   workflow_dispatch: {}        # 允许手动触发
 
 permissions:
@@ -23,31 +22,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  schedule_gate:
-    runs-on: ubuntu-latest
-    outputs:
-      should_run: ${{ steps.gate.outputs.should_run }}
-    steps:
-      - id: gate
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-        run: |
-          if [ "$EVENT_NAME" != "schedule" ]; then
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          et=$((10#$(TZ=America/New_York date +%H%M)))
-          if (( (et >= 935 && et <= 1034) || (et >= 1245 && et <= 1344) || (et >= 1605 && et <= 1704) )); then
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-            echo "ET $et is inside a monitor window"
-          else
-            echo "should_run=false" >> "$GITHUB_OUTPUT"
-            echo "ET $et is the DST companion schedule; skipping duplicate run"
-          fi
-
   build:
-    needs: schedule_gate
-    if: needs.schedule_gate.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -61,6 +36,9 @@ jobs:
 
       - name: 安装依赖
         run: pip install -r requirements.txt
+
+      - name: 定时配置与 Lark 投递回归检查
+        run: python -m unittest discover -s tests -v
 
       - name: 统一引用与正式化回归检查
         run: python tools/check_surface_consistency.py
@@ -90,9 +68,11 @@ jobs:
           LARK_WEBHOOK: ${{ secrets.LARK_WEBHOOK }}
           LARK_SECRET: ${{ secrets.LARK_SECRET }}
           LARK_DASHBOARD_URL: ${{ vars.LARK_DASHBOARD_URL }}
+          LARK_REQUIRED: "1"
         run: python run.py
 
       - name: 准备 Pages 站点
+        if: ${{ always() }}
         run: |
           test -s dashboard.html
           test -s site_data.json
@@ -101,11 +81,13 @@ jobs:
           cp site_data.json public/data.json
 
       - uses: actions/upload-pages-artifact@v3
+        if: ${{ always() }}
         with:
           path: public
 
   deploy:
     needs: build
+    if: ${{ always() && needs.build.result != 'cancelled' }}
     runs-on: ubuntu-latest
     environment:
       name: github-pages

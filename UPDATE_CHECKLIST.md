@@ -33,6 +33,7 @@
 
 ```bash
 python3 tools/check_commands.py
+python3 -m unittest discover -s tests -v
 python3 tools/check_surface_consistency.py
 python3 -m py_compile run.py reconcile.py report.py notify_lark.py bot/cards.py bot/ack.py bot/bot.py
 python3 run.py build       # 有缓存时验证真实产物；会跳过未配置的 Lark webhook
@@ -49,7 +50,7 @@ python3 run.py build       # 有缓存时验证真实产物；会跳过未配置
 
 ## 6. 发布后验收（四个独立面）
 
-1. **GitHub Actions**：手动 Run workflow 或等待下一 ET 扫描窗口；确认 Actions 绿灯。单纯 `git push` 不会立即刷新 Pages / 推送。
+1. **GitHub Actions**：手动 Run workflow 或等待下一 ET 扫描窗口；分别确认 `build` / `deploy` 和 Lark 投递结果，不能只看 workflow 总体颜色。单纯 `git push` 不会立即刷新 Pages / 推送。
 2. **Pages**：打开根地址，检查 `data.json` 生成时间与本次 Actions 一致；V 应为正式事件，Visa 官方链接和 StockAnalysis 均可见。
 3. **定时推送**：下一次有内容的运行检查官方链接、第三方链接、预测/催办状态和 @ 名单。
 4. **Railway Bot**：确认已部署到同一提交/镜像；在群里测试 `帮助`、`查 V`、`临近催办`、`观察预测`。Pages 更新不代表 Railway 已更新。

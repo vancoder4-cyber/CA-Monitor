@@ -150,15 +150,16 @@ LARK_WEBHOOK=https://open.larksuite.com/open-apis/bot/v2/hook/xxxx
 LARK_SECRET=（开了签名校验才填,否则留空）
 LARK_DASHBOARD_URL=https://你的面板地址/   # 可选,卡片底部按钮（Pages 根路径）
 LARK_NOTIFY_EMPTY=0   # 1=没预警也推一条
+LARK_REQUIRED=0       # 本地可选；GitHub Actions 生产固定为 1
 ```
 
-之后每次 `python run.py` 跑完会自动把**临近预警 / 新发现 / 冲突 / 空缺 / 预测状态更新**整理成一张交互卡片推到群里(filing 带 SEC 原文链接,底部「打开面板」按钮)。`state.json` 去重,同一预警轮次不会重复推;稳定的预测观察不会每日刷屏，只有升级、改期或失效才推送。单独测试推送:`python notify_lark.py`。
+之后每次 `python run.py` 跑完会自动把**临近预警 / 新发现 / 冲突 / 空缺 / 预测状态更新**整理成一张交互卡片推到群里(filing 带 SEC 原文链接,底部「打开面板」按钮)。`state.json` 去重,同一预警轮次不会重复推;稳定的预测观察不会每日刷屏，只有升级、改期或失效才推送。生产环境的 webhook 缺失或返回错误会直接让 Action 失败，且不推进去重状态，以便下次重试。单独测试推送:`python notify_lark.py`。
 
 > 签名算法:以 `"{timestamp}\n{secret}"` 为 HMAC-SHA256 的 key、空消息体,base64;timestamp 需在服务器时间 1 小时内。
 
 ## 云端托管:GitHub Actions + GitHub Pages
 
-`.github/workflows/monitor.yml` 已配好:每交易日 3 次（09:35 / 12:45 / 16:05 ET）自动抓取 → 核对 → 推 Lark → 把 `dashboard.html` 和 `site_data.json` 部署到 GitHub Pages（在线网页，自动更新）。工作流会在 Pages 数据缺失时失败，避免网页刷新但交互 Bot 没有可读数据。
+`.github/workflows/monitor.yml` 已配好:每交易日 3 次（09:35 / 12:45 / 16:05 ET）自动抓取 → 核对 → 推 Lark → 把 `dashboard.html` 和 `site_data.json` 部署到 GitHub Pages（在线网页，自动更新）。调度直接使用 GitHub 原生 `timezone: America/New_York`，无需夏/冬令时双 cron 或运行时门禁，因此延迟排队不会再误跳过。Pages 数据缺失或 Lark 投递失败会让工作流变红；Lark 短暂失败时 Pages 仍会尝试刷新。
 
 启用步骤(一次性):
 
@@ -169,7 +170,7 @@ LARK_NOTIFY_EMPTY=0   # 1=没预警也推一条
 4. **手动触发一次**:repo → Actions → CA Monitor → Run workflow。跑完后网页地址为
    `https://vancoder4-cyber.github.io/CA-Monitor/`。
 
-> **提交到 GitHub 不会立即刷新 Pages 或 Lark**：工作流只在定时或手动 Run workflow 时运行。推送后请手动触发一次（或等待下一扫描窗口）并确认 Actions 绿灯；Railway 交互 Bot 也要确认已拉到同一提交/镜像。
+> **提交到 GitHub 不会立即刷新 Pages 或 Lark**：工作流只在定时或手动 Run workflow 时运行。推送后请手动触发一次（或等待下一扫描窗口），并分别确认 `build` / `deploy` 和 Lark 投递结果；Railway 交互 Bot 也要确认已拉到同一提交/镜像。
 > ⚠️ 公开 Pages = 网址公开可见,持仓清单会公开。要私有请改用 Cloudflare Pages/Netlify 加访问控制。
 
 ## CA问答助手 指令清单

@@ -336,6 +336,14 @@ def save_state(st):
         json.dump(st, f, ensure_ascii=False, indent=2)
 
 
+def deliver_then_save(alerts, meta, state):
+    """Lark 成功投递或合法跳过后才推进去重状态。"""
+    sent, info = notify_lark.notify(alerts, meta)
+    print(f"Lark: {info}")
+    save_state(state)
+    return sent, info
+
+
 def sig(g):
     return f"{g.ticker}|{g.etype}|{g.anchor_date}"
 
@@ -782,14 +790,11 @@ def build():
     with open(OUT_SITEDATA, "w", encoding="utf-8") as f:
         json.dump(site_data, f, ensure_ascii=False, indent=2)
 
-    save_state(state)
-
     print("\n" + "=" * 50 + "\n" + digest + "\n" + "=" * 50)
     print(f"\n站点(日历+面板): {OUT_HTML}\nDigest: {OUT_DIGEST}")
 
-    # 推送到 Lark(未配置则自动跳过)
-    sent, info = notify_lark.notify(alerts, meta)
-    print(f"Lark: {info}")
+    # 生产投递失败时不写 state，下次继续重试而不是静默吞掉预警。
+    deliver_then_save(alerts, meta, state)
     return alerts
 
 

@@ -157,6 +157,8 @@ def calendar_card(data, site_url):
                 f"<font color='red'>还剩 {x['days']} 天</font>\n　{_dates(x)}")
         ref = _reference_line(x, data.get("refs", {}))
         lines.append(line + ("\n" + ref if ref else ""))
+    if len(pending) > 30:
+        lines.append(f"…… 已展示前 30 条待执行事项，共 {len(pending)} 条；完整清单见网页日历。")
     if forecasts:
         for x in forecasts:
             line = (f"• **{x['ticker']}** {ETYPE_CN.get(x['etype'], x['etype'])} "
@@ -178,8 +180,9 @@ def alert_card(data, site_url):
 
     def sec(title, lines):
         if lines:
+            more = f"\n…… 已展示前 20 条，共 {len(lines)} 条；完整清单见网页。" if len(lines) > 20 else ""
             elems.append({"tag": "div", "text": {"tag": "lark_md",
-                         "content": f"**{title}**\n" + "\n".join(lines[:20])}})
+                         "content": f"**{title}**\n" + "\n".join(lines[:20]) + more}})
 
     # 精简为「当日总览」:只给数据质量(冲突/空缺),明细交给专项指令
     conf = [f"• **{g['ticker']}** {ETYPE_CN.get(g['etype'],g['etype'])} {g['date']}: " + "; ".join(g.get("conflicts", []))
@@ -212,7 +215,7 @@ def about_card(data, site_url):
     content = (
         "**CA问答助手** —— 公司行动(Corporate Actions)监控\n"
         f"盯 **现货({n_spot} 支)+ 合约范围({n_contract} 个)**标的中的 **{n_monitored} 个可监控证券**:分红 / 拆股·合股 / 并购 / 分拆 / 退市·代码变更。"
-        "合约里的 ETF(QQQ/EWY/DRAM)监控分红;商品/海外(XAU/WTI/SKHYNIX 等)无公司行动,仅列入覆盖。\n\n"
+        "合约里的 ETF(QQQ/EWY/DRAM)与 SKHY 股票纳入监控；商品(XAU/WTI/XAG/BRENTOIL/NATGAS/XCU)无公司行动，仅列入覆盖。\n\n"
         "**数据源(8 源,多源交叉核对·零容忍)**\n"
         "yfinance · FMP · Alpha Vantage · Nasdaq · Tiingo · Alpaca · SEC EDGAR · FINX(TRKD-HS)\n\n"
         "**关键日**:每条事件展示 **宣告 · 登记 · 除息/生效 · 派发**(缺哪个不显示哪个)。\n\n"
@@ -226,7 +229,7 @@ def about_card(data, site_url):
         "公司宣告/第二个独立源、改期或失效都会主动推送。**预测不得执行。**\n\n"
         "**🙋 人工介入闭环(零容忍·不豁免)**:字段冲突 / 数据空缺,"
         "**每次扫描都重报、一直挂着**,并显示「已挂 N 天」;超 3 天没人确认会在推送里 **@ 负责人**。"
-        "消解方式:群里发 **确认 代码 [正确值] [日期] [备注]**(如 `确认 TSM 1.11362`;同一标的多条不同值时带日期,如 `确认 KLAC 2.3 2026-05-18`)"
+        "消解方式:群里发 **确认 代码 [正确值] [日期] [备注]**(如 `确认 AAPL 0.26 2026-08-11`;同一标的多条不同值时必须带日期)"
         "—— 确认后门禁解除、按你给的值显示。每次确认**只追加、不删**地写入留痕库(谁/何时/改值前后/核对来源/备注),"
         "群里发 **留痕** 可随时调取,离线表用 `tools/export_ack_log.py` 导 Excel。\n\n"
         "**核对链接**:并购/退市直达 SEC 原文；分红统一给 **官方本次公告/IR/SEC** + **StockAnalysis 交叉核对**。第三方可能滞后，不能作为正式化依据。\n\n"
@@ -276,8 +279,9 @@ def risk_card(data, site_url):
 
     def sec(title, lines):
         if lines:
+            more = f"\n…… 已展示前 20 条，共 {len(lines)} 条；完整清单见网页。" if len(lines) > 20 else ""
             elems.append({"tag": "div", "text": {"tag": "lark_md",
-                         "content": f"**{title}**\n" + "\n".join(lines[:20])}})
+                         "content": f"**{title}**\n" + "\n".join(lines[:20]) + more}})
 
     sec("✂️ 即将拆股/合股(调乘数·保证金·防穿仓)",
         [_line(e, with_risk=True) for e in splits])
@@ -325,6 +329,8 @@ def _window_card(data, site_url, lo_days, hi_days, title):
         line = f"• {flag}{d} {prod}**{e['ticker']}** {ETYPE_CN.get(e['etype'], e['etype'])}{_val(e)} —— **{label}日**"
         ref = _reference_line(e, data.get("refs", {}))
         lines.append(line + ("\n" + ref if ref else ""))
+    if len(hits) > 40:
+        lines.append(f"…… 已展示前 40 个关键日，共 {len(hits)} 个；完整清单见网页日历。")
     elems = [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}]
     return _card(f"🗓 {title}", "blue", elems, site_url, "打开网页日历")
 
@@ -361,6 +367,8 @@ def upcoming_card(data, site_url):
         if ref:
             line += "\n" + ref
         lines.append(line)
+    if len(pend) > 30:
+        lines.append(f"…… 已展示前 30 条，共 {len(pend)} 条；完整催办清单见网页面板。")
     elems = [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}]
     return _card(f"🔔 临近催办(≤14天每天 · 30天知会)· {gen}", "blue", elems, site_url, "打开网页面板")
 
@@ -371,7 +379,7 @@ def forecast_card(data, site_url):
     forecasts = sorted(data.get("forecasts", []), key=lambda x: x.get("days", 9999))
     if not forecasts:
         body = ("当前没有待核实预测。\n"
-                "标记用法:`观察 CODE YYYY-MM-DD [备注]`，例:`观察 V 2026-08-11 等待公司宣告`")
+                "标记用法:`观察 CODE YYYY-MM-DD [备注]`，例:`观察 AAPL 2026-08-11 等待公司宣告`")
         return _card(f"🔎 预测观察 · {gen}", "green",
                      [{"tag": "div", "text": {"tag": "lark_md", "content": body}}],
                      site_url, "打开网页面板")
@@ -392,6 +400,8 @@ def forecast_card(data, site_url):
         if ref:
             line += "\n" + ref
         lines.append(line)
+    if len(forecasts) > 30:
+        lines.append(f"…… 已展示前 30 条，共 {len(forecasts)} 条；完整清单见网页面板。")
     return _card(f"🔎 预测观察 · {gen}", "orange",
                  [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}],
                  site_url, "打开网页面板")
@@ -479,14 +489,24 @@ def coverage_card(data, site_url):
 
 
 # ---------------- 查代码(单标的)----------------
+def is_monitored_ticker(data, ticker):
+    """ticker 是否是当前 Pages 覆盖内、可生成公司行动的证券。"""
+    return any(c.get("ticker") == ticker and c.get("monitored")
+               for c in data.get("coverage", []) or [])
+
+
 def find_ticker(text, data):
     """从消息里抽出一个『已覆盖』的标的代码(忽略 @、指令词)。无则 None。"""
     import re
     known = {c["ticker"] for c in data.get("coverage", [])}
-    toks = re.findall(r"[A-Za-z]{1,6}", (text or "").upper())
+    aliases = {str(k).upper(): str(v).upper()
+               for k, v in (data.get("ticker_aliases") or {}).items()}
+    # 支持 BRK-B / BRK.B 等带分隔符代码及 BRENTOIL 等长代码；最后仍必须命中 Pages 覆盖。
+    toks = re.findall(r"[A-Za-z][A-Za-z0-9.-]*", (text or "").upper())
     for t in toks:
-        if t in known:
-            return t
+        canonical = aliases.get(t, t)
+        if canonical in known:
+            return canonical
     return None
 
 
@@ -640,12 +660,12 @@ def confirm_card(ok, msg, ticker=None, value=None, site_url="", date=None, etype
         content = (head + f"✅ 已记录确认:**{ticker}**{dd}{v}。\n"
                    "金额门禁解除、停止报警;已写入留痕库(谁/何时/核对来源,发『留痕』可调取)。\n\n"
                    "> 同一标的有多条**值不同**的异常时,请带上日期指定是哪一条,"
-                   "例:`确认 KLAC 2.3 2026-05-18`、`确认 KLAC 1.9 2026-02-17`。\n"
-                   "> 可在末尾加备注记录你核对了什么,例:`确认 KLAC 2.3 2026-05-18 已比对公司8-K`。")
+                   "例:`确认 AAPL 0.26 2026-08-11`、`确认 AAPL 0.26 2026-05-12`。\n"
+                   "> 可在末尾加备注记录你核对了什么,例:`确认 AAPL 0.26 2026-08-11 已比对公司公告`。")
         tpl = "green"
     else:
         content = (f"⚠️ 确认未成功:{msg}\n\n"
-                   "用法:`确认 代码 [正确值] [日期] [备注]`,例:`确认 KLAC 2.3 2026-05-18 已比对公司8-K`")
+                   "用法:`确认 代码 [正确值] [日期] [备注]`,例:`确认 AAPL 0.26 2026-08-11 已比对公司公告`")
         tpl = "red"
     return _card("✅ 人工确认", tpl,
                  [{"tag": "div", "text": {"tag": "lark_md", "content": content}}],
@@ -689,7 +709,7 @@ def audit_card(log, site_url="", ticker=None):
             sub.append(f"备注:{e['note']}")
         lines.append(head + ("\n　" + " · ".join(sub) if sub else ""))
     body = "\n".join(lines)
-    foot = "\n\n_只追加、永不删;完整表用 `tools/export_ack_log.py` 导 Excel。_"
+    foot = "\n\n_只追加、永不删；历史留痕可能含已退出当前范围的标的。完整表用 `tools/export_ack_log.py` 导 Excel。_"
     return _card(title, "blue",
                  [{"tag": "div", "text": {"tag": "lark_md", "content": body + foot}}],
                  site_url, "打开网页面板")

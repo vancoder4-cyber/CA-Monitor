@@ -14,10 +14,11 @@ import run
 def _alerts(with_content=False):
     return {
         "new": [],
-        "rounds": [],
+        "rounds": ([{"ticker": "AAPL", "etype": "dividend", "date": "2030-01-01", "days": 7}]
+                   if with_content else []),
         "conflicts": [],
         "gaps": [],
-        "pending": [{}] if with_content else [],
+        "pending": [],
         "announced": [],
         "forecast_updates": [],
     }
@@ -68,6 +69,16 @@ class LarkDeliveryTests(unittest.TestCase):
         with self._env():
             with mock.patch.object(notify_lark.requests, "post") as post:
                 sent, info = notify_lark.notify(_alerts(), {"generated": "test"})
+        self.assertFalse(sent)
+        self.assertIn("无预警内容", info)
+        post.assert_not_called()
+
+    def test_pending_without_due_round_stays_quiet(self):
+        alerts = _alerts()
+        alerts["pending"] = [{"ticker": "AAPL", "etype": "dividend", "date": "2030-01-01", "days": 20}]
+        with self._env():
+            with mock.patch.object(notify_lark.requests, "post") as post:
+                sent, info = notify_lark.notify(alerts, {"generated": "test"})
         self.assertFalse(sent)
         self.assertIn("无预警内容", info)
         post.assert_not_called()

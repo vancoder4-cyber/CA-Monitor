@@ -193,7 +193,7 @@ def _sec_company_url(ticker):
             f"&ticker={ticker}&type=&dateb=&owner=include&count=40")
 
 
-def apply_official_event_overrides(all_groups, refs=None):
+def apply_official_event_overrides(all_groups, refs=None, *, allowed_tickers=None):
     """合入人工逐项核验的公司官方事件覆盖层。
 
     某些供应商会先给出下一次分红日期，却迟迟没有 declaration date。只有明确登记在
@@ -201,6 +201,9 @@ def apply_official_event_overrides(all_groups, refs=None):
     与官方值冲突会正常报警，不会悄悄替换。
     """
     refs = refs if isinstance(refs, dict) else load_refs()
+    # 生产默认只允许当前可监控证券。这样 refs.json 的历史条目不会因为 setdefault()
+    # 重新注入已移除标的；可在独立回归 fixture 显式传入 scope 测试旧事件。
+    allowed_tickers = set(C.TICKERS if allowed_tickers is None else allowed_tickers)
     overrides = refs.get("official_event_overrides", {}) or {}
     for key, raw in overrides.items():
         if not isinstance(raw, dict):
@@ -209,6 +212,9 @@ def apply_official_event_overrides(all_groups, refs=None):
             ticker, etype, anchor = key.split("|", 2)
         except ValueError:
             print(f"[refs] 跳过格式错误的 official_event_overrides key: {key}")
+            continue
+        if ticker not in allowed_tickers:
+            print(f"[refs] 跳过非当前监控范围的 official_event_overrides: {key}")
             continue
         if not raw.get("url"):
             print(f"[refs] 跳过缺官方 URL 的 official_event_overrides: {key}")
@@ -228,6 +234,17 @@ def apply_official_event_overrides(all_groups, refs=None):
         R.evaluate_group(g)
     for groups in all_groups.values():
         groups.sort(key=lambda g: (g.anchor_date or ""), reverse=True)
+
+
+def active_forecast_watches(watches, *, allowed_tickers=None):
+    """仅保留当前可监控证券的人工预测观察项。
+
+    forecast_watch.json 与审计日志会保留历史记录，但历史/商品标的不能重新生成
+    预测失效、升级或推送。独立测试可显式传入 scope。
+    """
+    allowed_tickers = set(C.TICKERS if allowed_tickers is None else allowed_tickers)
+    return [w for w in (watches or [])
+            if isinstance(w, dict) and w.get("ticker") in allowed_tickers]
 
 
 def _dividend_references(ticker, date, decl, refs, sec8k):
@@ -413,7 +430,7 @@ def build():
                     except Exception:
                         _g.ack_value = None
 
-    watches = load_forecast_watches()
+    watches = active_forecast_watches(load_forecast_watches())
     state = load_state()
     seen, fired, declared = state["seen"], state["fired_rounds"], state["declared"]
     forecast_state = state["forecast_status"]
@@ -763,9 +780,19 @@ def build():
     recent_declares.sort(key=lambda x: x.get("decl") or "", reverse=True)
     recent_declares = recent_declares[:5]
 
-    # conflicts/new 已从 all_groups 预挂引用；此处保留扁平 IR 映射给独立部署的 Bot
-    # 写审计日志时使用，避免 Railway 容器依赖仓库根目录的 refs.json。
-    ir_map = refs_config.get("ir_dividend", {})
+    # conflicts/new 已从 all_groups 预挂引用；此处只发布当前覆盖范围内的扁平 IR 映射给
+    # 独立部署的 Bot，避免已退出现货/合约范围的历史参考链接继续出现在活动面板或 Bot。
+    # 写审计日志时仍不依赖 Railway 容器能否读取仓库根的 refs.json。
+    ir_map = {
+        ticker: url
+        for ticker, url in (refs_config.get("ir_dividend", {}) or {}).items()
+        if ticker in C.ALL_ASSETS
+    }
+    ticker_aliases = {
+        alias: ticker
+        for alias, ticker in getattr(C, "TICKER_ALIASES", {}).items()
+        if ticker in C.ALL_ASSETS
+    }
 
     # 发布给交互机器人读取的数据(随 Pages 一起部署为 data.json)
     site_data = {
@@ -779,6 +806,7 @@ def build():
         "recent_declares": recent_declares,
         "resolved": resolved,
         "refs": ir_map,
+        "ticker_aliases": ticker_aliases,
         "pending": pending,
         "forecasts": forecasts,
         "forecast_updates": forecast_updates,

@@ -152,7 +152,6 @@ def _build_card(alerts, meta, dashboard_url=""):
     else:
         template = "green"
 
-    n_pending = len(alerts.get("pending", []))
     n_ann = len(alerts.get("announced", []))
     elements = [{
         "tag": "div",
@@ -200,7 +199,7 @@ def _build_card(alerts, meta, dashboard_url=""):
                 f"　最久已挂 **{_rv.get('max_age',0)} 天**")
         if _rv.get("overdue") and _m:
             head = (_at_tags(_m) + f" ❗ 有 **{_rv['overdue']}** 条异常超过 {_esc} 天没人确认,请尽快处理\n" + head)
-        head += "\n　👉 核对后在群里发 **确认 代码 [正确值]**(例:`确认 TSM 1.11362`)即可消解;不确认会一直报。"
+        head += "\n　👉 核对后在群里发 **确认 代码 [正确值]**(例:`确认 AAPL 0.26`)即可消解;不确认会一直报。"
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": head}})
         elements.append({"tag": "hr"})
 
@@ -317,8 +316,10 @@ def notify(alerts, meta):
             raise LarkDeliveryError("LARK_REQUIRED=1 但未配置 LARK_WEBHOOK")
         return False, "未配置 LARK_WEBHOOK,跳过推送"
 
+    # pending 是网页/Bot 的完整待执行清单；15–29 天静默期不会放进 rounds，
+    # 因而不能单独触发一张没有明细的定时卡片。
     total = (len(alerts["new"]) + len(alerts["rounds"]) + len(alerts["conflicts"])
-             + len(alerts["gaps"]) + len(alerts.get("pending", [])) + len(alerts.get("announced", []))
+             + len(alerts["gaps"]) + len(alerts.get("announced", []))
              + len(alerts.get("forecast_updates", [])))
     if total == 0 and not cfg["notify_empty"]:
         return False, "无预警内容,跳过(设 LARK_NOTIFY_EMPTY=1 可强制推送)"

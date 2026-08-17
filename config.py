@@ -21,28 +21,28 @@ def _load_dotenv():
 _load_dotenv()
 
 # ---- 业务范围 ----
-# 现货:71 支美股(SPCX 已上线故保留;STRC 本轮不上,已下掉)
+# 当前 RFQ 范围（截至 2026-08-17）：现货 62 支；SPCX 仅保留在合约范围。
 # 注:Berkshire B 类代码写作 BRK-B(SEC/yfinance/Tiingo/FMP 都用这个格式;写 BRK.B 会全线抓不到)
-# 本期现货范围调整(2026-07-23):
+# 本期范围调整:
 #  - 移除 8 个真 ADR:ARM/ASML/BABA/NOK/NVO/PAYP/SONY/TSM(母国/税率仍存 ADR_WHT,下期复用)。
-#  - 再移除 CAT/DELL/COST/TXN/LLY(本期不上);SPCX 仅从现货移除,**合约仍保留**(合约固定 22)。
+#  - 已移除 CAT/DELL/COST/TXN/LLY 及 AMAT/BX/EBAY/GLW/IBM/KLAC/MSFT/V/WMT；SPCX 仅在合约范围(合约固定 22)。
 #  - BB/BSP/NBIS/IREN 是海外公司但直接上普通股(非 ADR),继续保留监控。
 SPOT_TICKERS = {
-    "AAOI", "AAPL", "ADBE", "ALAB", "AMAT", "AMD", "AMZN", "ASTS",
-    "AVGO", "AXTI", "BB", "BE", "BMNR", "BRK-B", "BSP", "BX",
+    "AAOI", "AAPL", "ADBE", "ALAB", "AMD", "AMZN", "ASTS",
+    "AVGO", "AXTI", "BB", "BE", "BMNR", "BRK-B", "BSP",
     "CBRS", "CIEN", "COHR", "COIN", "CRCL", "CRDO", "CRM", "CRWD", "CRWV",
-    "CSCO", "DIS", "DKNG", "EBAY", "FLEX", "FLNC", "GLW", "GME", "GOOGL",
-    "HD", "HIMS", "HOOD", "HPE", "IBM", "INTC", "IREN", "JPM", "KLAC", "LITE",
-    "LRCX", "META", "MRVL", "MSFT", "MSTR", "MU", "NBIS", "NFLX",
+    "CSCO", "DIS", "DKNG", "FLEX", "FLNC", "GME", "GOOGL",
+    "HD", "HIMS", "HOOD", "HPE", "INTC", "IREN", "JPM", "LITE",
+    "LRCX", "META", "MRVL", "MSTR", "MU", "NBIS", "NFLX",
     "NOW", "NVDA", "ONDS", "ORCL", "PLTR", "QCOM", "QNT", "RIVN",
     "RKLB", "SMCI", "SNDK", "TER", "TSLA", "TTWO",
-    "UBER", "V", "WDC", "WMT", "ZM",
+    "UBER", "WDC", "ZM",
 }
 # 合约:22(截图 23 行去掉已下架的 SOXL)
 CONTRACT_TICKERS = {
     "MU", "SNDK", "MRVL", "INTC", "NVDA", "CRCL", "SPCX", "AMD", "MSTR", "TSLA", "GOOGL",  # 个股
     "QQQ", "EWY", "DRAM",                                                                   # ETF
-    "XAU", "WTI", "XAG", "BRENTOIL", "NATGAS", "XCU", "CBRS", "SKHYNIX",                    # 商品/海外
+    "XAU", "WTI", "XAG", "BRENTOIL", "NATGAS", "XCU", "CBRS", "SKHY",                       # 商品 / 海外股票
 }
 
 # 标的类型:equity(个股) / etf / commodity(商品·外汇) / foreign(海外股)
@@ -52,7 +52,8 @@ ASSET_TYPE = {
     "XAU": "commodity", "WTI": "commodity", "XAG": "commodity", "BRENTOIL": "commodity",
     "NATGAS": "commodity", "XCU": "commodity",
     # CBRS = Cerebras(AI 芯片),是股票不是商品 —— 原来误归 commodity 导致不被监控,已改回 equity(默认)
-    "SKHYNIX": "foreign",
+    # SKHY 是当前 RFQ 的海外上市股票，须与其他个股一样抓公司行动；显式标注防止误改回 foreign。
+    "SKHY": "equity",
 }
 
 def asset_type(tk):
@@ -92,8 +93,17 @@ def adr_wht(tk):
 
 # 全部资产(现货 ∪ 合约),用于"资产覆盖"视图
 ALL_ASSETS = sorted(SPOT_TICKERS | CONTRACT_TICKERS)
-# 实际抓公司行动的标的 = 个股 + ETF(商品/海外不抓)
+# 实际抓公司行动的标的 = 个股 + ETF（商品不抓；海外股票如 SKHY 仍抓）
 TICKERS = sorted([t for t in ALL_ASSETS if is_monitored(t)])
+
+# RFQ/运营输入代码 -> 数据供应商与公开市场使用的 canonical ticker。
+# 所有 target 必须仍在 ALL_ASSETS；Bot 从 Pages data.json 读取此表，避免 Railway 复制业务清单。
+# BBX 不能安全等同于 BlackBerry(BB)：在业务确认前不要在这里建立别名。
+TICKER_ALIASES = {
+    "BRKB": "BRK-B",
+    "BRK.B": "BRK-B",
+    "QNTX": "QNT",
+}
 
 NAMES = {
     "MU": "美光科技", "SNDK": "闪迪", "NVDA": "英伟达", "TSLA": "特斯拉",
@@ -103,7 +113,7 @@ NAMES = {
     "HOOD": "Robinhood", "CRWV": "CoreWeave", "RKLB": "火箭实验室",
     "MSTR": "微策略", "COIN": "Coinbase", "CRCL": "Circle",
     "HIMS": "Hims & Hers", "SPCX": "SpaceX",
-    # 现货新上(61)—— 推送/卡片仍用代码简写,名称仅作上下文
+    # 活动范围与历史审计兼容名称—— 输出只遍历 ALL_ASSETS，旧键不会重回活动覆盖。
     "AAOI": "应用光电", "ADBE": "Adobe", "ALAB": "Astera Labs", "AMAT": "应用材料",
     "ARM": "Arm 控股", "ASML": "阿斯麦", "ASTS": "AST SpaceMobile", "AXTI": "AXT",
     "BABA": "阿里巴巴", "BB": "黑莓", "BE": "Bloom Energy", "BMNR": "Bitmine",
@@ -123,7 +133,7 @@ NAMES = {
     # 合约
     "QQQ": "纳指100 ETF", "EWY": "韩国 ETF", "XAU": "黄金", "WTI": "WTI原油",
     "XAG": "白银", "BRENTOIL": "布伦特原油", "NATGAS": "天然气", "XCU": "铜",
-    "DRAM": "内存 ETF", "CBRS": "Cerebras(AI芯片)", "SKHYNIX": "SK海力士",
+    "DRAM": "内存 ETF", "CBRS": "Cerebras(AI芯片)", "SKHY": "SK海力士",
 }
 
 # ---- API keys ----
@@ -148,7 +158,7 @@ FINX_RIC = {
     "LLY": "LLY.N", "CRCL": "CRCL.N", "RKLB": "RKLB.O", "HOOD": "HOOD.O",
     # NYSE Arca ETF(.K / .P,先按 .K)
     "EWY": "EWY.K",
-    # 其余默认 .O(Nasdaq):MU/SNDK/NVDA/TSLA/AMD/INTC/MSFT/AAPL/AMZN/GOOGL/META/
+    # 其余默认 .O(Nasdaq):MU/SNDK/NVDA/TSLA/AMD/INTC/AAPL/AMZN/GOOGL/META/
     #   AVGO/MRVL/PLTR/NBIS/CRWV/MSTR/COIN/HIMS/QQQ/DRAM
 }
 
@@ -187,7 +197,7 @@ SHORT_HISTORY_GAP_DAYS = 45
 # 新标的首次纳入监控时,它的历史事件怎么处理:
 #   False(默认)= 照常当「新发现」推出来 —— 上一批新标的会刷屏,但能一次看全
 #   True         = 静默建基线(记为已见但不推)—— 不刷屏,只从此以后的新事件才报
-# 上 62 个新现货那次实测:False → 72 条新发现;True → 0 条。
+# 此前一次大批量上新的实测:False → 72 条新发现;True → 0 条。
 BASELINE_NEW_TICKERS = False
 
 # 字段取值的源优先级(多数票平票时用)。我们要的是「公司实际宣告的原值」:

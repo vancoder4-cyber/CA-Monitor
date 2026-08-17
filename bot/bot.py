@@ -139,7 +139,9 @@ def apply_forecasts(d):
         print("apply_forecasts get_forecasts err:", e)
         watches = []
     watchset = {(w.get("ticker"), w.get("etype"), w.get("date"))
-                for w in watches if w.get("status", "watching") == "watching"}
+                for w in watches
+                if w.get("status", "watching") == "watching"
+                and cards.is_monitored_ticker(d, w.get("ticker"))}
     if not watchset:
         return d
     forecasts = list(d.get("forecasts") or [])
@@ -257,6 +259,11 @@ def on_message(data: P2ImMessageReceiveV1):
             clean = re.sub(r"@_user_\d+|@_all", "", text or "")
             m = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", clean)
             date = m.group(1) if m else ""
+            if ticker and not cards.is_monitored_ticker(d, ticker):
+                send_card(chat_id, cards.forecast_mark_card(
+                    False, f"{ticker} 是当前覆盖中的非公司行动资产，不能标记为分红/公司行动预测。",
+                    ticker, date, SITE_URL))
+                return
             if not (ticker and date):
                 send_card(chat_id, cards.forecast_card(d, SITE_URL))
                 return
@@ -281,7 +288,7 @@ def on_message(data: P2ImMessageReceiveV1):
         if cmd == "confirm":
             clean = re.sub(r"@_user_\d+|@_all", "", text or "")  # 去掉 @ 占位符再取数值,避免误读
             # 先摘出日期(YYYY-MM-DD)再取数值 —— 否则「2026」会被当成金额。
-            # 同一标的可能有多条不同值的异常(如 KLAC 2.3 / 1.9),必须能指定是哪一条。
+            # 同一标的可能有多条不同值的异常，必须能用日期指定是哪一条。
             mdate = re.search(r"\d{4}-\d{2}-\d{2}", clean)
             date = mdate.group(0) if mdate else None
             rest = clean.replace(date, "") if date else clean
@@ -317,8 +324,13 @@ def on_message(data: P2ImMessageReceiveV1):
             print(f"[msg] chat={chat_id} text={text!r} -> confirm {ticker} {value} @{date}")
             if not ticker:
                 send_card(chat_id, cards.confirm_card(
-                    False, "没认出代码。用法:`确认 代码 [正确值] [日期] [备注]`,例:`确认 KLAC 2.3 2026-05-18 已比对公司8-K`",
+                    False, "没认出代码。用法:`确认 代码 [正确值] [日期] [备注]`,例:`确认 AAPL 0.26 2026-08-11 已比对公司公告`",
                     site_url=SITE_URL))
+                return
+            if not cards.is_monitored_ticker(d, ticker):
+                send_card(chat_id, cards.confirm_card(
+                    False, f"{ticker} 是当前覆盖中的非公司行动资产，不能执行人工确认。",
+                    ticker=ticker, site_url=SITE_URL))
                 return
             # ADR 防呆:若确认的值像「净额(税后)」——低于该事件毛额约 5% 以上——就警告(仍记录)
             warn = ""

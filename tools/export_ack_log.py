@@ -150,7 +150,7 @@ def build(rows, out):
         ["怎么刷新", "重跑 `python tools/export_ack_log.py`(需 GH_TOKEN)即拉最新;或群里发『留痕』看最近几条。"],
         ["", ""],
         ["确认命令格式", "确认 代码 [正确值] [日期] [备注]"],
-        ["示例", "确认 KLAC 2.3 2026-05-18 已比对公司8-K"],
+        ["示例", "确认 AAPL 0.26 2026-08-11 已比对公司公告"],
     ]
     doc.column_dimensions["A"].width = 16
     doc.column_dimensions["B"].width = 92

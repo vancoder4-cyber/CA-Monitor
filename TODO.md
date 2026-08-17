@@ -5,7 +5,7 @@
 ## 发布闭环
 
 - [ ] **Railway Bot 版本可见性**：下一次 Bot 发版时，在 Railway 增加可见的 build/commit 标识，或在 `关于`卡片显示当前 Bot build。验收必须同时检查 Actions、Pages 和 Railway，而不是只看其中一个。
-- [ ] **自动化生产 smoke**：在不发送真实群消息的前提下，增加可选 smoke，读取生产 `data.json` 并验证 Pages 中的 V 事件是正式而非预测、主链接为 canonical Visa IR。
+- [ ] **自动化生产 smoke**：在不发送真实群消息的前提下，增加可选 smoke，读取生产 `data.json` 并验证当前范围为现货 62 / 合约 22 / 覆盖 73 / 监控 67、`SKHY` 与 Bot aliases 已发布、已移除标的不再发布；历史 Visa fixture 仅在本地引用契约测试中保留。
 
 ## 官方事件与核对来源
 

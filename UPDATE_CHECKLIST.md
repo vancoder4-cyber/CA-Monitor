@@ -9,7 +9,7 @@
 | 指令 / Bot 文案 | `bot/cards.py`、`bot/bot.py`、根 `README.md`、`bot/README.md`、`CHANGELOG.md` |
 | 事件字段 / 取值 / 门禁 | `run.py` 产出 ↔ `report.py` 网页 ↔ `notify_lark.py` 推送 ↔ `bot/cards.py` 交互卡 ↔ 月历 / `calendar_events` |
 | 分红核对链接 / 官方宣告 | `refs.json`、单标的查询、今日/本周、临近催办、预测、日历、公告、网页、定时推送、确认留痕 |
-| 标的数 / 数据源 / 时点 | `config.py`、根 README、`about_card`、操作手册、群 briefing、workflow |
+| 标的数 / 代码别名 / 数据源 / 时点 | `config.py`、Pages `ticker_aliases`、根 README、`about_card`、操作手册、群 briefing、workflow |
 | Railway / Bot 运行方式 | `bot/README.md`、环境变量、心跳、生产验证步骤 |
 
 ## 2. 分红引用契约（尤其容易漂移）
@@ -39,7 +39,7 @@ python3 -m py_compile run.py reconcile.py report.py notify_lark.py bot/cards.py 
 python3 run.py build       # 有缓存时验证真实产物；会跳过未配置的 Lark webhook
 ```
 
-`check_surface_consistency.py` 使用 V 的官方 Visa IR fixture，验证正式化、双链接和网页 / 推送 / Bot / 月历一致性。修改引用契约、预测逻辑或渲染器时，必须先更新该测试。
+`check_surface_consistency.py` 使用历史 Visa 官方 IR fixture，并断言当前 RFQ 的集合、范围门禁、Pages/Bot 代码识别与临近催办截断提示；该 fixture 不代表 V 仍在当前支持范围。修改引用契约、预测逻辑、标的范围或渲染器时，必须先更新该测试。
 
 ## 5. 文档与提交
 
@@ -51,9 +51,9 @@ python3 run.py build       # 有缓存时验证真实产物；会跳过未配置
 ## 6. 发布后验收（四个独立面）
 
 1. **GitHub Actions**：手动 Run workflow 或等待下一 ET 扫描窗口；分别确认 `build` / `deploy` 和 Lark 投递结果，不能只看 workflow 总体颜色。单纯 `git push` 不会立即刷新 Pages / 推送。
-2. **Pages**：打开根地址，检查 `data.json` 生成时间与本次 Actions 一致；V 应为正式事件，Visa 官方链接和 StockAnalysis 均可见。
-3. **定时推送**：下一次有内容的运行检查官方链接、第三方链接、预测/催办状态和 @ 名单。
-4. **Railway Bot**：确认已部署到同一提交/镜像；在群里测试 `帮助`、`查 V`、`临近催办`、`观察预测`。Pages 更新不代表 Railway 已更新。
+2. **Pages**：打开根地址，检查 `data.json` 生成时间与本次 Actions 一致；资产覆盖应为现货 62 / 合约 22 / 共 73 / 监控 67，且已移除标的不应出现。
+3. **定时推送**：下一次有内容的运行检查官方链接、第三方链接、预测/催办状态和 @ 名单；15–29 天静默期不应收到只有统计没有明细的卡片。
+4. **Railway Bot**：确认已部署到同一提交/镜像；在群里测试 `帮助`、`查 AAPL`、`查 BRK-B`、`查 SKHY`、`临近催办`、`观察预测`。Pages 更新不代表 Railway 已更新。
 
 ## 一句话流程
 

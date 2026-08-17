@@ -19,10 +19,30 @@ import report  # noqa: E402
 import notify_lark  # noqa: E402
 import cards  # noqa: E402
 import ack  # noqa: E402
+import config as C  # noqa: E402
 
 
 VISA_URL = "https://investor.visa.com/stock-information/dividends/default.aspx?LanguageId=1"
 STOCKANALYSIS_URL = "https://stockanalysis.com/stocks/v/dividend/"
+
+# 当前 RFQ 的 canonical 发布契约。范围变更时必须同时改 config.py、此断言和运营文档，
+# 避免只改一个展示面。BRKB/QNTX 是已确认的输入别名；BBX 不会被静默映射到 BB，
+# 直到业务确认它们确为同一标的。
+EXPECTED_SPOT = {
+    "AAOI", "AAPL", "ADBE", "ALAB", "AMD", "AMZN", "ASTS", "AVGO", "AXTI", "BB",
+    "BE", "BMNR", "BRK-B", "BSP", "CBRS", "CIEN", "COHR", "COIN", "CRCL", "CRDO",
+    "CRM", "CRWD", "CRWV", "CSCO", "DIS", "DKNG", "FLEX", "FLNC", "GME", "GOOGL",
+    "HD", "HIMS", "HOOD", "HPE", "INTC", "IREN", "JPM", "LITE", "LRCX", "META",
+    "MRVL", "MSTR", "MU", "NBIS", "NFLX", "NOW", "NVDA", "ONDS", "ORCL", "PLTR",
+    "QCOM", "QNT", "RIVN", "RKLB", "SMCI", "SNDK", "TER", "TSLA", "TTWO", "UBER",
+    "WDC", "ZM",
+}
+EXPECTED_CONTRACT = {
+    "XAU", "WTI", "XAG", "MU", "SNDK", "BRENTOIL", "MRVL", "INTC", "SKHY", "NVDA",
+    "CRCL", "SPCX", "EWY", "AMD", "MSTR", "DRAM", "TSLA", "QQQ", "CBRS", "NATGAS",
+    "GOOGL", "XCU",
+}
+REMOVED_SPOT = {"AMAT", "BX", "EBAY", "GLW", "IBM", "KLAC", "MSFT", "V", "WMT"}
 
 
 def must(condition, message):
@@ -34,8 +54,76 @@ def text_of(card):
     return json.dumps(card, ensure_ascii=False)
 
 
+def check_current_scope_contract():
+    """范围、Pages/Bot 输入与历史状态门禁的无网络回归。"""
+    must(C.SPOT_TICKERS == EXPECTED_SPOT,
+         f"现货范围不等于当前 RFQ: 缺 {sorted(EXPECTED_SPOT - C.SPOT_TICKERS)} / 多 {sorted(C.SPOT_TICKERS - EXPECTED_SPOT)}")
+    must(C.CONTRACT_TICKERS == EXPECTED_CONTRACT,
+         f"合约范围不等于当前 RFQ: 缺 {sorted(EXPECTED_CONTRACT - C.CONTRACT_TICKERS)} / 多 {sorted(C.CONTRACT_TICKERS - EXPECTED_CONTRACT)}")
+    must((len(C.SPOT_TICKERS), len(C.CONTRACT_TICKERS), len(C.ALL_ASSETS), len(C.TICKERS)) == (62, 22, 73, 67),
+         "范围计数应为现货 62 / 合约 22 / 覆盖 73 / 监控 67")
+    must(not (REMOVED_SPOT & set(C.ALL_ASSETS)), "已移除现货仍在当前覆盖范围")
+    must("SKHY" in C.TICKERS and "SKHYNIX" not in C.ALL_ASSETS,
+         "SKHY 必须作为可监控的当前合约股票；不得保留 SKHYNIX")
+    must(all(target in C.ALL_ASSETS for target in C.TICKER_ALIASES.values()),
+         "ticker alias 的 target 必须是当前覆盖标的")
+    must(C.TICKER_ALIASES.get("BRKB") == "BRK-B" and C.TICKER_ALIASES.get("QNTX") == "QNT",
+         "RFQ 输入别名没有规范化到 canonical ticker")
+
+    data = {
+        "coverage": [{"ticker": tk, "monitored": tk in C.TICKERS} for tk in C.ALL_ASSETS],
+        "ticker_aliases": C.TICKER_ALIASES,
+    }
+    for ticker in C.ALL_ASSETS:
+        must(cards.find_ticker(f"查 {ticker}", data) == ticker,
+             f"Bot 无法识别当前覆盖代码 {ticker}")
+    for alias, ticker in C.TICKER_ALIASES.items():
+        must(cards.find_ticker(f"查 {alias}", data) == ticker,
+             f"Bot 无法将 {alias} 规范化为 {ticker}")
+    must(cards.is_monitored_ticker(data, "SKHY"), "SKHY 必须可创建公司行动观察")
+    must(not cards.is_monitored_ticker(data, "XAU"), "商品 XAU 不得创建公司行动观察")
+
+    # 旧 refs / watch 只保留在审计文件，不能重新进入活动网页、推送或 Bot。
+    inactive_groups = {}
+    run.apply_official_event_overrides(inactive_groups, {
+        "official_event_overrides": {"V|dividend|2030-01-01": {"url": VISA_URL}}
+    })
+    must("V" not in inactive_groups, "已移除标的 V 被 official_event_overrides 重新注入")
+    watches = run.active_forecast_watches([
+        {"ticker": "AAPL", "etype": "dividend", "date": "2030-01-01"},
+        {"ticker": "V", "etype": "dividend", "date": "2030-01-01"},
+        {"ticker": "XAU", "etype": "dividend", "date": "2030-01-01"},
+    ])
+    must([x["ticker"] for x in watches] == ["AAPL"], "历史或非监控 forecast watch 进入活动输出")
+    must(set(report.load_refs()) <= set(C.ALL_ASSETS), "已移除资产的 IR 引用仍会下发到 Pages/Bot")
+
+    many = [{"ticker": "AAPL", "etype": "dividend", "date": "2030-01-01", "days": n}
+            for n in range(31)]
+    must("共 31 条" in text_of(cards.upcoming_card({"pending": many}, "")),
+         "Bot 临近催办截断时没有提示总数")
+
+
+def historical_visa_refs():
+    """历史 Visa 事件的独立 fixture；不能让已退出现货范围的真实配置重回生产。"""
+    return {
+        "official_event_overrides": {
+            "V|dividend|2026-08-11": {
+                "url": VISA_URL,
+                "label": "Visa 官方股息记录（本次宣告）",
+                "verified_at": "2026-07-30",
+                "declaration_date": "2026-07-28",
+                "record_date": "2026-08-11",
+                "pay_date": "2026-09-01",
+                "amount": 0.67,
+            }
+        },
+        "ir_dividend": {"V": VISA_URL},
+    }
+
+
 def main():
-    refs = run.load_refs()
+    check_current_scope_contract()
+    refs = historical_visa_refs()
     override = (refs.get("official_event_overrides") or {}).get("V|dividend|2026-08-11") or {}
     must(refs.get("ir_dividend", {}).get("V") == VISA_URL, "V 缺少 canonical Visa IR 分红页")
     must(override.get("url") == VISA_URL, "V 缺少已核验官方事件覆盖")
@@ -54,7 +142,7 @@ def main():
     )
     R.evaluate_group(g)
     groups = {"V": [g]}
-    run.apply_official_event_overrides(groups, refs)
+    run.apply_official_event_overrides(groups, refs, allowed_tickers={"V"})
     must("CompanyIR" in g.by_source, "官方覆盖层没有合入事件组")
     must(R.pick_value(g.by_source, "declaration_date") == "2026-07-28", "官方宣告日没有成为统一取值")
     must(g.status == "confirmed" and not R.is_disputed(g), "官方一致事件没有转为正式")
@@ -62,7 +150,7 @@ def main():
     # 生产缓存可能暂时没有供应商条目；仅有人工逐项核验的 CompanyIR 时也必须
     # 是正式事件，不能在网页/日历中被渲染成“单源待核实”。
     official_only = R.EventGroup(ticker="V", etype="dividend", anchor_date="2026-08-11")
-    run.apply_official_event_overrides({"V": [official_only]}, refs)
+    run.apply_official_event_overrides({"V": [official_only]}, refs, allowed_tickers={"V"})
     must(official_only.status == "confirmed" and R.has_official_source(official_only.by_source),
          "单独的 CompanyIR 官方覆盖仍被误标为单源")
 

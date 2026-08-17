@@ -12,21 +12,9 @@
     "BABA|2026-06-11": "https://www.sec.gov/Archives/edgar/data/1577552/000110465926060224/tm2614494d1_ex99-1.htm"
   },
   "_official_event_overrides说明": "人工逐项核验过的公司官方事件覆盖层,key=代码|类型|除息/生效日。用于源端还没补 declaration date 时，仍把已确认的官方公司行动转为正式事件；须填写官方 URL、核验日期及已确认字段。会参与零容忍核对，若与采集源冲突仍会报警，不会静默覆盖。",
-  "official_event_overrides": {
-    "V|dividend|2026-08-11": {
-      "url": "https://investor.visa.com/stock-information/dividends/default.aspx?LanguageId=1",
-      "label": "Visa 官方股息记录（本次宣告）",
-      "verified_at": "2026-07-30",
-      "declaration_date": "2026-07-28",
-      "record_date": "2026-08-11",
-      "pay_date": "2026-09-01",
-      "amount": 0.67,
-      "note": "Visa 官方 IR 股息表列明 Declared 07-28-26 / Record 08-11-26 / Payable 09-01-26 / $0.6700。"
-    }
-  },
+  "official_event_overrides": {},
   "ir_dividend": {
     "AAPL": "https://investor.apple.com/dividend-history/default.aspx",
-    "MSFT": "https://www.microsoft.com/en-us/investor/dividends-and-stock-history",
     "NVO": "https://www.novonordisk.com/investors/stock-information/dividend.html",
     "NVDA": "",
     "AVGO": "",
@@ -34,7 +22,6 @@
     "META": "",
     "LLY": "",
     "MU": "",
-    "INTC": "",
-    "V": "https://investor.visa.com/stock-information/dividends/default.aspx?LanguageId=1"
+    "INTC": ""
   }
 }

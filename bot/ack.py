@@ -186,7 +186,7 @@ def add_forecast(ticker, etype, date, by="lark", by_name="", note="", *, refs_ir
     if not GH_TOKEN:
         return False, "未配置 GH_TOKEN —— 请在 Railway 加一个对本仓库 Contents 有写权限的细粒度 PAT"
     if not ticker or not etype or not date:
-        return False, "用法:`观察 代码 日期 [备注]`,例:`观察 V 2026-08-11 等待公司宣告`"
+        return False, "用法:`观察 代码 日期 [备注]`,例:`观察 AAPL 2026-08-11 等待公司宣告`"
     try:
         now = dt.datetime.now(dt.timezone.utc)
         data, sha = _get_file(FORECAST_PATH)

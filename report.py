@@ -27,13 +27,14 @@ def load_changelog():
     return entries
 
 def load_refs():
-    """读取参考链接维护台 refs.json 的 ir_dividend 映射。"""
+    """读取当前覆盖范围内的 refs.json ir_dividend 映射。"""
     import json
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "refs.json")
     if not os.path.exists(path):
         return {}
     try:
-        return json.load(open(path, encoding="utf-8")).get("ir_dividend", {})
+        refs = json.load(open(path, encoding="utf-8")).get("ir_dividend", {}) or {}
+        return {ticker: url for ticker, url in refs.items() if ticker in C.ALL_ASSETS}
     except Exception:
         return {}
 
@@ -321,7 +322,7 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         "<div style='font-size:13px;color:#444;line-height:1.9;margin-top:8px'>"
         "<b>取值</b>:金额/比例取<b>多数票 + 源优先级</b>(要的是公司宣告的<b>原值</b>)。各源口径不同——"
         "yfinance 会按拆股回溯调整历史分红、还四舍五入;Alpaca 对 ADR 报的是<b>扣预扣税后的净额</b>"
-        "(如 ASML=gross×0.85 荷兰15%、TSM×0.79 台湾21%)。<br>"
+        "(历史 ADR 案例：ASML=gross×0.85 荷兰15%、TSM×0.79 台湾21%)。<br>"
         "<b>🚦 金额门禁</b>:只有<b>多源交叉验证过且无冲突</b>的金额才显示确定值,否则一律封锁:<br>"
         "　• <span style='color:#cf222e;font-weight:600'>⚠️各源不一致(a / b)</span> —— 源之间对不上<br>"
         "　• <span style='color:#bf8700;font-weight:600'>⚠️单源未交叉验证(x)</span> —— 只有 1 个源报,没交叉验证过<br>"
@@ -331,7 +332,7 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         "<b>预测值不得据此执行。</b><br>"
         "<b>🙋 人工介入(零容忍·不豁免)</b>:字段冲突和数据空缺每次扫描都重报、一直挂着并显示「已挂 N 天」,"
         "超 3 天没人确认会在推送里 @ 负责人。消解方式:群里发 "
-        "<code>确认 代码 [正确值]</code>(如 <code>确认 TSM 1.11362</code>)"
+        "<code>确认 代码 [正确值]</code>(如 <code>确认 AAPL 0.26</code>)"
         "→ 门禁解除、停报警、按你给的值显示,并留痕(谁确认、何时)。"
         "</div></details>")
 
@@ -347,7 +348,7 @@ def build_dashboard(all_groups, source_health, alerts, meta):
             f"　<span style='color:#555'>字段冲突 {_rv.get('conflicts',0)} · 数据空缺 {_rv.get('gaps',0)}"
             f"　最久已挂 <b>{_rv.get('max_age',0)}</b> 天</span>{over}"
             f"<div style='color:#555;font-size:13px;margin-top:6px'>零容忍:<b>不做口径豁免</b>。"
-            f"核对后在群里发 <code>确认 代码 [正确值]</code>(例:<code>确认 TSM 1.11362</code>)才会消解;"
+            f"核对后在群里发 <code>确认 代码 [正确值]</code>(例:<code>确认 AAPL 0.26</code>)才会消解;"
             f"不确认则每次扫描都会继续报。</div></div>")
 
     def _resolved_render(r):

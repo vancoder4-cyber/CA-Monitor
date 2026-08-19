@@ -26,8 +26,7 @@ VISA_URL = "https://investor.visa.com/stock-information/dividends/default.aspx?L
 STOCKANALYSIS_URL = "https://stockanalysis.com/stocks/v/dividend/"
 
 # 当前 RFQ 的 canonical 发布契约。范围变更时必须同时改 config.py、此断言和运营文档，
-# 避免只改一个展示面。BRKB/QNTX 是已确认的输入别名；BBX 不会被静默映射到 BB，
-# 直到业务确认它们确为同一标的。
+# 避免只改一个展示面。BBX/BRKB/BRK.B/QNTX 均为已确认的 RFQ 输入别名。
 EXPECTED_SPOT = {
     "AAOI", "AAPL", "ADBE", "ALAB", "AMD", "AMZN", "ASTS", "AVGO", "AXTI", "BB",
     "BE", "BMNR", "BRK-B", "BSP", "CBRS", "CIEN", "COHR", "COIN", "CRCL", "CRDO",
@@ -67,8 +66,9 @@ def check_current_scope_contract():
          "SKHY 必须作为可监控的当前合约股票；不得保留 SKHYNIX")
     must(all(target in C.ALL_ASSETS for target in C.TICKER_ALIASES.values()),
          "ticker alias 的 target 必须是当前覆盖标的")
-    must(C.TICKER_ALIASES.get("BRKB") == "BRK-B" and C.TICKER_ALIASES.get("QNTX") == "QNT",
-         "RFQ 输入别名没有规范化到 canonical ticker")
+    must(C.TICKER_ALIASES == {
+        "BBX": "BB", "BRKB": "BRK-B", "BRK.B": "BRK-B", "QNTX": "QNT",
+    }, "RFQ 输入别名没有完整规范化到 canonical ticker")
 
     data = {
         "coverage": [{"ticker": tk, "monitored": tk in C.TICKERS} for tk in C.ALL_ASSETS],

@@ -49,9 +49,9 @@
 
 1. GitHub Actions 先跑绿，确认 Pages 的 `/data.json` 已刷新。
 2. Railway 日志应出现「等待 @ 指令」且没有 import / 连接错误。
-3. 群里依次测试：`帮助`、`查 AAPL`、`查 BRK-B`、`查 SKHY`、`临近催办`、`观察预测`。
+3. 群里依次测试：`帮助`、`查 AAPL`、`查 BBX`、`查 BRK-B`、`查 SKHY`、`临近催办`、`观察预测`；`查 BBX` 应返回 canonical `BB` 卡片。
 4. `查 AAPL` 应返回当前支持范围内的单标的卡片；如有分红事件，卡片应同时显示官方入口与 StockAnalysis 交叉核对链接，且正式事件不应带「预测观察·不执行」或运营催办与状态矛盾。
-   `BRKB` / `BRK.B` 会规范化为 `BRK-B`，`QNTX` 会规范化为 `QNT`；`BBX` 未映射到 `BB`，待业务确认。
+   `BBX` 会规范化为 `BB`，`BRKB` / `BRK.B` 会规范化为 `BRK-B`，`QNTX` 会规范化为 `QNT`。
 
 ## 本地调试
 

@@ -104,7 +104,7 @@ python run.py build                       # 用缓存合并 → dashboard.html +
 - `SPOT_TICKERS` / `CONTRACT_TICKERS` —— 现货 **62 支** / 合约 22(含 ETF 与商品/海外)，合计 73 个覆盖资产
 - `TICKERS` —— 实际监控标的 **67 支**(现货个股 + QQQ/EWY/DRAM ETF + SKHY；商品列入覆盖但不监控)
   - 代码格式坑:Berkshire B 类抓取 canonical ticker 必须写 **`BRK-B`**；Bot 同时接受 RFQ 输入 `BRKB` / `BRK.B`。`QNTX` 在 Bot 中会规范化为 `QNT`。
-  - `BBX` 不会被静默映射为 `BB`（BlackBerry）：两者是否是同一 RFQ 标的须由业务确认后再配置。
+  - 业务已确认 `BBX` 即 `BB`（BlackBerry）；Bot 接受 `BBX`，数据供应商与公开页面继续使用 canonical ticker `BB`。
   - `BASELINE_NEW_TICKERS` —— 新标的首次纳入时,历史事件是否静默建基线。`False`(默认)= 照常推「新发现」(历史上一次大批量上新会刷屏但能看全);`True` = 记为已见但不推(不刷屏)。此前一次大批量上新实测:False→72 条,True→0 条
 - `ALERT_HEADSUP_DAY` / `ALERT_DAILY_WITHIN` —— 30 天一次知会 / 14 天内每日催办；`ALERT_ROUNDS` 仅保留给兼容旧调用
 - `GROUP_WINDOW_DAYS` —— 跨源归组时间窗(默认 5 天)

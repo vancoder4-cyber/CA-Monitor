@@ -98,8 +98,9 @@ TICKERS = sorted([t for t in ALL_ASSETS if is_monitored(t)])
 
 # RFQ/运营输入代码 -> 数据供应商与公开市场使用的 canonical ticker。
 # 所有 target 必须仍在 ALL_ASSETS；Bot 从 Pages data.json 读取此表，避免 Railway 复制业务清单。
-# BBX 不能安全等同于 BlackBerry(BB)：在业务确认前不要在这里建立别名。
+# 2026-08-19 业务确认：BBX 即 BlackBerry(BB)。
 TICKER_ALIASES = {
+    "BBX": "BB",
     "BRKB": "BRK-B",
     "BRK.B": "BRK-B",
     "QNTX": "QNT",

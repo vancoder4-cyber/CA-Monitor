@@ -51,9 +51,9 @@ python3 run.py build       # 有缓存时验证真实产物；会跳过未配置
 ## 6. 发布后验收（四个独立面）
 
 1. **GitHub Actions**：手动 Run workflow 或等待下一 ET 扫描窗口；分别确认 `build` / `deploy` 和 Lark 投递结果，不能只看 workflow 总体颜色。单纯 `git push` 不会立即刷新 Pages / 推送。
-2. **Pages**：打开根地址，检查 `data.json` 生成时间与本次 Actions 一致；资产覆盖应为现货 62 / 合约 22 / 共 73 / 监控 67，且已移除标的不应出现。
+2. **Pages**：打开根地址，检查 `data.json` 生成时间与本次 Actions 一致；资产覆盖应为现货 62 / 合约 22 / 共 73 / 监控 67，且已移除标的不应出现；`ticker_aliases` 应包含 `BBX → BB`。
 3. **定时推送**：下一次有内容的运行检查官方链接、第三方链接、预测/催办状态和 @ 名单；15–29 天静默期不应收到只有统计没有明细的卡片。
-4. **Railway Bot**：确认已部署到同一提交/镜像；在群里测试 `帮助`、`查 AAPL`、`查 BRK-B`、`查 SKHY`、`临近催办`、`观察预测`。Pages 更新不代表 Railway 已更新。
+4. **Railway Bot**：确认已部署到同一提交/镜像；在群里测试 `帮助`、`查 AAPL`、`查 BBX`（应返回 `BB`）、`查 BRK-B`、`查 SKHY`、`临近催办`、`观察预测`。Pages 更新不代表 Railway 已更新。
 
 ## 一句话流程
 

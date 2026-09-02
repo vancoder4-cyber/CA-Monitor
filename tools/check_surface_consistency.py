@@ -97,8 +97,9 @@ def check_current_scope_contract():
     must([x["ticker"] for x in watches] == ["AAPL"], "历史或非监控 forecast watch 进入活动输出")
     must(set(report.load_refs()) <= set(C.ALL_ASSETS), "已移除资产的 IR 引用仍会下发到 Pages/Bot")
 
-    many = [{"ticker": "AAPL", "etype": "dividend", "date": "2030-01-01", "days": n}
-            for n in range(31)]
+    # 交互「临近催办」只列 D0–D14；用 31 条窗口内 fixture 继续锁住截断总数提示。
+    many = [{"ticker": "AAPL", "etype": "dividend", "date": "2030-01-01",
+             "days": n % 15} for n in range(31)]
     must("共 31 条" in text_of(cards.upcoming_card({"pending": many}, "")),
          "Bot 临近催办截断时没有提示总数")
 

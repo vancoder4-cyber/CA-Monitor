@@ -6,6 +6,16 @@ import calendar as _cal
 import datetime as dt
 import config as C
 import reconcile as R
+from business_time import today as business_today
+
+
+def _business_date(meta=None):
+    """优先沿用本次构建快照的美东业务日，缺失时再读取统一市场时钟。"""
+    raw = (meta or {}).get("business_date")
+    try:
+        return dt.date.fromisoformat(raw) if raw else business_today()
+    except (TypeError, ValueError):
+        return business_today()
 
 
 def load_changelog():
@@ -14,14 +24,15 @@ def load_changelog():
     if not os.path.exists(path):
         return []
     entries, cur = [], None
-    for line in open(path, encoding="utf-8"):
-        s = line.rstrip()
-        if s.startswith("## "):
-            if cur:
-                entries.append(cur)
-            cur = {"head": s[3:].strip(), "items": []}
-        elif s.startswith("- ") and cur is not None:
-            cur["items"].append(s[2:].strip())
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            s = line.rstrip()
+            if s.startswith("## "):
+                if cur:
+                    entries.append(cur)
+                cur = {"head": s[3:].strip(), "items": []}
+            elif s.startswith("- ") and cur is not None:
+                cur["items"].append(s[2:].strip())
     if cur:
         entries.append(cur)
     return entries
@@ -33,7 +44,8 @@ def load_refs():
     if not os.path.exists(path):
         return {}
     try:
-        refs = json.load(open(path, encoding="utf-8")).get("ir_dividend", {}) or {}
+        with open(path, encoding="utf-8") as f:
+            refs = json.load(f).get("ir_dividend", {}) or {}
         return {ticker: url for ticker, url in refs.items() if ticker in C.ALL_ASSETS}
     except Exception:
         return {}
@@ -145,7 +157,7 @@ def _val_html(x):
     return ""
 
 def build_dashboard(all_groups, source_health, alerts, meta):
-    today = dt.date.today()
+    today = _business_date(meta)
     rows_html = []
 
     # 未来事件(分红/拆股/filing),按日期升序
@@ -225,9 +237,10 @@ def build_dashboard(all_groups, source_health, alerts, meta):
             tip = f"<br><span style='color:#0969da'>👉 {html.escape(C.alert_copy(x['days']))}</span>"
         return (f"{prod}<b>{x['ticker']}</b> {ETYPE_CN.get(x['etype'], x['etype'])}{val} — "
                 f"<b style='color:#cf222e'>还剩 {x['days']} 天</b>　<span style='color:#555;font-size:12px'>{html.escape(dates)}</span>{tip}{risk}{ref}")
-    pending_html = alert_block("🔔 临近催办 · 待执行(按距除息:≤14天每天催 · 30天知会)", alerts.get("pending", []), _pending_render)
+    pending_html = alert_block("🔔 正式临近催办 · 待执行(非本周清单；按距除息:≤14天每天催 · 30天知会)", alerts.get("pending", []), _pending_render)
 
-    # 🔎 单源且无宣告日 = 预测观察：保留追踪，但绝不进入执行催办。
+    # 🔎 单源且无宣告日 = 预测观察：保留追踪，并按 30/14 天推核验提醒；
+    # 绝不进入正式执行催办。
     def _forecast_render(x):
         prod = ("<span style='background:#fff8c5;color:#7a4b00;border-radius:4px;padding:0 6px;font-size:12px'>"
                 + "+".join(x["products"]) + "</span> ") if x.get("products") else ""
@@ -243,12 +256,13 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         return (f"{prod}<b>{html.escape(x['ticker'])}</b> {ETYPE_CN.get(x['etype'], x['etype'])}{val} — "
                 f"<b style='color:#bf8700'>🔎 预测观察 · 不执行</b>　"
                 f"<span style='color:#555;font-size:12px'>{html.escape(dates)}</span>"
-                f"<br><span style='color:#555'>📡 数据源:{srcs}；等待公司宣告或第二个独立源后自动转正式催办</span>{note}{_reference_html(x)}")
-    forecast_html = alert_block("🔎 待核实预测(不进入执行催办)", alerts.get("forecasts", []), _forecast_render)
+                f"<br><span style='color:#555'>📡 数据源:{srcs}；按 30/14 天节奏推核验提醒；公司宣告或第二个独立源后自动转正式催办</span>{note}{_reference_html(x)}")
+    forecast_html = alert_block("🔎 待核实预测(会推核验提醒 · 未确认勿执行)", alerts.get("forecasts", []), _forecast_render)
 
     def _forecast_update_render(x):
         if x.get("kind") in ("promoted", "declared"):
-            why = "公司官方宣告" if x.get("kind") == "declared" else "第二个独立源已确认"
+            why = (("公司官方宣告" if x.get("official") else "已获取宣告日")
+                   if x.get("kind") == "declared" else "第二个独立源已确认")
             return (f"✅ <b>{html.escape(x['ticker'])}</b> 预测已转正式：{why}，除息/生效 "
                     f"{html.escape(str(x.get('date')))}{_reference_html(x)}")
         if x.get("kind") == "updated":
@@ -327,8 +341,8 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         "　• <span style='color:#cf222e;font-weight:600'>⚠️各源不一致(a / b)</span> —— 源之间对不上<br>"
         "　• <span style='color:#bf8700;font-weight:600'>⚠️单源未交叉验证(x)</span> —— 只有 1 个源报,没交叉验证过<br>"
         "　• <span style='color:#bf8700;font-weight:600'>🔎预测观察</span> —— 单源且未见宣告日的预估;"
-        "不进入执行催办，持续等公司宣告或第二个独立源。可发 <code>观察 代码 日期 [备注]</code> 标记重点跟踪;"
-        "改期/升级/失效会主动推送。<br>"
+        "进入 30 天窗口知会一次、14 天内每日推数据核验提醒，但不进入正式执行催办。"
+        "可发 <code>观察 代码 日期 [备注]</code> 标记重点跟踪;改期/升级/失效也会主动推送。<br>"
         "<b>预测值不得据此执行。</b><br>"
         "<b>🙋 人工介入(零容忍·不豁免)</b>:字段冲突和数据空缺每次扫描都重报、一直挂着并显示「已挂 N 天」,"
         "超 3 天没人确认会在推送里 @ 负责人。消解方式:群里发 "
@@ -416,8 +430,8 @@ def build_dashboard(all_groups, source_health, alerts, meta):
                 else "<tr><td colspan='2' style='color:#888'>refs.json 暂无条目</td></tr>")
 
     # ---- SEC 原文(近期 filing 类公司行动文件)----
-    today_s = dt.date.today().isoformat()
-    cutoff_s = (dt.date.today() - dt.timedelta(days=90)).isoformat()
+    today_s = today.isoformat()
+    cutoff_s = (today - dt.timedelta(days=90)).isoformat()
     filings = []
     for tk, groups in all_groups.items():
         for g in groups:
@@ -466,7 +480,7 @@ def build_dashboard(all_groups, source_health, alerts, meta):
   <div class="cards">
     <div class="card"><div class="n">{n_upcoming}</div><div class="l">未来事件</div></div>
     <div class="card"><div class="n" style="color:#0969da">{n_new}</div><div class="l">新发现</div></div>
-    <div class="card"><div class="n" style="color:#9a6700">{n_round}</div><div class="l">临近预警</div></div>
+    <div class="card"><div class="n" style="color:#9a6700">{n_round}</div><div class="l">临近提醒</div></div>
     <div class="card"><div class="n" style="color:#cf222e">{n_conf}</div><div class="l">字段冲突</div></div>
     <div class="card"><div class="n" style="color:#cf222e">{n_gap}</div><div class="l">数据空缺</div></div>
   </div>
@@ -556,7 +570,9 @@ def build_text_digest(alerts, meta):
     def _round_line(x):
         prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
         lab = "除息" if x.get("etype") == "dividend" else "生效"
-        s = (f"{prod}{x['ticker']} {ETYPE_CN.get(x['etype'],x['etype'])} D-{x['days']} |"
+        prefix = ("[单源核验·勿执行] " if x.get("forecast") else
+                  "[单源已转正式] " if x.get("promoted_from_forecast") else "[正式催办] ")
+        s = (f"{prefix}{prod}{x['ticker']} {ETYPE_CN.get(x['etype'],x['etype'])} D-{x['days']} |"
              + (f" 宣告 {x['decl']}" if x.get('decl') else "")
              + (f" 登记 {x['record']}" if x.get('record') else "")
              + f" {lab} {x['date']}"
@@ -564,12 +580,15 @@ def build_text_digest(alerts, meta):
         if x.get("ops"):
             s += f"\n      👉 {x['ops']}"
         return s
-    sec("临近催办(≤14天每天 · 30天知会)", alerts["rounds"], _round_line)
+    sec("临近提醒(正式催办 + 单源核验；非本周清单；≤14天每天 · 30天知会)", alerts["rounds"], _round_line)
 
     # 优先级互斥去重:催办 > 新公告 > 待执行
     def _sig(x):
         return (x.get("ticker"), x.get("etype"), x.get("date"))
     _claimed = {_sig(x) for x in alerts.get("rounds", [])}
+    _promotion_round_sigs = {
+        _sig(x) for x in alerts.get("rounds", []) if x.get("promoted_from_forecast")
+    }
     _ann = [x for x in alerts.get("announced", []) if _sig(x) not in _claimed]
     for x in _ann:
         _claimed.add(_sig(x))
@@ -601,16 +620,21 @@ def build_text_digest(alerts, meta):
         lab = "除息" if x.get("etype") == "dividend" else "生效"
         return (f"{prod}{x['ticker']} {ETYPE_CN.get(x['etype'],x['etype'])} 预测 {value if value is not None else '—'} | "
                 f"{lab} {x.get('date')} · 不执行;等待公司宣告或第二个独立源")
-    sec("待核实预测(不进入执行催办)", alerts.get("forecasts", []), _forecast_line)
+    _forecast_rest = [x for x in alerts.get("forecasts", []) if _sig(x) not in _claimed]
+    sec("其余待核实预测(临近会推核验提醒 · 未确认勿执行)", _forecast_rest, _forecast_line)
 
     def _forecast_update_line(x):
         if x.get("kind") in ("promoted", "declared"):
-            why = "公司官方宣告" if x.get("kind") == "declared" else "第二个独立源已确认"
+            why = (("公司官方宣告" if x.get("official") else "已获取宣告日")
+                   if x.get("kind") == "declared" else "第二个独立源已确认")
             return f"{x['ticker']} 预测已转正式：{why}，除息/生效 {x.get('date')}"
         if x.get("kind") == "updated":
             return f"{x['ticker']} 预测更新：日期 {x.get('previous_date') or '—'} → {x.get('date')}"
         return f"{x['ticker']} 预测失效：预计日 {x.get('date')} 已过仍未证实，不执行"
-    sec("预测状态更新(自动追踪)", alerts.get("forecast_updates", []), _forecast_update_line)
+    _forecast_updates_rest = [
+        x for x in alerts.get("forecast_updates", []) if _sig(x) not in _promotion_round_sigs
+    ]
+    sec("预测状态更新(自动追踪)", _forecast_updates_rest, _forecast_update_line)
     sec("新发现事件", alerts["new"],
         lambda g: f"{g.ticker} {ETYPE_CN.get(g.etype,g.etype)} {g.anchor_date} {(_strip(g))}")
     sec("字段冲突(零容忍·需人工确认)", alerts["conflicts"],
@@ -757,7 +781,7 @@ def _render_month(year, month, marks, today):
 
 def build_calendar(all_groups, meta, months_ahead=3, lookback_days=15):
     """返回日历 body 片段(供合并站点使用)。"""
-    today = dt.date.today()
+    today = _business_date(meta)
     start = today - dt.timedelta(days=lookback_days)
     end = today
     for _ in range(months_ahead):

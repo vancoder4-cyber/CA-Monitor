@@ -11,9 +11,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import List, Dict
 import config as C
-
-
-TODAY = dt.date.today()
+from business_time import today as business_today
 
 
 # ---- 取值的唯一真相(所有消费端都必须走这里,别再各写一份)----
@@ -102,9 +100,6 @@ def _d(s):
         return None
 
 
-RECON_CUTOFF = (TODAY - dt.timedelta(days=C.LOOKBACK_DAYS)).isoformat()
-
-
 @dataclass
 class EventGroup:
     ticker: str
@@ -120,12 +115,12 @@ class EventGroup:
     @property
     def is_future(self):
         d = _d(self.anchor_date)
-        return bool(d and d >= TODAY)
+        return bool(d and d >= business_today())
 
     @property
     def days_to(self):
         d = _d(self.anchor_date)
-        return (d - TODAY).days if d else None
+        return (d - business_today()).days if d else None
 
     def to_dict(self):
         return {"ticker": self.ticker, "etype": self.etype,
@@ -225,7 +220,10 @@ def _evaluate(g: EventGroup, etype):
     compare_fields = C.DIV_COMPARE_FIELDS if etype == "dividend" else C.SPLIT_COMPARE_FIELDS
 
     # 只对"近窗口(近 LOOKBACK 天)+ 未来"的事件做报警,避免老历史覆盖深度差异造成噪音
-    in_window = (g.anchor_date or "") >= RECON_CUTOFF
+    today = business_today()
+    in_window = (g.anchor_date or "") >= (
+        today - dt.timedelta(days=C.LOOKBACK_DAYS)
+    ).isoformat()
 
     # ---- 字段一致性(零容忍)----
     has_conflict = False
@@ -259,7 +257,7 @@ def _evaluate(g: EventGroup, etype):
         # 降噪:历史覆盖短的源(如 FINX),仅对近窗口内的事件算空缺;
         # 更早的历史事件这些源没有也不报(它们本就只回近期+未来)。
         if missing:
-            sh_cut = (TODAY - dt.timedelta(days=C.SHORT_HISTORY_GAP_DAYS)).isoformat()
+            sh_cut = (today - dt.timedelta(days=C.SHORT_HISTORY_GAP_DAYS)).isoformat()
             missing = [s for s in missing
                        if s not in C.SHORT_HISTORY_SOURCES or (g.anchor_date or "") >= sh_cut]
         if missing and len(g.by_source) >= 1:

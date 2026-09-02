@@ -186,7 +186,7 @@ def send_calendar_image(chat_id, data):
         if os.path.exists(path):
             os.remove(path)
         from render import draw_month
-        draw_month(data.get("calendar", []), path)
+        draw_month(data.get("calendar", []), path, business_date=data.get("business_date"))
     except Exception as e:
         print("draw calendar err:", e)
     if not os.path.exists(path):

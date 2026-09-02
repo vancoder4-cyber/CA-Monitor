@@ -16,6 +16,7 @@ from typing import List, Optional
 
 import requests
 import config as C
+from business_time import today as business_today
 
 
 # ---------------- 归一化事件模型 ----------------
@@ -289,7 +290,7 @@ def fetch_sec(ticker: str, lookback_days: int) -> SourceResult:
         docs = recent.get("primaryDocument", [])
         items_all = recent.get("items", [])
         accepted_all = recent.get("acceptanceDateTime", [])
-        cutoff = (dt.date.today() - dt.timedelta(days=lookback_days)).isoformat()
+        cutoff = (business_today() - dt.timedelta(days=lookback_days)).isoformat()
         # 非 8-K 的关注表格本身就与公司行动相关
         _form_relevant = {"25", "25-NSE", "425", "S-4", "DEFM14A", "8-K12B", "15-12B",
                           "SC TO-I", "SC 14D9"}
@@ -378,7 +379,7 @@ def fetch_nasdaq_splits(ticker: str) -> SourceResult:
 def fetch_tiingo(ticker: str, token: str) -> List[SourceResult]:
     if not token:
         return [SourceResult("Tiingo", ticker, "unavailable", detail="未配置 token")]
-    start = (dt.date.today() - dt.timedelta(days=C.LOOKBACK_DAYS + 800)).isoformat()
+    start = (business_today() - dt.timedelta(days=C.LOOKBACK_DAYS + 800)).isoformat()
     url = f"https://api.tiingo.com/tiingo/daily/{ticker}/prices"
     try:
         r = requests.get(url, params={"startDate": start, "token": token, "format": "json"},
@@ -415,8 +416,9 @@ def prefetch_alpaca(tickers, key_id, secret):
     if not (key_id and secret):
         _ALPACA["detail"] = "未配置 Alpaca key"
         return _ALPACA
-    start = (dt.date.today() - dt.timedelta(days=C.LOOKBACK_DAYS)).isoformat()
-    end = (dt.date.today() + dt.timedelta(days=C.LOOKAHEAD_DAYS)).isoformat()
+    today = business_today()
+    start = (today - dt.timedelta(days=C.LOOKBACK_DAYS)).isoformat()
+    end = (today + dt.timedelta(days=C.LOOKAHEAD_DAYS)).isoformat()
     # 不传 types:返回全部类型(cash_dividends/forward_splits/reverse_splits/
     # unit_splits/spin_offs/*_mergers/name_changes/... 复数键)
     headers = {"APCA-API-KEY-ID": key_id, "APCA-API-SECRET-KEY": secret,

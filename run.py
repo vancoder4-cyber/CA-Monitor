@@ -17,6 +17,7 @@ import sources as S
 import reconcile as R
 import report as RP
 import notify_lark
+from business_time import now as business_now, today as business_today
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "data")
@@ -24,15 +25,8 @@ DATA = os.path.join(HERE, "data")
 
 def _now_label():
     """带时区标注的生成时间:美东(ET) + 北京。GitHub 服务器是 UTC,直接 now() 会显示 UTC 造成误解。"""
-    now_utc = dt.datetime.now(dt.timezone.utc)
-    try:
-        from zoneinfo import ZoneInfo
-        et = now_utc.astimezone(ZoneInfo("America/New_York"))
-        bj = now_utc.astimezone(ZoneInfo("Asia/Shanghai"))
-    except Exception:
-        # 退化:无 tzdata 时按夏令时 EDT(-4)/ 北京(+8)近似
-        et = now_utc.astimezone(dt.timezone(dt.timedelta(hours=-4)))
-        bj = now_utc.astimezone(dt.timezone(dt.timedelta(hours=8)))
+    et = business_now()
+    bj = et.astimezone(dt.timezone(dt.timedelta(hours=8)))
     return f"{et.strftime('%Y-%m-%d %H:%M')} ET / {bj.strftime('%H:%M')} 北京"
 CACHE = os.path.join(DATA, "cache")
 os.makedirs(CACHE, exist_ok=True)
@@ -49,14 +43,15 @@ def load_changelog():
     if not os.path.exists(path):
         return []
     entries, cur = [], None
-    for line in open(path, encoding="utf-8"):
-        s = line.rstrip()
-        if s.startswith("## "):
-            if cur:
-                entries.append(cur)
-            cur = {"head": s[3:].strip(), "items": []}
-        elif s.startswith("- ") and cur is not None:
-            cur["items"].append(s[2:].strip())
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            s = line.rstrip()
+            if s.startswith("## "):
+                if cur:
+                    entries.append(cur)
+                cur = {"head": s[3:].strip(), "items": []}
+            elif s.startswith("- ") and cur is not None:
+                cur["items"].append(s[2:].strip())
     if cur:
         entries.append(cur)
     return entries
@@ -112,13 +107,58 @@ def match_forecast_watch(watches, ticker, etype, date, window_days=14, statuses=
     return min(candidates, key=lambda x: x[0])[1] if candidates else None
 
 
+def schedule_event_reminder(event, signature, fired, today):
+    """按统一 30/14 天节奏生成一次临近提醒。
+
+    `forecast=True` 的单源事件同样会提醒，但只生成数据核验任务，绝不复用
+    正式公司行动的执行文案或风控动作。`fired` 由调用方持久化，用于保证
+    30 天窗口只知会一次、14 天内每天最多一次。
+    """
+    days = event.get("days")
+    if not isinstance(days, int) or days < 0:
+        return None
+
+    # 核验提醒与正式催办使用独立去重轨道。单源当天补到第二源/官方宣告时，
+    # 正式状态变化不能被当天已经发过的核验提醒静默压掉。
+    state_key = f"{signature}#verification" if event.get("forecast") else signature
+    previous = fired.get(state_key)
+    state = dict(previous) if isinstance(previous, dict) else {}
+    due = None
+    if days <= C.ALERT_DAILY_WITHIN:
+        if state.get("last_daily") != today:
+            due = "daily"
+            state["last_daily"] = today
+    elif days <= C.ALERT_HEADSUP_DAY:
+        if not state.get("headsup"):
+            due = "headsup"
+            state["headsup"] = True
+    fired[state_key] = state
+    if not due:
+        return None
+
+    reminder = {**event, "round": days, "cadence": due}
+    if event.get("forecast"):
+        reminder.update({
+            "ops": "🔎 单源待核实：请核对公司官方公告或第二个独立源；未确认前勿执行。",
+            "risk_copy": "数据核验提醒，不是公司行动执行指令。",
+            "risk": [],
+        })
+    else:
+        reminder.update({
+            "ops": C.alert_copy(days),
+            "risk_copy": C.ROUND_RISK_TBD,
+        })
+    return reminder
+
+
 def load_refs():
     """读取参考链接维护台 refs.json(每标的 IR 分红页等)。"""
     p = os.path.join(HERE, "refs.json")
     if not os.path.exists(p):
         return {}
     try:
-        return json.load(open(p, encoding="utf-8"))
+        with open(p, encoding="utf-8") as f:
+            return json.load(f)
     except Exception:
         return {}
 
@@ -343,7 +383,7 @@ def load_state():
             st.setdefault("seen", {})
             st.setdefault("fired_rounds", {})
             st.setdefault("declared", {})   # sig -> 已推送过的宣告日
-            st.setdefault("forecast_status", {})  # 观察项的上次状态，供升级/改期/失效通知去重
+            st.setdefault("forecast_status", {})  # 自动单源 + 人工观察的状态，供升级/改期/失效通知去重
             return st
     return {"seen": {}, "fired_rounds": {}, "declared": {}, "forecast_status": {}}
 
@@ -404,7 +444,8 @@ def build():
         p = os.path.join(CACHE, f"{tk}.json")
         if not os.path.exists(p):
             continue
-        d = json.load(open(p, encoding="utf-8"))
+        with open(p, encoding="utf-8") as f:
+            d = json.load(f)
         all_groups[tk] = [R.EventGroup.from_dict(x) for x in d["groups"]]
         source_health[tk] = d["health"]
 
@@ -434,8 +475,9 @@ def build():
     state = load_state()
     seen, fired, declared = state["seen"], state["fired_rounds"], state["declared"]
     forecast_state = state["forecast_status"]
-    today = dt.date.today().isoformat()
-    cutoff30 = (dt.date.today() - dt.timedelta(days=30)).isoformat()
+    today_d = business_today()
+    today = today_d.isoformat()
+    cutoff30 = (today_d - dt.timedelta(days=30)).isoformat()
     new_events, round_alerts, conflicts, gaps, pending, announced = [], [], [], [], [], []
     forecasts, forecast_updates, forecast_sigs, matched_watch_keys = [], [], set(), set()
 
@@ -494,9 +536,9 @@ def build():
             if g.is_future and g.etype != "filing" and g.days_to is not None:
                 # 持续推送:所有"已公告未执行"事件,每次跑都列出(带 D-天数 + 产品 + 风控提示)
                 _decl = _pk("declaration_date")
-                # 「真·已宣告」判定:有宣告日,或 ≥2 源都有这个事件。
-                # 否则多半是单源(Alpaca)按节奏推的**预估**,公司并未实际公告 —— 不能当已公告让运营去准备。
-                _confirmed = (bool(_decl) or len(g.by_source) >= 2) and not R.is_disputed(g)
+                # 正式跟踪判定：已逐项核验的 CompanyIR、已取得宣告日，或 ≥2 源一致。
+                # 普通单源且无宣告日仍是预测，只能进入核验提醒，不能让运营执行。
+                _confirmed = (_official or bool(_decl) or len(g.by_source) >= 2) and not R.is_disputed(g)
                 event = {"ticker": g.ticker, "etype": g.etype, "date": g.anchor_date,
                          "days": g.days_to, "status": g.status,
                          "decl": _decl, "record": _pk("record_date"),
@@ -504,61 +546,65 @@ def build():
                          "amt_srcs": _amt_srcs, "acked": getattr(g, "acked", False),
                          "official": _official,
                          "first": _decl or seen.get(s), "confirmed": _confirmed,
+                         "forecast": not _confirmed,
                          "srcs": sorted(g.by_source.keys()), "products": C.product_tags(g.ticker),
                          "risk": C.risk_note(g.ticker, g.etype), "watching": bool(watch),
                          "watch_note": (watch or {}).get("note", "")}
                 if not _confirmed:
                     forecast_sigs.add(s)
                     forecasts.append(event)
+                    is_single_forecast = len(g.by_source) == 1 and not _decl and not R.is_disputed(g)
+                    # 自动识别的单源也要持久化状态，不能只有人工 `观察` 的事件
+                    # 才能在补到宣告/第二源时发出「已转正式」。
+                    status_keys = {s} if is_single_forecast else set()
                     if watch:
-                        wk = forecast_key(watch)
+                        status_keys.add(forecast_key(watch))
+                    status_update_emitted = False
+                    for wk in status_keys:
                         prev = forecast_state.get(wk) or {}
                         snapshot = {"status": "watching", "date": g.anchor_date,
-                                    "amount": event.get("amount"), "last_seen": today}
-                        if prev and prev.get("status") == "watching" and (
+                                    "amount": event.get("amount"), "last_seen": today,
+                                    "ticker": g.ticker, "etype": g.etype,
+                                    "automatic": wk == s}
+                        if not status_update_emitted and prev and prev.get("status") == "watching" and (
                                 prev.get("date") != snapshot["date"] or prev.get("amount") != snapshot["amount"]):
                             forecast_updates.append({**event, "kind": "updated",
                                                      "previous_date": prev.get("date"),
                                                      "previous_amount": prev.get("amount")})
+                            status_update_emitted = True
                         forecast_state[wk] = snapshot
+                    # 单源预测也必须被看见：沿用 30 天首次知会、14 天内每日提醒，
+                    # 但提醒内容只要求核验，明确禁止据此执行公司行动。
+                    if is_single_forecast:
+                        reminder = schedule_event_reminder(event, s, fired, today)
+                        if reminder:
+                            round_alerts.append(reminder)
                     continue
 
                 pending.append(event)
+                transition_keys = {s}
                 if prior_watch:
-                    wk = forecast_key(prior_watch)
-                    prev = forecast_state.get(wk) or {}
-                    if prev.get("status") != "confirmed":
-                        forecast_updates.append({**event,
-                                                 "kind": "declared" if _decl else "promoted",
-                                                 "previous_date": prev.get("date") or prior_watch.get("date"),
-                                                 "previous_amount": prev.get("amount"),
-                                                 "confirmation_source": getattr(g, "primary_url", "")})
+                    transition_keys.add(forecast_key(prior_watch))
+                previous_forecasts = [
+                    forecast_state.get(wk) or {} for wk in transition_keys
+                    if (forecast_state.get(wk) or {}).get("status") == "watching"
+                ]
+                if previous_forecasts:
+                    prev = previous_forecasts[0]
+                    event["promoted_from_forecast"] = True
+                    forecast_updates.append({**event,
+                                             "kind": "declared" if _decl else "promoted",
+                                             "previous_date": prev.get("date") or (prior_watch or {}).get("date"),
+                                             "previous_amount": prev.get("amount"),
+                                             "confirmation_source": getattr(g, "primary_url", "")})
+                for wk in transition_keys:
                     forecast_state[wk] = {"status": "confirmed", "date": g.anchor_date,
-                                          "amount": event.get("amount"), "last_seen": today}
-                # 催办节奏(合并「临近预警+待执行」):≤14 天每天一次(每天去重);
-                # 15–29 天安静;进入 ≤30 天时提醒一次(heads-up)。
-                d2 = g.days_to
-                fs = fired.get(s)
-                fs = dict(fs) if isinstance(fs, dict) else {}   # 兼容旧 state(曾存 rounds 列表)
-                due = None
-                if d2 <= C.ALERT_DAILY_WITHIN:
-                    if fs.get("last_daily") != today:      # 每天只推一次(流水线一天跑 3 次)
-                        due = "daily"; fs["last_daily"] = today
-                elif d2 <= C.ALERT_HEADSUP_DAY:
-                    if not fs.get("headsup"):              # 进入 30 天窗口首次提醒
-                        due = "headsup"; fs["headsup"] = True
-                if due:
-                    round_alerts.append({"ticker": g.ticker, "etype": g.etype,
-                                         "date": g.anchor_date, "days": d2, "round": d2,
-                                         "decl": _pk("declaration_date"), "record": _pk("record_date"),
-                                         "pay": _pk("pay_date"), "amount": _pk("amount"),
-                                         "ratio": _pk("ratio"), "products": C.product_tags(g.ticker),
-                                         "ops": C.alert_copy(d2), "risk_copy": C.ROUND_RISK_TBD,
-                                         "confirmed": _confirmed, "srcs": sorted(g.by_source.keys()),
-                                         "amt_srcs": _amt_srcs, "acked": getattr(g, "acked", False),
-                                         "official": _official,
-                                         "risk": C.risk_note(g.ticker, g.etype)})
-                fired[s] = fs
+                                          "amount": event.get("amount"), "last_seen": today,
+                                          "ticker": g.ticker, "etype": g.etype,
+                                          "automatic": wk == s}
+                reminder = schedule_event_reminder(event, s, fired, today)
+                if reminder:
+                    round_alerts.append(reminder)
 
     # 观察项若直到预计日仍未得到任何匹配事件，明确通知「预测失效」而不是悄悄消失。
     for watch in watches:
@@ -580,7 +626,7 @@ def build():
             decl = R.pick_value(g.by_source, "declaration_date")
             g.first_announced = decl or seen.get(sig(g))
 
-    cutoff = (dt.date.today() - dt.timedelta(days=30)).isoformat()
+    cutoff = (today_d - dt.timedelta(days=30)).isoformat()
     new_events = [g for g in new_events
                   if (g.anchor_date or "") >= cutoff and sig(g) not in forecast_sigs]
     new_events.sort(key=lambda g: g.anchor_date or "", reverse=True)
@@ -631,11 +677,9 @@ def build():
 
     # ---- 人工介入闭环:每条异常挂多久没人确认(不豁免、不自动消失、每次跑都重报)----
     # 异常 = 字段冲突 / 数据空缺。未宣告的单源预估走「预测观察」自动追踪，
-    # 不进入人工确认积压，也不生成执行催办。
+    # 不进入人工确认积压；临近日只生成「核验提醒」，不生成执行催办。
     # 唯一消解方式:群里发「确认 代码 [正确值]」。挂越久越显眼,超 REVIEW_ESCALATE_DAYS 天在推送里 @ 人升级。
     review = state.setdefault("review", {})
-    today_d = dt.date.today()
-
     def _age(key):
         first = review.get(key)
         if not first:
@@ -666,7 +710,7 @@ def build():
     alerts = {"new": new_events, "rounds": round_alerts, "conflicts": conflicts,
               "gaps": gaps, "pending": pending, "announced": announced, "resolved": resolved,
               "forecasts": forecasts, "forecast_updates": forecast_updates, "review": review_summary}
-    meta = {"generated": _now_label()}
+    meta = {"generated": _now_label(), "business_date": today}
 
     # 单页站点:日历 + 预警面板(标签切换)
     with open(OUT_HTML, "w", encoding="utf-8") as f:
@@ -676,8 +720,8 @@ def build():
         f.write(digest)
 
     # 月历事件(供交互机器人画当月月历):近 45 天~未来 80 天内的分红/拆股/并购退市
-    cal_lo = (dt.date.today() - dt.timedelta(days=45)).isoformat()
-    cal_hi = (dt.date.today() + dt.timedelta(days=80)).isoformat()
+    cal_lo = (today_d - dt.timedelta(days=45)).isoformat()
+    cal_hi = (today_d + dt.timedelta(days=80)).isoformat()
     forecast_event_keys = {(x.get("ticker"), x.get("etype"), x.get("date")) for x in forecasts}
     calendar_events = []
     for tk, groups in all_groups.items():
@@ -752,7 +796,7 @@ def build():
                          "monitored": C.is_monitored(tk)})
 
     # 最近宣告(declaration)的事件:取最新 5 个,已派发完的标 ended
-    today_iso = dt.date.today().isoformat()
+    today_iso = today
     recent_declares = []
     for tk, groups in all_groups.items():
         for g in groups:
@@ -765,7 +809,7 @@ def build():
             end_date = pay or g.anchor_date or ""
             ended = bool(end_date) and end_date < today_iso
             try:
-                days = (dt.date.fromisoformat(g.anchor_date) - dt.date.today()).days if g.anchor_date else None
+                days = (dt.date.fromisoformat(g.anchor_date) - today_d).days if g.anchor_date else None
             except Exception:
                 days = None
             entry = {"ticker": g.ticker, "etype": g.etype, "date": g.anchor_date,
@@ -797,6 +841,7 @@ def build():
     # 发布给交互机器人读取的数据(随 Pages 一起部署为 data.json)
     site_data = {
         "generated": meta["generated"],
+        "business_date": today,
         "changelog": load_changelog(),
         "coverage": coverage,
         "counts": {"pending": len(pending), "forecasts": len(forecasts), "new": len(new_events),

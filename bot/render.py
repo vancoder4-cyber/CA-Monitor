@@ -4,6 +4,7 @@ import os
 import calendar as _cal
 import datetime as dt
 from PIL import Image, ImageDraw, ImageFont
+from business_time import today as business_today
 
 # 中文字体(Docker 里装 fonts-noto-cjk;可用 FONT_PATH 覆盖)
 _FONT_CANDIDATES = [
@@ -45,10 +46,13 @@ def _label(e):
     return f"{e['ticker']} {(e.get('note') or '公告')[:8]}"
 
 
-def draw_month(events, out_path="/tmp/calendar.png", year=None, month=None):
+def draw_month(events, out_path="/tmp/calendar.png", year=None, month=None, business_date=None):
     """events: [{ticker, etype, date 'YYYY-MM-DD', amount, ratio, note, products}]
     只画 year-month(默认当月)当月有除息/生效/公告日的事件。"""
-    today = dt.date.today()
+    try:
+        today = dt.date.fromisoformat(business_date) if business_date else business_today()
+    except (TypeError, ValueError):
+        today = business_today()
     year = year or today.year
     month = month or today.month
 

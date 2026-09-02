@@ -8,7 +8,7 @@
     LARK_DASHBOARD_URL=（可选,卡片底部"打开面板"按钮指向的地址)
     LARK_NOTIFY_EMPTY=0      # 1=即使没有任何预警也推一条"全部正常"
 
-发送交互卡片:临近预警 / 新发现 / 冲突 / 空缺,filing 带 SEC 原文链接。
+发送交互卡片:正式催办 / 单源核验 / 新发现 / 冲突 / 空缺,filing 带 SEC 原文链接。
 """
 import os
 import time
@@ -16,10 +16,9 @@ import json
 import base64
 import hashlib
 import hmac
-import datetime as dt
-
 import requests
 import reconcile as R
+from business_time import now as business_now
 
 ETYPE_CN = {"dividend": "分红", "split": "拆股", "filing": "并购/公告"}
 
@@ -125,6 +124,8 @@ def _dates(x):
 def _val(x):
     """金额/比例门禁:有未确认冲突 → 不给确定值,标『待人工确认·勿据此执行』。
     人工「确认」后冲突消解,才会恢复显示确定值。"""
+    if x.get("forecast"):
+        return " <font color='orange'>🔎单源待核实·勿执行</font>"
     if not x.get("official") and not x.get("acked") and not x.get("disputed") and (x.get("amt_srcs") or 0) == 1 and (
             x.get("amount") is not None or x.get("ratio")):
         v = x.get("amount") if x.get("amount") is not None else x.get("ratio")
@@ -140,14 +141,26 @@ def _val(x):
     return ""
 
 def _build_card(alerts, meta, dashboard_url=""):
-    n_new = len(alerts["new"]); n_round = len(alerts["rounds"])
+    rounds = alerts["rounds"]
+    def _event_sig(x):
+        return (x.get("ticker"), x.get("etype"), x.get("date"))
+    promotion_round_sigs = {
+        _event_sig(x) for x in rounds if x.get("promoted_from_forecast")
+    }
+    visible_forecast_updates = [
+        x for x in alerts.get("forecast_updates", [])
+        if _event_sig(x) not in promotion_round_sigs
+    ]
+    n_new = len(alerts["new"])
+    n_verify = sum(1 for x in rounds if x.get("forecast"))
+    n_round = len(rounds) - n_verify
     n_conf = len(alerts["conflicts"]); n_gap = len(alerts["gaps"])
     n_forecast = len(alerts.get("forecasts", []))
-    n_forecast_updates = len(alerts.get("forecast_updates", []))
+    n_forecast_updates = len(visible_forecast_updates)
     # 有冲突/空缺 → 红;有临近/新发现 → 蓝;否则绿
     if n_conf or n_gap:
         template = "red"
-    elif n_round or n_new or n_forecast_updates:
+    elif n_round or n_verify or n_new or n_forecast_updates:
         template = "blue"
     else:
         template = "green"
@@ -156,7 +169,7 @@ def _build_card(alerts, meta, dashboard_url=""):
     elements = [{
         "tag": "div",
         "text": {"tag": "lark_md",
-                 "content": f"📣 新公告 **{n_ann}**　🔔 临近催办 **{n_round}**　🆕 新发现 **{n_new}**"
+                 "content": f"📣 新公告 **{n_ann}**　🔔 正式催办 **{n_round}**　🔎 单源核验 **{n_verify}**　🆕 新发现 **{n_new}**"
                             f"　❗冲突 **{n_conf}**　🕳 空缺 **{n_gap}**　🔎 预测观察 **{n_forecast}**"}
     }, {"tag": "hr"}]
 
@@ -173,7 +186,8 @@ def _build_card(alerts, meta, dashboard_url=""):
         prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
         label = ETYPE_CN.get(x.get("etype"), x.get("etype"))
         if kind in ("promoted", "declared"):
-            why = "已获公司官方宣告" if kind == "declared" else "已获第二个独立源确认"
+            why = ("已核验公司官方宣告" if x.get("official") else "已获取宣告日") \
+                if kind == "declared" else "已获第二个独立源确认"
             return (f"• ✅ {prod}**{x['ticker']}** {label} 预测已转正式 — "
                     f"除息/生效 {x.get('date')}；{why}")
         if kind == "updated":
@@ -187,7 +201,7 @@ def _build_card(alerts, meta, dashboard_url=""):
 
     section("🔄 预测状态更新(自动追踪)",
             [forecast_update_line(x) + _refs(x["ticker"], x.get("etype"), references=x.get("references"))
-             for x in alerts.get("forecast_updates", [])])
+             for x in visible_forecast_updates])
 
     # 🙋 待人工确认(不豁免:挂着就一直报,只有「确认」能消解)—— 超期则 @ 人升级
     _rv = alerts.get("review") or {}
@@ -203,14 +217,25 @@ def _build_card(alerts, meta, dashboard_url=""):
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": head}})
         elements.append({"tag": "hr"})
 
-    # 🔔 临近催办(已合并「临近预警 + 待执行」:≤14 天每天推 · 30 天进窗知会一次)
+    # 🔔 临近提醒：正式事件是执行催办；单源事件只要求数据核验。
+    # 两类均按 ≤14 天每天推、进入 30 天窗口知会一次。
     rl = []
-    for x in alerts["rounds"]:
+    formal_rounds = []
+    for x in rounds:
         dates = _dates(x)
         val = _val(x)
         prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
-        line = (f"• {prod}**{x['ticker']}** {ETYPE_CN.get(x['etype'], x['etype'])}{val} — "
-                f"<font color='red'>D-{x['days']}</font>　{dates}")
+        is_forecast = bool(x.get("forecast"))
+        prefix = ("🔎 单源核验 · " if is_forecast else
+                  "✅ 单源已转正式 · " if x.get("promoted_from_forecast") else "")
+        color = "orange" if is_forecast else "red"
+        line = (f"• {prefix}{prod}**{x['ticker']}** {ETYPE_CN.get(x['etype'], x['etype'])}{val} — "
+                f"<font color='{color}'>D-{x['days']}</font>　{dates}")
+        if is_forecast:
+            srcs = ", ".join(x.get("srcs") or []) or "未知"
+            line += f"\n　📡 单一数据源：{srcs}"
+        else:
+            formal_rounds.append(x)
         if x.get("ops"):
             line += f"\n　👉 {x['ops']}"
         for rn in x.get("risk", []):
@@ -220,14 +245,14 @@ def _build_card(alerts, meta, dashboard_url=""):
         rl.append(line)
     # 催办 @:有催办事项且配置了名单时,在催办区顶部 @ 对应的人
     _mentions = _load_mentions()
-    if rl and _mentions:
+    if formal_rounds and _mentions:
         elements.append({"tag": "div", "text": {"tag": "lark_md",
-                        "content": _at_tags(_mentions) + " 🔔 有临近催办事项,请及时处理"}})
-    section("🔔 临近催办(≤14天每天 · 30天知会)", rl)
+                        "content": _at_tags(_mentions) + " 🔔 有正式临近催办事项,请及时处理"}})
+    section("🔔 临近提醒(正式催办 + 单源核验；非本周清单：≤14天每天 · 30天知会)", rl)
 
     # 优先级互斥:已在催办里出现的事件,后面的区不再重复
     def _sig(x):
-        return (x.get("ticker"), x.get("etype"), x.get("date"))
+        return _event_sig(x)
     claimed = {_sig(x) for x in alerts.get("rounds", [])}
 
     # 📣 新公告:刚扫到 declaration date 的事件(跳过已在催办的)
@@ -316,11 +341,19 @@ def notify(alerts, meta):
             raise LarkDeliveryError("LARK_REQUIRED=1 但未配置 LARK_WEBHOOK")
         return False, "未配置 LARK_WEBHOOK,跳过推送"
 
-    # pending 是网页/Bot 的完整待执行清单；15–29 天静默期不会放进 rounds，
-    # 因而不能单独触发一张没有明细的定时卡片。
+    # pending / forecasts 是网页和 Bot 的完整清单；只有命中 30/14 天节奏的
+    # 正式催办或单源核验提醒才会放进 rounds，避免发送没有明细的定时卡片。
+    promotion_round_sigs = {
+        (x.get("ticker"), x.get("etype"), x.get("date"))
+        for x in alerts["rounds"] if x.get("promoted_from_forecast")
+    }
+    visible_update_count = sum(
+        1 for x in alerts.get("forecast_updates", [])
+        if (x.get("ticker"), x.get("etype"), x.get("date")) not in promotion_round_sigs
+    )
     total = (len(alerts["new"]) + len(alerts["rounds"]) + len(alerts["conflicts"])
              + len(alerts["gaps"]) + len(alerts.get("announced", []))
-             + len(alerts.get("forecast_updates", [])))
+             + visible_update_count)
     if total == 0 and not cfg["notify_empty"]:
         return False, "无预警内容,跳过(设 LARK_NOTIFY_EMPTY=1 可强制推送)"
 
@@ -346,6 +379,6 @@ def notify(alerts, meta):
 if __name__ == "__main__":
     # 自检:发一条测试卡片
     fake = {"new": [], "rounds": [], "conflicts": [], "gaps": []}
-    meta = {"generated": dt.datetime.now().strftime("%Y-%m-%d %H:%M")}
+    meta = {"generated": business_now().strftime("%Y-%m-%d %H:%M ET")}
     os.environ.setdefault("LARK_NOTIFY_EMPTY", "1")
     print(notify(fake, meta))

@@ -209,7 +209,8 @@ def add_forecast(ticker, etype, date, by="lark", by_name="", note="", *, refs_ir
         r = _put_file(FORECAST_PATH, data, sha, f"forecast-watch: {ticker} @{date}")
         if r.status_code not in (200, 201):
             return True, "观察已留痕，但观察状态写入失败；稍后请重试。"
-        return True, "已标记为预测观察：不会进入执行催办；出现公司宣告或第二个独立源时会自动升级并推送。"
+        return True, ("已标记为预测观察：临近时会推数据核验提醒，但不会进入正式执行催办；"
+                      "出现公司宣告或第二个独立源时会自动升级并推送。")
     except Exception as e:
         return False, f"观察写入异常: {e}"
 

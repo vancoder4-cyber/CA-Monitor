@@ -9,6 +9,7 @@
 | 指令 / Bot 文案 | `bot/cards.py`、`bot/bot.py`、根 `README.md`、`bot/README.md`、`CHANGELOG.md` |
 | 事件字段 / 取值 / 门禁 | `run.py` 产出 ↔ `report.py` 网页 ↔ `notify_lark.py` 推送 ↔ `bot/cards.py` 交互卡 ↔ 月历 / `calendar_events` |
 | 合约公司行动 / 3% 门槛 / 参考价 | `contract_policy.py`、行情快照缓存、pending/rounds、网页、定时 Lark、Bot 今日/本周/新公告/临近/日历/查代码、`CHANGELOG.md` |
+| SEC filing 分类 / 事件相关性 | `config.describe_8k`、`run.py` new/conflict/gap/calendar、SEC 原文表、网站、定时 Lark、Bot 风险/今日/本周/临近/查代码/PNG 日历 |
 | 分红核对链接 / 官方宣告 | `refs.json`、单标的查询、今日/本周、临近催办、预测、日历、公告、网页、定时推送、确认留痕 |
 | 标的数 / 代码别名 / 数据源 / 时点 | `config.py`、Pages `ticker_aliases`、根 README、`about_card`、操作手册、群 briefing、workflow |
 | Railway / Bot 运行方式 | `bot/README.md`、环境变量、心跳、生产验证步骤 |
@@ -33,6 +34,7 @@
 - `reconcile.pick_value()` 是字段取值唯一真相；检查是否又出现了 `next((v.get(...` 的平行取值逻辑。
 - 公司行动展示与合约操作必须分离：现金分红、送股、拆股、合股等均按估算价格影响判断；`>3%` 才是 `required`，恰好 3% 和以下均为 `not_required`；缺价/日期、币种或证券单位不一致、过期价、未过金额门禁为 `review`，绝不能误写无需操作。
 - contract-only + `not_required` 仍应出现在日历/新公告/查代码，并明确「合约：本次无需操作」，但不得进入 `rounds` 或触发正式 @；现货+合约则保留现货催办。
+- SEC 8-K 只有可仅凭 Item 代码确定的结构性事项进入公司行动流；宽泛的 1.01 / 2.02 / 5.02 / 5.07 / 7.01 / 8.01 保留在 SEC 原文表但必须被 new/conflict/gap/calendar、网站、Lark 和 Bot 各入口过滤。
 
 ## 4. 本地自动检查（必须全绿）
 
@@ -41,13 +43,15 @@ python3 tools/check_commands.py
 python3 -m unittest discover -s tests -v
 python3 tools/check_surface_consistency.py
 python3 -m py_compile run.py reconcile.py contract_policy.py sources.py report.py notify_lark.py bot/cards.py bot/ack.py bot/bot.py
-python3 tools/validate_state.py data/state.json
+if test -s data/state.json; then python3 tools/validate_state.py data/state.json; else echo "local state absent; production Action will restore and validate it"; fi
 bash -n tools/trigger.sh
 python3 run.py build       # 有缓存时验证真实产物；会跳过未配置的 Lark webhook
 python3 tools/validate_public_snapshot.py site_data.json
 ```
 
 `check_surface_consistency.py` 使用历史 Visa 官方 IR fixture，并断言当前 RFQ 的集合、范围门禁、Pages/Bot 代码识别与临近催办截断提示；该 fixture 不代表 V 仍在当前支持范围。修改引用契约、预测逻辑、标的范围或渲染器时，必须先更新该测试。
+
+`data/state.json` 不再跟踪到 Git，因此清洁 checkout 没有该文件是正常状态。本地只在已恢复非空状态时运行校验；生产必须由 GitHub Actions 的「恢复核心去重状态 → 验证核心去重状态」步骤 fail closed。
 
 ## 5. 文档与提交
 

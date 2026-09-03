@@ -200,6 +200,20 @@ def _event_key(event):
     )
 
 
+def _is_routine_filing(event):
+    """普通 SEC 备案不是公司行动。
+
+    Pages 生成器会先过滤一次；Bot 再做边界防护，避免历史或
+    异常快照把财报/高管变动误写成「并购/退市」或风控动作。
+    """
+    return (event.get("etype") == "filing" and
+            event.get("filing_relevant") is False)
+
+
+def _non_routine(events):
+    return [event for event in (events or []) if not _is_routine_filing(event)]
+
+
 def _val(x):
     """金额/比例门禁:有未确认冲突 → 不给确定值,标『待人工确认·勿据此执行』。
     人工发「确认 代码 值」消解冲突后,才恢复显示确定值。"""
@@ -261,8 +275,8 @@ def _card(title, template, elements, site_url, btn_text):
 
 
 def calendar_card(data, site_url):
-    pending = data.get("pending", [])
-    forecasts = [e for e in data.get("calendar", []) if e.get("forecast")]
+    pending = _non_routine(data.get("pending", []))
+    forecasts = [e for e in _non_routine(data.get("calendar", [])) if e.get("forecast")]
     gen = data.get("generated", "")
     if not pending and not forecasts:
         elems = [{"tag": "div", "text": {"tag": "lark_md", "content": "近期暂无已确认未来事件。"}}]
@@ -291,7 +305,12 @@ def calendar_card(data, site_url):
 
 
 def alert_card(data, site_url):
-    c = data.get("counts", {})
+    c = dict(data.get("counts", {}))
+    # 不盲信上游计数：即使历史 Pages 快照还含例行备案，
+    # Bot 也不能把它们计入「新发现/冲突/待执行」。
+    for key in ("pending", "forecasts", "new", "conflicts", "gaps", "announced"):
+        if isinstance(data.get(key), list):
+            c[key] = len(_non_routine(data[key]))
     gen = data.get("generated", "")
     template = "red" if (c.get("conflicts") or c.get("gaps")) else "blue"
     elems = [{"tag": "div", "text": {"tag": "lark_md",
@@ -308,10 +327,10 @@ def alert_card(data, site_url):
     # 精简为「当日总览」:只给数据质量(冲突/空缺),明细交给专项指令
     conf = [f"• **{g['ticker']}** {_etype_label(g)} {g['date']}: "
             + "; ".join(g.get("conflicts", [])) + _risk_lines(g)
-            for g in data.get("conflicts", [])]
+            for g in _non_routine(data.get("conflicts", []))]
     sec("❗ 字段冲突(零容忍)", conf)
     gap = [f"• **{g['ticker']}** {_etype_label(g)} {g['date']}: " + "; ".join(g.get("gaps", []))
-           for g in data.get("gaps", [])]
+           for g in _non_routine(data.get("gaps", []))]
     sec("🕳 数据空缺", gap)
 
     elems.append({"tag": "div", "text": {"tag": "lark_md",
@@ -342,6 +361,8 @@ def about_card(data, site_url):
         "合约里的个股与 ETF(QQQ/EWY/DRAM/TQQQ/MVLL)均纳入监控；商品(XAU/WTI/XAG/BRENTOIL/NATGAS/XCU)无公司行动，仅列入覆盖。\n\n"
         "**数据源(8 源,多源交叉核对·零容忍)**\n"
         "yfinance · FMP · Alpha Vantage · Nasdaq · Tiingo · Alpaca · SEC EDGAR · FINX(TRKD-HS)\n\n"
+        "**SEC filing 分流**:破产/接管、完成收购或资产处置、退市、证券权利或控制权变更等明确结构性事项进入公司行动流；"
+        "财报、融资协议、高管变动等普通 8-K 只留在网站 SEC 原文表，不会触发公司行动风控。\n\n"
         "**关键日**:每条事件展示 **宣告 · 登记 · 除息/生效 · 派发**(缺哪个不显示哪个)。\n\n"
         "**取值规则**:金额/比例取 **多数票 + 源优先级**(要的是公司宣告的原值)。"
         "注意各源口径不同 —— yfinance 会按拆股回溯调整历史分红、还四舍五入;Alpaca 对 ADR 报的是扣预扣税后的净额。\n\n"
@@ -397,7 +418,7 @@ def risk_card(data, site_url):
     business_date = _business_date(data)
     today = business_date.isoformat()
     lo30 = (business_date - dt.timedelta(days=30)).isoformat()
-    cal = data.get("calendar", [])
+    cal = _non_routine(data.get("calendar", []))
     splits = [
         e for e in cal
         if e["etype"] == "split" and (e.get("date") or "") >= today
@@ -411,7 +432,7 @@ def risk_card(data, site_url):
              (e.get("contract_action") or {}).get("status") in ("required", "review"))
     ]
     structurals = [e for e in cal if e["etype"] == "filing" and (e.get("date") or "") >= lo30]
-    conflicts = data.get("conflicts", [])
+    conflicts = _non_routine(data.get("conflicts", []))
     n = len(dividends) + len(splits) + len(structurals) + len(conflicts)
     template = "red" if n else "green"
     elems = [{"tag": "div", "text": {"tag": "lark_md",
@@ -451,7 +472,7 @@ def _window_card(data, site_url, lo_days, hi_days, title, *, anchor_only=False):
     today = _business_date(data)
     lo = (today + dt.timedelta(days=lo_days)).isoformat()
     hi = (today + dt.timedelta(days=hi_days)).isoformat()
-    cal = data.get("calendar", [])
+    cal = _non_routine(data.get("calendar", []))
     events = {}
     excluded_forecasts = set()
     for e in cal:
@@ -519,14 +540,14 @@ def upcoming_card(data, site_url):
     """临近提醒:0–14 天执行催办 + 数据核验；不等同于本周 7 天窗口。"""
     gen = data.get("generated", "")
     pend = sorted(
-        (x for x in data.get("pending", [])
+        (x for x in _non_routine(data.get("pending", []))
          if isinstance(x.get("days"), int) and 0 <= x["days"] <= 14
          and x.get("follow_up_mode", "execution") != "none"),
         key=lambda x: x["days"],
     )
     formal_sigs = {_event_key(x) for x in pend}
     forecasts = sorted(
-        (x for x in data.get("forecasts", [])
+        (x for x in _non_routine(data.get("forecasts", []))
          if isinstance(x.get("days"), int) and 0 <= x["days"] <= 14
          and _event_key(x) not in formal_sigs),
         key=lambda x: x["days"],
@@ -579,7 +600,8 @@ def upcoming_card(data, site_url):
 def forecast_card(data, site_url):
     """待核实预测：会推临近核验提醒，但不得据此执行。"""
     gen = data.get("generated", "")
-    forecasts = sorted(data.get("forecasts", []), key=lambda x: x.get("days", 9999))
+    forecasts = sorted(_non_routine(data.get("forecasts", [])),
+                       key=lambda x: x.get("days", 9999))
     if not forecasts:
         body = ("当前没有待核实预测。\n"
                 "标记用法:`观察 CODE YYYY-MM-DD [备注]`，例:`观察 AAPL 2026-08-11 等待公司宣告`")
@@ -622,7 +644,7 @@ def forecast_mark_card(ok, message, ticker="", date="", site_url=""):
 
 def announce_card(data, site_url):
     # 最近 5 个被宣告(declaration date)的事件;已派发完的标「已结束」
-    ann = data.get("recent_declares") or data.get("announced", [])
+    ann = _non_routine(data.get("recent_declares") or data.get("announced", []))
     if not ann:
         return _card("📣 新公告", "green",
                      [{"tag": "div", "text": {"tag": "lark_md", "content": "近期暂无宣告事件。"}}],
@@ -765,7 +787,7 @@ def lookup_card(data, ticker, site_url):
                      site_url, "打开网页面板")
     today = _business_date(data)
     cov = next((c for c in data.get("coverage", []) if c["ticker"] == ticker), None)
-    cal = [e for e in data.get("calendar", []) if e["ticker"] == ticker]
+    cal = [e for e in _non_routine(data.get("calendar", [])) if e["ticker"] == ticker]
     name = (cov or {}).get("name", "")
     tags = []
     if cov and cov.get("spot"):

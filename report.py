@@ -85,7 +85,7 @@ def _reference_html(x):
         links = [
             {"label": "SEC·公司备案", "url": primary},
             {"label": "第三方·StockAnalysis（交叉核对，可能滞后）",
-             "url": f"https://stockanalysis.com/stocks/{ticker.lower()}/dividend/"},
+             "url": C.stockanalysis_url(ticker, "dividend")},
         ]
     anchors = " · ".join(
         f"<a href='{html.escape(str(r['url']))}' target='_blank' rel='noopener'>{html.escape(str(r['label']))} ↗</a>"

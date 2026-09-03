@@ -70,7 +70,11 @@
   },
   "ir_dividend": {
     "AAPL": "https://investor.apple.com/dividend-history/default.aspx",
+    "GLW": "https://investor.corning.com/stock-info/dividend-history/default.aspx",
+    "IBM": "https://www.ibm.com/investor/governance/ibm-cash-dividends",
     "NVO": "https://www.novonordisk.com/investors/stock-information/dividend.html",
+    "TQQQ": "https://www.proshares.com/our-etfs/leveraged-and-inverse/tqqq",
+    "TSM": "https://investor.tsmc.com/english/dividends",
     "NVDA": "",
     "AVGO": "",
     "GOOGL": "",

@@ -20,6 +20,7 @@ import notify_lark  # noqa: E402
 import cards  # noqa: E402
 import ack  # noqa: E402
 import config as C  # noqa: E402
+import sources as S  # noqa: E402
 
 
 VISA_URL = "https://investor.visa.com/stock-information/dividends/default.aspx?LanguageId=1"
@@ -39,9 +40,14 @@ EXPECTED_SPOT = {
 EXPECTED_CONTRACT = {
     "XAU", "WTI", "XAG", "MU", "SNDK", "BRENTOIL", "MRVL", "INTC", "SKHY", "NVDA",
     "CRCL", "SPCX", "EWY", "AMD", "MSTR", "DRAM", "TSLA", "QQQ", "CBRS", "NATGAS",
-    "GOOGL", "XCU",
+    "GOOGL", "XCU", "ORCL", "AMZN", "COIN", "PLTR", "IBM", "HOOD", "WDC", "BE",
+    "ARM", "TSM", "RKLB", "TQQQ", "AXTI", "MVLL", "DELL", "BABA", "GLW",
 }
-REMOVED_SPOT = {"AMAT", "BX", "EBAY", "GLW", "IBM", "KLAC", "MSFT", "V", "WMT"}
+REMOVED_FROM_SPOT = {
+    "ARM", "ASML", "BABA", "NOK", "NVO", "PAYP", "SONY", "TSM",
+    "CAT", "DELL", "COST", "TXN", "LLY", "AMAT", "BX", "EBAY", "GLW", "IBM",
+    "KLAC", "MSFT", "V", "WMT",
+}
 
 
 def must(condition, message):
@@ -59,9 +65,27 @@ def check_current_scope_contract():
          f"现货范围不等于当前 RFQ: 缺 {sorted(EXPECTED_SPOT - C.SPOT_TICKERS)} / 多 {sorted(C.SPOT_TICKERS - EXPECTED_SPOT)}")
     must(C.CONTRACT_TICKERS == EXPECTED_CONTRACT,
          f"合约范围不等于当前 RFQ: 缺 {sorted(EXPECTED_CONTRACT - C.CONTRACT_TICKERS)} / 多 {sorted(C.CONTRACT_TICKERS - EXPECTED_CONTRACT)}")
-    must((len(C.SPOT_TICKERS), len(C.CONTRACT_TICKERS), len(C.ALL_ASSETS), len(C.TICKERS)) == (62, 22, 73, 67),
-         "范围计数应为现货 62 / 合约 22 / 覆盖 73 / 监控 67")
-    must(not (REMOVED_SPOT & set(C.ALL_ASSETS)), "已移除现货仍在当前覆盖范围")
+    must((len(C.SPOT_TICKERS), len(C.CONTRACT_TICKERS), len(C.ALL_ASSETS), len(C.TICKERS)) == (62, 39, 81, 75),
+         "范围计数应为现货 62 / 合约 39 / 覆盖 81 / 监控 75")
+    must(not (REMOVED_FROM_SPOT & set(C.SPOT_TICKERS)), "已移除标的重新进入现货范围")
+    must(C.asset_type("TQQQ") == "etf" and C.asset_type("MVLL") == "etf",
+         "TQQQ/MVLL 必须按各自 ETF 本体监控")
+    must("MVLL" not in C.TICKER_ALIASES, "MVLL 是独立 ETF，不得错误映射为 MRVL")
+    must(S.nasdaq_dividend_url("TQQQ").endswith("assetclass=etf") and
+         S.nasdaq_dividend_url("IBM").endswith("assetclass=stocks"),
+         "Nasdaq 分红源没有按 ETF/股票选择 assetclass")
+    must(C.stockanalysis_url("MVLL", "dividend") ==
+         "https://stockanalysis.com/etf/mvll/dividend/",
+         "根流程的 MVLL 第三方核对链接没有使用 ETF 路径")
+    must(ack.quick_look("TQQQ", "dividend") ==
+         "https://stockanalysis.com/etf/tqqq/dividend/",
+         "独立 Bot 的 TQQQ 第三方核对链接没有使用 ETF 路径")
+    expected_nyse_ric = {
+        "ORCL": "ORCL.N", "IBM": "IBM.N", "BE": "BE.N", "TSM": "TSM.N",
+        "DELL": "DELL.N", "BABA": "BABA.N", "GLW": "GLW.N",
+    }
+    must(all(C.finx_ric(ticker) == ric for ticker, ric in expected_nyse_ric.items()),
+         "新增合约中的 NYSE 标的缺少正确 FINX RIC")
     must("SKHY" in C.TICKERS and "SKHYNIX" not in C.ALL_ASSETS,
          "SKHY 必须作为可监控的当前合约股票；不得保留 SKHYNIX")
     must(all(target in C.ALL_ASSETS for target in C.TICKER_ALIASES.values()),

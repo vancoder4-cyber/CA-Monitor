@@ -21,11 +21,15 @@ def _load_dotenv():
 _load_dotenv()
 
 # ---- 业务范围 ----
-# 当前 RFQ 范围（截至 2026-08-17）：现货 62 支；SPCX 仅保留在合约范围。
+# 当前业务范围（截至 2026-09-03）：现货 62 支、合约 39 支；SPCX 仅保留在合约范围。
 # 注:Berkshire B 类代码写作 BRK-B(SEC/yfinance/Tiingo/FMP 都用这个格式;写 BRK.B 会全线抓不到)
 # 本期范围调整:
 #  - 移除 8 个真 ADR:ARM/ASML/BABA/NOK/NVO/PAYP/SONY/TSM(母国/税率仍存 ADR_WHT,下期复用)。
-#  - 已移除 CAT/DELL/COST/TXN/LLY 及 AMAT/BX/EBAY/GLW/IBM/KLAC/MSFT/V/WMT；SPCX 仅在合约范围(合约固定 22)。
+#  - 以上标的是从现货移除；其中 ARM/BABA/TSM 已于 2026-09-03 以合约重新纳入监控。
+#  - CAT/DELL/COST/TXN/LLY 及 AMAT/BX/EBAY/GLW/IBM/KLAC/MSFT/V/WMT 仍不在现货；
+#    其中 DELL/GLW/IBM 已于 2026-09-03 以合约重新纳入监控。
+#  - 2026-09-03 新增 17 个合约：ORCL/AMZN/COIN/PLTR/IBM/HOOD/WDC/BE/ARM/TSM/
+#    RKLB/TQQQ/AXTI/MVLL/DELL/BABA/GLW。TQQQ/MVLL 是 ETF，其余按个股监控。
 #  - BB/BSP/NBIS/IREN 是海外公司但直接上普通股(非 ADR),继续保留监控。
 SPOT_TICKERS = {
     "AAOI", "AAPL", "ADBE", "ALAB", "AMD", "AMZN", "ASTS",
@@ -38,17 +42,19 @@ SPOT_TICKERS = {
     "RKLB", "SMCI", "SNDK", "TER", "TSLA", "TTWO",
     "UBER", "WDC", "ZM",
 }
-# 合约:22(截图 23 行去掉已下架的 SOXL)
+# 合约:原 22 + 2026-09-03 新增 17 = 39
 CONTRACT_TICKERS = {
     "MU", "SNDK", "MRVL", "INTC", "NVDA", "CRCL", "SPCX", "AMD", "MSTR", "TSLA", "GOOGL",  # 个股
     "QQQ", "EWY", "DRAM",                                                                   # ETF
     "XAU", "WTI", "XAG", "BRENTOIL", "NATGAS", "XCU", "CBRS", "SKHY",                       # 商品 / 海外股票
+    "ORCL", "AMZN", "COIN", "PLTR", "IBM", "HOOD", "WDC", "BE", "ARM", "TSM",
+    "RKLB", "TQQQ", "AXTI", "MVLL", "DELL", "BABA", "GLW",                               # 2026-09-03 新增
 }
 
 # 标的类型:equity(个股) / etf / commodity(商品·外汇) / foreign(海外股)
 # 只有 equity 和 etf 抓公司行动;commodity/foreign 列入覆盖但标"不适用"
 ASSET_TYPE = {
-    "QQQ": "etf", "EWY": "etf", "DRAM": "etf",
+    "QQQ": "etf", "EWY": "etf", "DRAM": "etf", "TQQQ": "etf", "MVLL": "etf",
     "XAU": "commodity", "WTI": "commodity", "XAG": "commodity", "BRENTOIL": "commodity",
     "NATGAS": "commodity", "XCU": "commodity",
     # CBRS = Cerebras(AI 芯片),是股票不是商品 —— 原来误归 commodity 导致不被监控,已改回 equity(默认)
@@ -61,6 +67,17 @@ def asset_type(tk):
 
 def is_monitored(tk):
     return asset_type(tk) in ("equity", "etf")
+
+
+def public_asset_path(tk):
+    """Nasdaq/StockAnalysis 的公开 URL 路径分类：ETF 用 etf，其余证券用 stocks。"""
+    return "etf" if asset_type(tk) == "etf" else "stocks"
+
+
+def stockanalysis_url(ticker, etype="dividend"):
+    """返回与标的类型一致的 StockAnalysis 核对入口。"""
+    base = f"https://stockanalysis.com/{public_asset_path(ticker)}/{ticker.lower()}"
+    return f"{base}/dividend/" if etype == "dividend" else f"{base}/"
 
 # 海外公司预扣税表(真 ADR + 直接上市的海外普通股都算 —— 只要母国会对股息预扣税)。
 # 外国公司派息时母国在源头预扣税,持有人拿到的是**净额**;我们认**毛额(税前,公司宣告原值)**。用于:
@@ -132,7 +149,8 @@ NAMES = {
     "TTWO": "Take-Two", "TXN": "德州仪器", "UBER": "优步", "V": "Visa",
     "WDC": "西部数据", "WMT": "沃尔玛", "ZM": "Zoom",
     # 合约
-    "QQQ": "纳指100 ETF", "EWY": "韩国 ETF", "XAU": "黄金", "WTI": "WTI原油",
+    "QQQ": "纳指100 ETF", "EWY": "韩国 ETF", "TQQQ": "ProShares 三倍做多纳指100 ETF",
+    "MVLL": "GraniteShares 2倍做多 MRVL ETF", "XAU": "黄金", "WTI": "WTI原油",
     "XAG": "白银", "BRENTOIL": "布伦特原油", "NATGAS": "天然气", "XCU": "铜",
     "DRAM": "内存 ETF", "CBRS": "Cerebras(AI芯片)", "SKHY": "SK海力士",
 }
@@ -156,7 +174,9 @@ FINX_BASE_DEFAULT = "https://finx.platform.trkd-hs.com/finx-api"
 # 下面是按上市所给的覆盖表;拿不到准确 RIC 的留作默认 .O。接口稳定后按实际可调。
 FINX_RIC = {
     # NYSE(.N)
-    "LLY": "LLY.N", "CRCL": "CRCL.N", "RKLB": "RKLB.O", "HOOD": "HOOD.O",
+    "LLY": "LLY.N", "CRCL": "CRCL.N", "ORCL": "ORCL.N", "IBM": "IBM.N",
+    "BE": "BE.N", "TSM": "TSM.N", "DELL": "DELL.N", "BABA": "BABA.N", "GLW": "GLW.N",
+    "RKLB": "RKLB.O", "HOOD": "HOOD.O",
     # NYSE Arca ETF(.K / .P,先按 .K)
     "EWY": "EWY.K",
     # 其余默认 .O(Nasdaq):MU/SNDK/NVDA/TSLA/AMD/INTC/AAPL/AMZN/GOOGL/META/

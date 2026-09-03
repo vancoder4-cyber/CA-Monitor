@@ -17,6 +17,7 @@ import base64
 import hashlib
 import hmac
 import requests
+import config as C
 import reconcile as R
 from business_time import now as business_now
 
@@ -70,13 +71,12 @@ def _at_tags(open_ids):
 
 
 def _nasdaq_div(ticker):
-    return f"https://www.nasdaq.com/market-activity/stocks/{ticker.lower()}/dividend-history"
+    return f"https://www.nasdaq.com/market-activity/{C.public_asset_path(ticker)}/{ticker.lower()}/dividend-history"
 
 
 def _quick_look(ticker, etype):
     """第三方交叉核对入口：分红优先落到分红历史页，其它事件落到标的总览。"""
-    base = f"https://stockanalysis.com/stocks/{ticker.lower()}"
-    return f"{base}/dividend/" if etype == "dividend" else f"{base}/"
+    return C.stockanalysis_url(ticker, etype)
 
 
 def _refs(ticker, etype, g=None, decl_url=None, ir_url=None, references=None):

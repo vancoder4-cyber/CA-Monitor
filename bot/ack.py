@@ -24,6 +24,7 @@ FORECAST_PATH = "data/forecast_watch.json"  # 人工观察的预测；不是确�
 API = "https://api.github.com"
 _BJ = dt.timezone(dt.timedelta(hours=8))
 _HERE = os.path.dirname(os.path.abspath(__file__))
+_ETF_TICKERS = {"QQQ", "EWY", "DRAM", "TQQQ", "MVLL"}
 
 
 def _headers():
@@ -80,10 +81,10 @@ def authoritative_source(ticker, etype, refs_ir=None):
 
 def quick_look(ticker, etype):
     """快速核对『数值对不对』用的聚合页(服务端渲染、覆盖 US+ADR,比 Nasdaq 稳)。"""
-    tkl = (ticker or "").lower()
-    if etype == "split":
-        return f"https://stockanalysis.com/stocks/{tkl}/"
-    return f"https://stockanalysis.com/stocks/{tkl}/dividend/"
+    tk = (ticker or "").upper()
+    asset_path = "etf" if tk in _ETF_TICKERS else "stocks"
+    base = f"https://stockanalysis.com/{asset_path}/{tk.lower()}"
+    return f"{base}/dividend/" if etype == "dividend" else f"{base}/"
 
 
 def verify_link(ticker, etype, src_url="", refs_ir=None):

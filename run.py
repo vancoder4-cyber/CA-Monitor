@@ -224,8 +224,7 @@ def _event_key(ticker, etype, date):
 
 
 def _stockanalysis_url(ticker, etype):
-    base = f"https://stockanalysis.com/stocks/{ticker.lower()}"
-    return f"{base}/dividend/" if etype == "dividend" else f"{base}/"
+    return C.stockanalysis_url(ticker, etype)
 
 
 def _sec_company_url(ticker):

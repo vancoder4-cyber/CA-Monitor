@@ -94,9 +94,11 @@ def fetch_data():
 
 
 def apply_acks(d):
-    """把最新的人工确认叠加到(可能过期的)data.json 上,让卡片**即时**反映确认结果:
-    已确认的『字段冲突 / 数据空缺』当场从风险/总览里剔除,不必等流水线(3×/日)重跑。
-    读的是仓库里实时的 acknowledged.json —— 你一发『确认』,下一次 @bot 就看不到那条了。"""
+    """把最新人工确认叠加到可能过期的 data.json。
+
+    已精确确认的字段冲突/数据空缺会即时从异常列表剔除；3% 产品动作结论仍由
+    下一轮流水线结合币种、证券单位和参考价统一重算，Bot 不在旧快照上武断放行。
+    """
     if not isinstance(d, dict):
         return d
     try:
@@ -106,16 +108,19 @@ def apply_acks(d):
         acks = []
     if not acks:
         return d
-    ackset = {(a.get("ticker"), a.get("date")) for a in acks}
+    # 生效键必须包含事件类型；同日可能同时发生现金分红和拆股。
+    ackset = {(a.get("ticker"), a.get("etype"), a.get("date")) for a in acks
+              if a.get("etype") and a.get("date")}
     # 冲突/空缺:已确认 → 直接剔除(风险卡的『数据冲突』、总览的『空缺』当场消失)
     for key in ("conflicts", "gaps"):
         lst = d.get(key)
         if isinstance(lst, list):
-            d[key] = [g for g in lst if (g.get("ticker"), g.get("date")) not in ackset]
-    # 待执行/日历/新公告:标记已确认(解除金额门禁显示),但保留事件本身(真实公司行动不因确认而消失)
+            d[key] = [g for g in lst
+                      if (g.get("ticker"), g.get("etype"), g.get("date")) not in ackset]
+    # 待执行/日历/新公告只叠加确认标记；数值门禁和产品动作等待流水线统一重算。
     for key in ("pending", "calendar", "announced"):
         for x in d.get(key, []) or []:
-            if (x.get("ticker"), x.get("date")) in ackset:
+            if (x.get("ticker"), x.get("etype"), x.get("date")) in ackset:
                 x["acked"] = True
     c = d.get("counts")
     if isinstance(c, dict):
@@ -292,13 +297,14 @@ def on_message(data: P2ImMessageReceiveV1):
             mdate = re.search(r"\d{4}-\d{2}-\d{2}", clean)
             date = mdate.group(0) if mdate else None
             rest = clean.replace(date, "") if date else clean
-            mval = re.search(r"\d+(?:\.\d+)?", rest)
-            value = mval.group(0) if mval else None
+            # 完整保留拆/合股 new:old；否则 `1:10` 会被静默截成 `1`，
+            # 下游再误解成 1:1，直接影响 3% 操作门槛。
+            value, value_token = ack.parse_confirm_value(rest)
 
             # 备注:去掉指令词/代码/值之后剩下的自由文字(如「已比对公司 8-K」)
             note = rest
-            if value:
-                note = note.replace(value, "", 1)
+            if value_token:
+                note = note.replace(value_token, "", 1)
             for _kw in ("确认", "confirm", "已核对"):
                 note = re.sub(_kw, "", note, flags=re.I)
             if ticker:
@@ -307,14 +313,17 @@ def on_message(data: P2ImMessageReceiveV1):
 
             etype = None
             if date:
-                # 指定了日期:在冲突/待执行/日历里定位该标的该日期的事件
+                # 指定日期时先收集所有同日事件；比例值优先匹配 split，避免同日分红
+                # 与拆股时被列表顺序带到错误类型。
+                candidates = []
                 for key in ("conflicts", "pending", "calendar", "gaps"):
                     for c in d.get(key, []) or []:
                         if c.get("ticker") == ticker and c.get("date") == date:
-                            etype = c.get("etype")
-                            break
-                    if etype:
-                        break
+                            candidate = c.get("etype")
+                            if candidate and candidate not in candidates:
+                                candidates.append(candidate)
+                preferred = "split" if value and ":" in value else "dividend"
+                etype = preferred if preferred in candidates else (candidates[0] if len(candidates) == 1 else None)
             else:
                 # 没给日期:默认取该标的的第一条冲突(多条不同值时,建议带上日期)
                 for c in d.get("conflicts", []) or []:
@@ -332,11 +341,28 @@ def on_message(data: P2ImMessageReceiveV1):
                     False, f"{ticker} 是当前覆盖中的非公司行动资产，不能执行人工确认。",
                     ticker=ticker, site_url=SITE_URL))
                 return
+            if not (etype and date):
+                send_card(chat_id, cards.confirm_card(
+                    False,
+                    "没定位到唯一的具体事件。请带事件日期；若同日既有分红又有拆股，拆/合股请使用完整 `新股数:旧股数`。",
+                    ticker=ticker,
+                    site_url=SITE_URL,
+                ))
+                return
+            if value and ":" in value and etype != "split":
+                send_card(chat_id, cards.confirm_card(
+                    False,
+                    "只有拆股/合股事件可使用 `新股数:旧股数`，例如 `确认 XYZ 1:10 2026-09-10`。",
+                    ticker=ticker,
+                    site_url=SITE_URL,
+                ))
+                return
             # ADR 防呆:若确认的值像「净额(税后)」——低于该事件毛额约 5% 以上——就警告(仍记录)
             warn = ""
             _ag = None
             for c in (d.get("conflicts", []) or []):
-                if c.get("ticker") == ticker and c.get("date") == date:
+                if (c.get("ticker") == ticker and c.get("etype") == etype
+                        and c.get("date") == date):
                     _ag = c.get("adr_gross")
                     break
             try:

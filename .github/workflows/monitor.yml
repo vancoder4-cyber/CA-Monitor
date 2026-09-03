@@ -50,6 +50,7 @@ jobs:
           path: |
             data/state.json
             data/cik_map.json
+            data/reference_prices.json
           key: ca-state-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             ca-state-

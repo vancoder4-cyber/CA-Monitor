@@ -12,6 +12,7 @@ import os
 import json
 import base64
 import datetime as dt
+import re
 
 import requests
 
@@ -25,6 +26,19 @@ API = "https://api.github.com"
 _BJ = dt.timezone(dt.timedelta(hours=8))
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ETF_TICKERS = {"QQQ", "EWY", "DRAM", "TQQQ", "MVLL"}
+
+
+def parse_confirm_value(text):
+    """返回 (规范值, 原始命中文本)；拆/合股比例必须完整保留 new:old。"""
+    raw = text or ""
+    ratio = re.search(
+        r"(?<![\d.])(\d+(?:\.\d+)?)\s*[:：]\s*(\d+(?:\.\d+)?)(?![\d.])",
+        raw,
+    )
+    if ratio:
+        return f"{ratio.group(1)}:{ratio.group(2)}", ratio.group(0)
+    number = re.search(r"\d+(?:\.\d+)?", raw)
+    return (number.group(0), number.group(0)) if number else (None, None)
 
 
 def _headers():
@@ -146,7 +160,8 @@ def add_ack(ticker, value=None, etype=None, date=None, by="lark", by_name="", no
         # 1) 取当前生效值(为了留痕里记录『从旧值改成新值』)
         data, sha = _get_file(ACK_PATH)
         prev = next((e.get("value") for e in data
-                     if e.get("ticker") == ticker and e.get("date") == date), None)
+                     if e.get("ticker") == ticker and e.get("etype") == etype
+                     and e.get("date") == date), None)
 
         # 2) 先写留痕库(只追加,永不删)—— 审计的可信底账,必须成功
         log, log_sha = _get_file(LOG_PATH)
@@ -166,8 +181,10 @@ def add_ack(ticker, value=None, etype=None, date=None, by="lark", by_name="", no
         if rlog.status_code not in (200, 201):
             return False, f"留痕写入失败 HTTP {rlog.status_code}: {rlog.text[:140]}"
 
-        # 3) 再更新生效值(同标的+同日期去重替换)—— pipeline 据此停报警
-        data = [e for e in data if not (e.get("ticker") == ticker and e.get("date") == date)]
+        # 3) 再更新生效值(同标的+同类型+同日期去重替换)—— 同日分红与拆股不能互相覆盖
+        data = [e for e in data if not (
+            e.get("ticker") == ticker and e.get("etype") == etype and e.get("date") == date
+        )]
         data.append({"ticker": ticker, "value": value, "etype": etype, "date": date,
                      "by": by, "by_name": by_name or "", "at": now.isoformat(timespec="seconds")})
         rack = _put_file(ACK_PATH, data, sha, f"ack: {ticker} {value if value is not None else ''}".strip())

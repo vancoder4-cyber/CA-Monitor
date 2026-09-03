@@ -83,7 +83,7 @@ class BotWindowTests(unittest.TestCase):
 
         text = _card_text(cards.upcoming_card(data, ""))
 
-        self.assertIn("正式催办 **2** 个", text)
+        self.assertIn("执行催办 **2** 个", text)
         self.assertIn("单源核验 **1** 个", text)
         self.assertIn("**QCOM**", text)
         self.assertIn("**WDC**", text)

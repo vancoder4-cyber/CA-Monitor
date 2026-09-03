@@ -201,7 +201,7 @@ SPLIT_GROUP_WINDOW_DAYS = 15
 # 零容忍:归组后,比对字段只要有任何差异即判为冲突
 ZERO_TOLERANCE = True
 # 比对哪些字段(分红)
-DIV_COMPARE_FIELDS = ["ex_date", "record_date", "pay_date", "amount"]
+DIV_COMPARE_FIELDS = ["ex_date", "record_date", "pay_date", "amount", "subtype"]
 # 比对哪些字段(拆股):只认**比例**。日期不进比对 —— 因为各源报的是 record vs ex(口径差,非错误),
 # 拆股事件统一锚定到「除权/生效日」(见 reconcile:拆股取 max ex_date)。真报错日期(差 >15 天)仍会因归不进组而成空缺被发现。
 SPLIT_COMPARE_FIELDS = ["ratio"]
@@ -234,7 +234,7 @@ SRC_PRIORITY = ["CompanyIR", "Nasdaq", "FINX", "FMP", "Tiingo", "AlphaVantage", 
 # 消解方式只有一个:群里发「确认 代码 [正确值]」——不豁免、不自动消失。
 REVIEW_ESCALATE_DAYS = 3
 
-# ---- 预警节奏(正式事件=执行催办；单源预测=核验提醒)----
+# ---- 预警节奏(产品动作命中=执行催办；门槛待定/单源预测=核验提醒)----
 # 规则:进入 30 天窗口时提醒一次(heads-up);15–29 天安静(已知会过);
 #       ≤14 天每天提醒一次(每天去重,不是每次跑都刷),直到除息日。
 # 单源预测沿用同一节奏，但文案明确「待核实、勿执行」。
@@ -244,12 +244,20 @@ ALERT_ANCHOR = "ex_date"    # 以除息日为基准
 # 旧节奏(已弃用,保留常量避免外部引用报错)
 ALERT_ROUNDS = [30, 14, 7, 3, 1]
 
+# ---- 合约公司行动操作门槛 ----
+# 信息展示与执行提醒分离：所有公司行动仍正常采集/展示；现金分红、送股、拆股、
+# 合股等只有估算价格影响严格超过 3% 才要求合约侧操作。价格或条款不足时必须
+# 待核实，不能默认成“无需操作”。旧常量名保留，避免外部脚本断裂。
+CONTRACT_PRICE_IMPACT_THRESHOLD_PCT = 3.0
+CONTRACT_CASH_IMPACT_THRESHOLD_PCT = CONTRACT_PRICE_IMPACT_THRESHOLD_PCT
+CONTRACT_REFERENCE_PRICE_MAX_AGE_DAYS = 7
+
 # 风控文案:待风控团队明确(占位)
 ROUND_RISK_TBD = "风控提醒:待风控团队明确(占位)"
 
 
 def alert_copy(days):
-    """给正式事件生成运营催办文案；单源预测不得调用此文案。"""
+    """只给已命中现货/合约执行条件的事件生成运营催办文案。"""
     if days <= 1:
         return "⏱ 最后确认:仅剩 1 天 —— 确保文案已就绪、定时发送已备好。"
     if days <= 3:
@@ -273,30 +281,29 @@ def product_tags(ticker):
         tags.append("合约")
     return tags
 
-# 风控运营提示:按 事件类型 × 产品 给默认动作(按你内部流程改)
+# 风控运营提示:现货按事件类型给默认动作；合约动作由 contract_policy 统一判定，
+# 这里仅消费已经算好的 decision，禁止各展示面自行重算 3% 门槛。
 RISK_NOTES = {
     "dividend": {
-        "contract": "合约:核对价格基准/资金费率是否需调整,除息日防价格跳空引发异常强平",
-        "spot": "现货:除息日成本基准调整,持仓与对账核对",
+        "spot": "现货：除息日成本基准调整，持仓与对账核对",
     },
     "split": {
-        "contract": "合约:调整合约乘数/持仓数量/委托价,重点防穿仓与挂单错位",
-        "spot": "现货:按比例调整持仓与未成交挂单,提前公告用户",
+        "spot": "现货：按比例调整持仓与未成交挂单，提前公告用户",
     },
     "filing": {
-        "contract": "合约:评估并购/退市影响,必要时暂停开仓、移仓或强制结算",
-        "spot": "现货:评估下架/暂停充提与交易,公告用户",
+        "spot": "现货：评估下架/暂停充提与交易，公告用户",
     },
 }
 
-def risk_note(ticker, etype):
-    """按产品归属拼出风控运营提示。"""
+def risk_note(ticker, etype, contract_action=None):
+    """按产品归属拼出动作提示；合约结论必须来自统一门槛判定。"""
     notes = RISK_NOTES.get(etype, {})
     out = []
-    if ticker in CONTRACT_TICKERS and notes.get("contract"):
-        out.append(notes["contract"])
     if ticker in SPOT_TICKERS and notes.get("spot"):
         out.append(notes["spot"])
+    if ticker in CONTRACT_TICKERS:
+        message = (contract_action or {}).get("message")
+        out.append(message or "合约：待核实｜尚未生成 3% 价格影响判定，暂不能确认是否操作")
     return out
 
 # ---- 时间范围 ----

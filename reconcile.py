@@ -140,9 +140,12 @@ class EventGroup:
 def _fields_of(ev, etype):
     if etype == "dividend":
         return {"ex_date": ev.ex_date, "declaration_date": ev.declaration_date,
-                "record_date": ev.record_date, "pay_date": ev.pay_date, "amount": ev.amount}
+                "record_date": ev.record_date, "pay_date": ev.pay_date, "amount": ev.amount,
+                "subtype": ev.subtype or "cash_dividend",
+                "amount_currency": ev.amount_currency,
+                "amount_unit": ev.amount_unit}
     if etype == "split":
-        return {"ex_date": ev.ex_date, "ratio": ev.ratio}
+        return {"ex_date": ev.ex_date, "ratio": ev.ratio, "subtype": ev.subtype or "split"}
     return {"ex_date": ev.ex_date, "note": ev.note}
 
 
@@ -198,7 +201,9 @@ def reconcile_ticker(results) -> List[EventGroup]:
                 if etype == "filing":
                     g.note = e.note
                     g.by_source[e.source]["url"] = e.raw.get("url", "")
-                    g.by_source[e.source]["relevant"] = e.raw.get("relevant", False)
+                    # 三态：SEC 明确的普通备案=False；结构性行动=True；
+                    # 供应商其它/未知公司行动=None，必须留给下游人工核实。
+                    g.by_source[e.source]["relevant"] = e.raw.get("relevant")
                     g.by_source[e.source]["accepted"] = e.raw.get("accepted", "")
                     g.by_source[e.source]["form"] = e.raw.get("form", "")
                     g.by_source[e.source]["items"] = e.raw.get("items", "")

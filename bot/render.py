@@ -36,13 +36,19 @@ def _font(size):
 
 def _label(e):
     t = e.get("etype")
+    event_name = e.get("event_label") or TYPE_LABEL.get(t, "事件")
     if e.get("forecast"):
-        return f"{e['ticker']} {TYPE_LABEL.get(t, '事件')} 🔎预测"
+        return f"{e['ticker']} {event_name} 🔎预测"
+    if e.get("disputed") or e.get("value_verified") is False:
+        return f"{e['ticker']} {event_name} ⚠️待核实"
     if t == "dividend":
-        v = f"${e['amount']}" if e.get("amount") is not None else ""
-        return f"{e['ticker']} 分红 {v}".strip()
+        value = e.get("value_display")
+        if not value and e.get("amount") is not None:  # 兼容旧 Pages 数据
+            value = f"${e['amount']}"
+        return f"{e['ticker']} {event_name} {value or ''}".strip()
     if t == "split":
-        return f"{e['ticker']} 拆股 {e.get('ratio') or ''}".strip()
+        value = e.get("value_display") or e.get("ratio") or ""
+        return f"{e['ticker']} {event_name} {value}".strip()
     return f"{e['ticker']} {(e.get('note') or '公告')[:8]}"
 
 

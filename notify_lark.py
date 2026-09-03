@@ -8,7 +8,7 @@
     LARK_DASHBOARD_URL=（可选,卡片底部"打开面板"按钮指向的地址)
     LARK_NOTIFY_EMPTY=0      # 1=即使没有任何预警也推一条"全部正常"
 
-发送交互卡片:正式催办 / 单源核验 / 新发现 / 冲突 / 空缺,filing 带 SEC 原文链接。
+发送交互卡片:执行催办 / 合约门槛核验 / 单源核验 / 新发现 / 冲突 / 空缺，filing 带 SEC 原文链接。
 """
 import os
 import time
@@ -22,6 +22,12 @@ import reconcile as R
 from business_time import now as business_now
 
 ETYPE_CN = {"dividend": "分红", "split": "拆股", "filing": "并购/公告"}
+
+
+def _etype_label(event):
+    if isinstance(event, dict):
+        return event.get("event_label") or ETYPE_CN.get(event.get("etype"), event.get("etype"))
+    return getattr(event, "event_label", "") or ETYPE_CN.get(event.etype, event.etype)
 
 
 class LarkDeliveryError(RuntimeError):
@@ -105,6 +111,11 @@ def _md_escape(s):
     return str(s).replace("[", "［").replace("]", "］")
 
 
+def _risk_lines(x):
+    risks = x.get("risk", []) if isinstance(x, dict) else getattr(x, "risk", [])
+    return "".join(f"\n　⚠️ {risk}" for risk in risks)
+
+
 def _dates(x):
     """关键日链:宣告 · 登记 · 除息/生效 · 派发(有哪个显示哪个,与查代码口径一致)。"""
     lab = "除息" if x.get("etype") == "dividend" else "生效"
@@ -126,14 +137,19 @@ def _val(x):
     人工「确认」后冲突消解,才会恢复显示确定值。"""
     if x.get("forecast"):
         return " <font color='orange'>🔎单源待核实·勿执行</font>"
-    if not x.get("official") and not x.get("acked") and not x.get("disputed") and (x.get("amt_srcs") or 0) == 1 and (
-            x.get("amount") is not None or x.get("ratio")):
-        v = x.get("amount") if x.get("amount") is not None else x.get("ratio")
-        return f" <font color='orange'>⚠️单源未交叉验证({v})· 待人工确认,勿据此执行</font>"
     if x.get("disputed") and not x.get("acked"):
         vals = x.get("dispute_vals") or {}
         pairs = " / ".join(f"{v}" for v in dict.fromkeys(vals.values()))
         return f" <font color='red'>⚠️各源不一致({pairs})· 待人工确认,勿据此执行</font>"
+    unverified = x.get("value_verified") is False or (
+        "value_verified" not in x and not x.get("official") and not x.get("acked")
+        and (x.get("amt_srcs") or 0) == 1
+    )
+    if unverified and (x.get("amount") is not None or x.get("ratio")):
+        v = x.get("amount") if x.get("amount") is not None else x.get("ratio")
+        return f" <font color='orange'>⚠️单源未交叉验证({v})· 待人工确认,勿据此执行</font>"
+    if x.get("value_display"):
+        return " " + str(x["value_display"])
     if x.get("amount") is not None:
         return f" ${x['amount']}"
     if x.get("ratio"):
@@ -151,16 +167,23 @@ def _build_card(alerts, meta, dashboard_url=""):
         x for x in alerts.get("forecast_updates", [])
         if _event_sig(x) not in promotion_round_sigs
     ]
+    round_sigs = {_event_sig(x) for x in rounds}
+    forecast_update_sigs = {_event_sig(x) for x in visible_forecast_updates}
+    visible_contract_updates = [
+        x for x in alerts.get("contract_updates", [])
+        if _event_sig(x) not in round_sigs and _event_sig(x) not in forecast_update_sigs
+    ]
     n_new = len(alerts["new"])
-    n_verify = sum(1 for x in rounds if x.get("forecast"))
+    n_verify = sum(1 for x in rounds if x.get("forecast") or x.get("verification"))
     n_round = len(rounds) - n_verify
     n_conf = len(alerts["conflicts"]); n_gap = len(alerts["gaps"])
     n_forecast = len(alerts.get("forecasts", []))
     n_forecast_updates = len(visible_forecast_updates)
+    n_contract_updates = len(visible_contract_updates)
     # 有冲突/空缺 → 红;有临近/新发现 → 蓝;否则绿
     if n_conf or n_gap:
         template = "red"
-    elif n_round or n_verify or n_new or n_forecast_updates:
+    elif n_round or n_verify or n_new or n_forecast_updates or n_contract_updates:
         template = "blue"
     else:
         template = "green"
@@ -169,8 +192,8 @@ def _build_card(alerts, meta, dashboard_url=""):
     elements = [{
         "tag": "div",
         "text": {"tag": "lark_md",
-                 "content": f"📣 新公告 **{n_ann}**　🔔 正式催办 **{n_round}**　🔎 单源核验 **{n_verify}**　🆕 新发现 **{n_new}**"
-                            f"　❗冲突 **{n_conf}**　🕳 空缺 **{n_gap}**　🔎 预测观察 **{n_forecast}**"}
+                 "content": f"📣 新公告 **{n_ann}**　🔔 执行催办 **{n_round}**　🔎 核验提醒 **{n_verify}**　🆕 新发现 **{n_new}**"
+                            f"　🔄 合约结论 **{n_contract_updates}**　❗冲突 **{n_conf}**　🕳 空缺 **{n_gap}**　🔎 预测观察 **{n_forecast}**"}
     }, {"tag": "hr"}]
 
     def section(title, lines):
@@ -184,12 +207,12 @@ def _build_card(alerts, meta, dashboard_url=""):
     def forecast_update_line(x):
         kind = x.get("kind")
         prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
-        label = ETYPE_CN.get(x.get("etype"), x.get("etype"))
+        label = _etype_label(x)
         if kind in ("promoted", "declared"):
             why = ("已核验公司官方宣告" if x.get("official") else "已获取宣告日") \
                 if kind == "declared" else "已获第二个独立源确认"
             return (f"• ✅ {prod}**{x['ticker']}** {label} 预测已转正式 — "
-                    f"除息/生效 {x.get('date')}；{why}")
+                    f"除息/生效 {x.get('date')}；{why}" + _risk_lines(x))
         if kind == "updated":
             old_date = x.get("previous_date") or "—"
             old_amt = x.get("previous_amount")
@@ -202,6 +225,19 @@ def _build_card(alerts, meta, dashboard_url=""):
     section("🔄 预测状态更新(自动追踪)",
             [forecast_update_line(x) + _refs(x["ticker"], x.get("etype"), references=x.get("references"))
              for x in visible_forecast_updates])
+
+    def contract_update_line(x):
+        labels = {
+            "required": "现已达到 >3% 合约操作门槛",
+            "not_required": "已确认合约本次无需操作",
+            "review": "转为合约门槛待核实",
+        }
+        current = x.get("current_status")
+        return (f"• 🔄 **{x['ticker']}** {_etype_label(x)} "
+                f"{x.get('date')} — {labels.get(current, current or '结论更新')}" + _risk_lines(x))
+
+    section("🔄 合约操作结论更新",
+            [contract_update_line(x) for x in visible_contract_updates])
 
     # 🙋 待人工确认(不豁免:挂着就一直报,只有「确认」能消解)—— 超期则 @ 人升级
     _rv = alerts.get("review") or {}
@@ -217,8 +253,8 @@ def _build_card(alerts, meta, dashboard_url=""):
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": head}})
         elements.append({"tag": "hr"})
 
-    # 🔔 临近提醒：正式事件是执行催办；单源事件只要求数据核验。
-    # 两类均按 ≤14 天每天推、进入 30 天窗口知会一次。
+    # 🔔 临近提醒：命中产品动作条件才是执行催办；单源或合约门槛不明
+    # 只要求数据核验。两类均按 ≤14 天每天推、进入 30 天窗口知会一次。
     rl = []
     formal_rounds = []
     for x in rounds:
@@ -226,20 +262,21 @@ def _build_card(alerts, meta, dashboard_url=""):
         val = _val(x)
         prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
         is_forecast = bool(x.get("forecast"))
+        is_verification = bool(is_forecast or x.get("verification"))
         prefix = ("🔎 单源核验 · " if is_forecast else
+                  "🔎 合约门槛核验 · " if is_verification else
                   "✅ 单源已转正式 · " if x.get("promoted_from_forecast") else "")
-        color = "orange" if is_forecast else "red"
-        line = (f"• {prefix}{prod}**{x['ticker']}** {ETYPE_CN.get(x['etype'], x['etype'])}{val} — "
+        color = "orange" if is_verification else "red"
+        line = (f"• {prefix}{prod}**{x['ticker']}** {_etype_label(x)}{val} — "
                 f"<font color='{color}'>D-{x['days']}</font>　{dates}")
         if is_forecast:
             srcs = ", ".join(x.get("srcs") or []) or "未知"
             line += f"\n　📡 单一数据源：{srcs}"
-        else:
+        elif not is_verification:
             formal_rounds.append(x)
         if x.get("ops"):
             line += f"\n　👉 {x['ops']}"
-        for rn in x.get("risk", []):
-            line += f"\n　⚠️ {rn}"
+        line += _risk_lines(x)
         line += _refs(x["ticker"], x["etype"], decl_url=x.get("decl_url"), ir_url=x.get("ir_url"),
                       references=x.get("references"))
         rl.append(line)
@@ -248,7 +285,7 @@ def _build_card(alerts, meta, dashboard_url=""):
     if formal_rounds and _mentions:
         elements.append({"tag": "div", "text": {"tag": "lark_md",
                         "content": _at_tags(_mentions) + " 🔔 有正式临近催办事项,请及时处理"}})
-    section("🔔 临近提醒(正式催办 + 单源核验；非本周清单：≤14天每天 · 30天知会)", rl)
+    section("🔔 临近提醒(执行催办 + 数据/合约门槛核验；非本周清单：≤14天每天 · 30天知会)", rl)
 
     # 优先级互斥:已在催办里出现的事件,后面的区不再重复
     def _sig(x):
@@ -265,9 +302,9 @@ def _build_card(alerts, meta, dashboard_url=""):
         val = _val(x)
         days = f" · <font color='red'>还剩 {x['days']} 天</font>" if x.get("days") is not None else ""
         prefix = "✅ 预测已转正式 · " if x.get("forecast_watch") else ""
-        line = (f"• {prefix}{prod}**{x['ticker']}** {ETYPE_CN.get(x['etype'], x['etype'])}{val} —— "
+        line = (f"• {prefix}{prod}**{x['ticker']}** {_etype_label(x)}{val} —— "
                 f"宣告 {x.get('decl')} · 除息 {x['date']}{days}")
-        al.append(line + _refs(x["ticker"], x["etype"], references=x.get("references")))
+        al.append(line + _risk_lines(x) + _refs(x["ticker"], x["etype"], references=x.get("references")))
     section("📣 新公告(刚宣告)", al)
     # 「待执行」区已并入上面的「临近催办」,不再单列。
 
@@ -284,22 +321,43 @@ def _build_card(alerts, meta, dashboard_url=""):
         except Exception:
             n = ""
         return f"\n　<font color='red'>{n}</font>" if n else ""
-    cl = [f"• **{g.ticker}** {ETYPE_CN.get(g.etype, g.etype)} {g.anchor_date}:"
-          f" {_md_escape('; '.join(g.conflicts))}{_aged(g)}{_adr(g)}{_refs(g.ticker, g.etype, g)}"
+    cl = [f"• **{g.ticker}** {_etype_label(g)} {g.anchor_date}:"
+          f" {_md_escape('; '.join(g.conflicts))}{_aged(g)}{_adr(g)}{_risk_lines(g)}{_refs(g.ticker, g.etype, g)}"
           for g in alerts["conflicts"]]
     section("❗ 字段冲突(零容忍 · 需人工确认)", cl)
 
     # 数据空缺(同样需人工确认)
-    gl = [f"• **{g.ticker}** {ETYPE_CN.get(g.etype, g.etype)} {g.anchor_date}{_aged(g)}:"
+    gl = [f"• **{g.ticker}** {_etype_label(g)} {g.anchor_date}{_aged(g)}:"
           f" {_md_escape('; '.join(g.gaps))}" for g in alerts["gaps"]]
     section("🕳 数据空缺", gl)
 
     # 新发现
     nl = []
     for g in alerts["new"]:
-        amt = _pick(g.by_source, "amount"); ratio = _pick(g.by_source, "ratio")
-        val = (f" ${amt}" if amt is not None else "") + (f" {ratio}" if ratio else "")
-        line = f"• **{g.ticker}** {ETYPE_CN.get(g.etype, g.etype)} {g.anchor_date}{val}"
+        if R.is_disputed(g):
+            vals = [v.get("amount") if v.get("amount") is not None else v.get("ratio")
+                    for v in g.by_source.values()]
+            vals = [str(v) for v in dict.fromkeys(v for v in vals if v is not None)]
+            val = f" <font color='red'>⚠️各源不一致({' / '.join(vals)})·待确认，勿执行</font>"
+        else:
+            display = getattr(g, "value_display", "")
+            if display and not getattr(g, "value_verified", False):
+                candidate = getattr(g, "selected_amount", None)
+                if candidate is None:
+                    candidate = getattr(g, "selected_ratio", None)
+                val = (" <font color='orange'>⚠️数值未交叉验证(" +
+                       _md_escape(candidate) + ")·待确认，勿执行</font>")
+            elif display:
+                val = " " + display
+            else:
+                amt = getattr(g, "ack_value", None)
+                if amt is None:
+                    amt = _pick(g.by_source, "amount")
+                ratio = _pick(g.by_source, "ratio")
+                val = (f" ${amt}" if amt is not None else "") + (f" {ratio}" if ratio else "")
+        products = C.product_tags(g.ticker)
+        prod = ("[" + "+".join(products) + "] ") if products else ""
+        line = f"• {prod}**{g.ticker}** {_etype_label(g)} {g.anchor_date}{val}"
         if g.etype == "filing":
             line += f" {_md_escape(g.note or '')}"
             u = _sec_url(g)
@@ -307,6 +365,7 @@ def _build_card(alerts, meta, dashboard_url=""):
                 line += f" [SEC原文]({u})"
         if g.etype == "dividend":
             line += _refs(g.ticker, g.etype, g)
+        line += _risk_lines(g)
         nl.append(line)
     section("🆕 新发现事件", nl)
 
@@ -342,7 +401,7 @@ def notify(alerts, meta):
         return False, "未配置 LARK_WEBHOOK,跳过推送"
 
     # pending / forecasts 是网页和 Bot 的完整清单；只有命中 30/14 天节奏的
-    # 正式催办或单源核验提醒才会放进 rounds，避免发送没有明细的定时卡片。
+    # 执行催办或数据核验才会放进 rounds，避免发送没有明细的定时卡片。
     promotion_round_sigs = {
         (x.get("ticker"), x.get("etype"), x.get("date"))
         for x in alerts["rounds"] if x.get("promoted_from_forecast")
@@ -351,9 +410,21 @@ def notify(alerts, meta):
         1 for x in alerts.get("forecast_updates", [])
         if (x.get("ticker"), x.get("etype"), x.get("date")) not in promotion_round_sigs
     )
+    round_sigs = {
+        (x.get("ticker"), x.get("etype"), x.get("date")) for x in alerts["rounds"]
+    }
+    forecast_update_sigs = {
+        (x.get("ticker"), x.get("etype"), x.get("date"))
+        for x in alerts.get("forecast_updates", [])
+    }
+    visible_contract_update_count = sum(
+        1 for x in alerts.get("contract_updates", [])
+        if (x.get("ticker"), x.get("etype"), x.get("date")) not in round_sigs
+        and (x.get("ticker"), x.get("etype"), x.get("date")) not in forecast_update_sigs
+    )
     total = (len(alerts["new"]) + len(alerts["rounds"]) + len(alerts["conflicts"])
              + len(alerts["gaps"]) + len(alerts.get("announced", []))
-             + visible_update_count)
+             + visible_update_count + visible_contract_update_count)
     if total == 0 and not cfg["notify_empty"]:
         return False, "无预警内容,跳过(设 LARK_NOTIFY_EMPTY=1 可强制推送)"
 

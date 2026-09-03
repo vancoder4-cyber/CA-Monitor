@@ -88,6 +88,7 @@ def _snapshot():
         "recent_declares": [],
         "conflicts": [],
         "gaps": [],
+        "filing_updates": [],
         "changelog": [],
         "counts": {"pending": 0, "forecasts": 0, "conflicts": 0, "gaps": 0},
     }
@@ -97,6 +98,8 @@ class CommandRoutingTests(unittest.TestCase):
     def test_explicit_chinese_commands_do_not_require_a_space(self):
         cases = {
             "确认AAPL 0.26 2026-09-10 已比对公司公告": "confirm",
+            "确认备案AAPL|filing|2026-09-03|0123456789ab": "filing_resolve",
+            "排除备案AAPL|filing|2026-09-03|0123456789ab": "filing_resolve",
             "已核对AAPL 0.26 2026-09-10 最近更新完成": "confirm",
             "观察AAPL 2026-09-10 公司公告待出": "forecast",
             "需求提报增加公司公告提醒": "request",
@@ -112,8 +115,8 @@ class CommandRoutingTests(unittest.TestCase):
         self.assertEqual("help", cards.parse_command("watchlist"))
         self.assertEqual("help", cards.parse_command("confirmation"))
 
-    def test_all_fifteen_declared_commands_have_a_parse_route(self):
-        self.assertEqual(15, len(cards.COMMANDS))
+    def test_all_sixteen_declared_commands_have_a_parse_route(self):
+        self.assertEqual(16, len(cards.COMMANDS))
         for command in cards.COMMANDS:
             for keyword in command["kw"]:
                 with self.subTest(command=command["key"], keyword=keyword):
@@ -323,6 +326,219 @@ class BotOverlayTests(unittest.TestCase):
                     len(result["pending"]) + len(result["forecasts"]),
                     result,
                 )
+
+
+class FilingResolutionCommandTests(unittest.TestCase):
+    EVENT_A = "AAPL|filing|2026-09-03|0123456789ab"
+    EVENT_B = "AAPL|filing|2026-09-03|abcdef012345"
+
+    @staticmethod
+    def _candidate(event_id):
+        return {
+            "ticker": "AAPL", "etype": "filing", "date": "2026-09-03",
+            "event_id": event_id, "filing_relevant": None,
+            "verification_kind": "filing_terms", "follow_up_mode": "verification",
+            "src_url": f"https://www.sec.gov/Archives/{event_id[-12:]}.htm",
+        }
+
+    def test_same_day_candidates_require_exact_id_and_exact_id_selects_one(self):
+        data = _snapshot()
+        data["pending"] = [self._candidate(self.EVENT_A), self._candidate(self.EVENT_B)]
+
+        target, error = bot.filing_resolution_target(
+            "排除备案 AAPL 2026-09-03", data, "AAPL"
+        )
+        self.assertIsNone(target)
+        self.assertIn("同日有多份", error)
+        self.assertIn(self.EVENT_A, error)
+        self.assertIn(self.EVENT_B, error)
+
+        target, error = bot.filing_resolution_target(
+            f"排除备案 {self.EVENT_B}", data, "AAPL"
+        )
+        self.assertEqual("", error)
+        self.assertEqual(self.EVENT_B, target["event_id"])
+
+    def test_overlong_fingerprint_is_not_silently_truncated_to_a_valid_id(self):
+        data = _snapshot()
+        data["pending"] = [self._candidate(self.EVENT_A)]
+
+        target, error = bot.filing_resolution_target(
+            f"排除备案 {self.EVENT_A}f", data, "AAPL"
+        )
+
+        self.assertIsNone(target)
+        self.assertIn("完整 event_id", error)
+
+    def test_conflicting_resolution_words_fail_closed(self):
+        self.assertEqual(
+            "",
+            bot.filing_resolution_status(
+                f"确认备案 {self.EVENT_A}，但按普通备案无需操作"
+            ),
+        )
+
+    def test_message_dispatch_writes_the_exact_id(self):
+        data = _snapshot()
+        candidate = self._candidate(self.EVENT_A)
+        data["pending"] = [candidate]
+        message = SimpleNamespace(
+            message_id="filing-resolution-exact", chat_id="chat", chat_type="p2p",
+            mentions=[], content=json.dumps({"text": f"排除备案 {self.EVENT_A} 已核对原文"}),
+        )
+        event = SimpleNamespace(
+            message=message,
+            sender=SimpleNamespace(sender_id=SimpleNamespace(open_id="ou_test")),
+        )
+        bot._seen.clear()
+        with mock.patch.dict(os.environ, {"LARK_WRITE_ALLOWED_OPEN_IDS": "ou_test"}), \
+                mock.patch.object(bot, "fetch_data", return_value=data), \
+                mock.patch.object(bot.cards, "validate_snapshot", return_value=""), \
+                mock.patch.object(bot.ack, "resolve_filing_review", return_value=(True, "ok")) as resolve, \
+                mock.patch.object(bot, "send_card") as send_card:
+            bot.on_message(SimpleNamespace(event=event))
+
+        resolve.assert_called_once()
+        args, kwargs = resolve.call_args
+        self.assertEqual((self.EVENT_A, "routine"), args)
+        self.assertEqual("AAPL", kwargs["ticker"])
+        self.assertEqual("2026-09-03", kwargs["date"])
+        self.assertNotIn("by", kwargs)
+        self.assertNotIn("by_name", kwargs)
+        self.assertNotIn("note", kwargs)
+        self.assertEqual(candidate["src_url"], kwargs["src_url"])
+        send_card.assert_called_once()
+
+
+class WriteAuthorizationTests(unittest.TestCase):
+    WRITE_TEXTS = (
+        "排除备案 AAPL|filing|2026-09-03|0123456789ab",
+        "确认 AAPL 0.26 2026-09-10",
+        "观察 AAPL 2026-09-10",
+        "需求 增加一个测试功能",
+    )
+
+    @staticmethod
+    def _incoming(text, sender="ou_test"):
+        message = SimpleNamespace(
+            message_id=f"rbac-{hash((text, sender))}", chat_id="chat", chat_type="p2p",
+            mentions=[], content=json.dumps({"text": text}),
+        )
+        return SimpleNamespace(
+            event=SimpleNamespace(
+                message=message,
+                sender=SimpleNamespace(sender_id=SimpleNamespace(open_id=sender)),
+            )
+        )
+
+    def test_empty_or_mismatched_allowlist_blocks_every_write_before_fetch(self):
+        for allowlist in ("", "ou_someone_else"):
+            for text in self.WRITE_TEXTS:
+                with self.subTest(allowlist=allowlist or "<empty>", text=text):
+                    bot._seen.clear()
+                    with mock.patch.dict(
+                            os.environ, {"LARK_WRITE_ALLOWED_OPEN_IDS": allowlist}), \
+                            mock.patch.object(bot, "fetch_data") as fetch_data, \
+                            mock.patch.object(bot.ack, "resolve_filing_review") as resolve, \
+                            mock.patch.object(bot.ack, "add_ack") as add_ack, \
+                            mock.patch.object(bot.ack, "add_forecast") as add_forecast, \
+                            mock.patch.object(bot.ack, "add_request") as add_request, \
+                            mock.patch.object(bot, "send_card") as send_card:
+                        bot.on_message(self._incoming(text))
+
+                    fetch_data.assert_not_called()
+                    resolve.assert_not_called()
+                    add_ack.assert_not_called()
+                    add_forecast.assert_not_called()
+                    add_request.assert_not_called()
+                    send_card.assert_called_once()
+                    rendered = json.dumps(send_card.call_args.args[1], ensure_ascii=False)
+                    self.assertIn("写操作未授权", rendered)
+                    self.assertIn("本次未修改任何状态", rendered)
+                    self.assertNotIn("ou_someone_else", rendered)
+
+    def test_allowlist_parser_requires_an_exact_open_id(self):
+        with mock.patch.dict(os.environ, {
+            "LARK_WRITE_ALLOWED_OPEN_IDS": " ou_first,ou_test, ou_third ",
+        }):
+            self.assertTrue(bot.write_authorized("ou_test"))
+            self.assertFalse(bot.write_authorized("ou_tes"))
+            self.assertFalse(bot.write_authorized(""))
+            self.assertFalse(bot.write_authorized(None))
+
+    def test_missing_sender_blocks_every_write_before_fetch(self):
+        for text in self.WRITE_TEXTS:
+            with self.subTest(text=text):
+                message = SimpleNamespace(
+                    message_id=f"rbac-missing-{hash(text)}", chat_id="chat",
+                    chat_type="p2p", mentions=[], content=json.dumps({"text": text}),
+                )
+                incoming = SimpleNamespace(event=SimpleNamespace(message=message))
+                bot._seen.clear()
+                with mock.patch.dict(
+                        os.environ, {"LARK_WRITE_ALLOWED_OPEN_IDS": "ou_test"}), \
+                        mock.patch.object(bot, "fetch_data") as fetch_data, \
+                        mock.patch.object(bot.ack, "resolve_filing_review") as resolve, \
+                        mock.patch.object(bot.ack, "add_ack") as add_ack, \
+                        mock.patch.object(bot.ack, "add_forecast") as add_forecast, \
+                        mock.patch.object(bot.ack, "add_request") as add_request, \
+                        mock.patch.object(bot, "send_card") as send_card:
+                    bot.on_message(incoming)
+
+                fetch_data.assert_not_called()
+                resolve.assert_not_called()
+                add_ack.assert_not_called()
+                add_forecast.assert_not_called()
+                add_request.assert_not_called()
+                self.assertIn(
+                    "写操作未授权",
+                    json.dumps(send_card.call_args.args[1], ensure_ascii=False),
+                )
+
+    def test_authorized_operator_reaches_each_write_handler(self):
+        data = _snapshot()
+        data["pending"] = [
+            FilingResolutionCommandTests._candidate(
+                FilingResolutionCommandTests.EVENT_A
+            ),
+            {"ticker": "AAPL", "etype": "dividend", "date": "2026-09-10"},
+        ]
+        cases = (
+            (f"排除备案 {FilingResolutionCommandTests.EVENT_A}", "resolve_filing_review"),
+            ("确认 AAPL 0.26 2026-09-10", "add_ack"),
+            ("观察 AAPL 2026-09-10", "add_forecast"),
+            ("需求 增加一个测试功能", "add_request"),
+        )
+        for text, expected in cases:
+            with self.subTest(text=text):
+                bot._seen.clear()
+                with mock.patch.dict(
+                        os.environ, {"LARK_WRITE_ALLOWED_OPEN_IDS": "ou_test"}), \
+                        mock.patch.object(bot, "fetch_data", return_value=copy.deepcopy(data)), \
+                        mock.patch.object(bot.cards, "validate_snapshot", return_value=""), \
+                        mock.patch.object(bot, "get_user_name", return_value="Operator"), \
+                        mock.patch.object(
+                            bot.ack, "resolve_filing_review", return_value=(True, "ok")
+                        ) as resolve, \
+                        mock.patch.object(bot.ack, "add_ack", return_value=(True, "ok")) as add_ack, \
+                        mock.patch.object(
+                            bot.ack, "add_forecast", return_value=(True, "ok")
+                        ) as add_forecast, \
+                        mock.patch.object(
+                            bot.ack, "add_request", return_value=(True, "ok")
+                        ) as add_request, \
+                        mock.patch.object(bot, "send_card"):
+                    bot.on_message(self._incoming(text))
+
+                handlers = {
+                    "resolve_filing_review": resolve,
+                    "add_ack": add_ack,
+                    "add_forecast": add_forecast,
+                    "add_request": add_request,
+                }
+                handlers.pop(expected).assert_called_once()
+                for handler in handlers.values():
+                    handler.assert_not_called()
 
 
 if __name__ == "__main__":

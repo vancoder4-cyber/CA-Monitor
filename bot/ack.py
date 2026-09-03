@@ -23,6 +23,7 @@ GH_BRANCH = os.environ.get("GH_BRANCH", "main").strip()
 ACK_PATH = "data/acknowledged.json"   # 当前生效值(同标的+同日去重,pipeline 读这个)
 LOG_PATH = "data/ack_log.json"        # 留痕库:只追加、永不删,记录每一次确认(含改值前后)
 FORECAST_PATH = "data/forecast_watch.json"  # 人工观察的预测；不是确认，不改变数据本身
+FILING_RESOLUTION_PATH = "data/filing_review_resolutions.json"  # 按稳定 event_id 关闭 SEC 条款核验
 API = "https://api.github.com"
 _BJ = dt.timezone(dt.timedelta(hours=8))
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -149,6 +150,21 @@ def get_forecasts():
         return []
 
 
+def get_filing_resolutions():
+    """读取 SEC filing 条款核验的人工结论。
+
+    必须使用完整 event_id；同一标的同一天可能有多份 6-K，不得
+    退化成 ticker + date 宽匹配。
+    """
+    if not GH_TOKEN:
+        return []
+    try:
+        data, _ = _get_file(FILING_RESOLUTION_PATH)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
 def get_ack_log(limit=None):
     """读取留痕库(只追加日志),按时间**倒序**返回(最新在前)。无 token/文件则 []。"""
     if not GH_TOKEN:
@@ -245,6 +261,78 @@ def add_forecast(ticker, etype, date, by="lark", by_name="", note="", *, refs_ir
                       "出现公司宣告或第二个独立源时会自动升级并推送。")
     except Exception as e:
         return False, f"观察写入异常: {e}"
+
+
+def resolve_filing_review(event_id, status, *, ticker="", date="", by="lark",
+                          by_name="", note="", src_url=""):
+    """把一条 SEC filing 核验明确结案为「公司行动」或「普通备案」。
+
+    状态库按完整 event_id 去重；留痕库只追加。仓库是公开的，因此这条
+    新链路只保存业务结论、时间和 SEC 来源，不持久化 Lark 身份或自由备注。
+    ``by`` / ``by_name`` / ``note`` 仅为兼容旧调用保留，写入时主动丢弃。
+    """
+    if not GH_TOKEN:
+        return False, "未配置 GH_TOKEN —— 请在 Railway 加一个对本仓库 Contents 有写权限的细粒度 PAT"
+    if status not in {"confirmed", "routine"}:
+        return False, "备案结论只能是「公司行动」或「普通备案/无需操作」"
+    if not re.fullmatch(
+            r"[A-Z0-9.-]+\|filing\|\d{4}-\d{2}-\d{2}\|[0-9a-f]{12}",
+            event_id or ""):
+        return False, "event_id 无效；请从条款核验卡片复制完整 ID"
+    try:
+        now = dt.datetime.now(dt.timezone.utc)
+        data, sha = _get_file(FILING_RESOLUTION_PATH)
+        previous = next(
+            (e for e in data if isinstance(e, dict) and e.get("event_id") == event_id),
+            None,
+        )
+
+        log, log_sha = _get_file(LOG_PATH)
+        log.append({
+            "at_bj": now.astimezone(_BJ).isoformat(timespec="seconds"),
+            "at_utc": now.isoformat(timespec="seconds"),
+            "ticker": ticker or event_id.split("|", 1)[0],
+            "etype": "filing",
+            "date": date or event_id.split("|")[2],
+            "event_id": event_id,
+            "value": status,
+            "prev_value": (previous or {}).get("status"),
+            "by_name": "",
+            "by": "system",
+            "source": src_url or _sec_company_url(ticker or event_id.split("|", 1)[0]),
+            "note": "",
+            "action": "resolve_filing_review",
+        })
+        rlog = _put_file(
+            LOG_PATH, log, log_sha,
+            f"filing-review-log: {event_id} -> {status}",
+        )
+        if rlog.status_code not in (200, 201):
+            return False, f"留痕写入失败 HTTP {rlog.status_code}: {rlog.text[:140]}"
+
+        data = [e for e in data
+                if not (isinstance(e, dict) and e.get("event_id") == event_id)]
+        data.append({
+            "event_id": event_id,
+            "ticker": ticker or event_id.split("|", 1)[0],
+            "date": date or event_id.split("|")[2],
+            "status": status,
+            # 这是公开 Git 生效库：不保存 Lark open_id、姓名或自由备注。
+            "source": src_url or "",
+            "at": now.isoformat(timespec="seconds"),
+        })
+        result = _put_file(
+            FILING_RESOLUTION_PATH, data, sha,
+            f"filing-review: {event_id} -> {status}",
+        )
+        if result.status_code not in (200, 201):
+            return False, (f"结论仅留痕、未生效：状态写入失败 HTTP {result.status_code}: "
+                           f"{result.text[:140]}；核验提醒不会关闭，请重试。")
+        label = "已确认为公司行动" if status == "confirmed" else "已判定为普通备案，本次无需操作"
+        return True, (f"{label}；已按稳定 event_id 写入匿名业务留痕。"
+                      "公开仓库不会保存操作员身份或自由备注。")
+    except Exception as e:
+        return False, f"备案结论写入异常: {e}"
 
 
 REQ_PATH = "requests.md"

@@ -7,6 +7,7 @@
 环境变量:
     LARK_APP_ID, LARK_APP_SECRET   —— Lark 自定义应用凭证
     SITE_URL                        —— GitHub Pages 站点(默认 CA-Monitor)
+    LARK_WRITE_ALLOWED_OPEN_IDS     —— 可执行写操作的操作员 open_id 白名单
 """
 import os
 import re
@@ -35,6 +36,17 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 client = lark.Client.builder().app_id(APP_ID).app_secret(APP_SECRET).domain(lark.LARK_DOMAIN).build()
 _seen = set()      # message_id 去重
 BOT_OPEN_ID = None  # 机器人自身 open_id(用于判断是否被 @)
+WRITE_COMMANDS = {"filing_resolve", "forecast", "confirm", "request"}
+
+
+def write_authorized(open_id):
+    """生产写操作必须命中 Railway Secret 中的操作员白名单。"""
+    allowed = {
+        value.strip()
+        for value in os.environ.get("LARK_WRITE_ALLOWED_OPEN_IDS", "").split(",")
+        if value.strip()
+    }
+    return bool(open_id and open_id in allowed)
 
 
 def _tenant_token():
@@ -232,6 +244,7 @@ def apply_forecasts(d):
             "watching": True, "watch_note": watch.get("note", ""), "srcs": [],
             "products": products, "amount": None, "ratio": None, "value_display": "",
             "value_verified": False, "follow_up_mode": "verification", "risk": risks,
+            "verification_kind": "forecast",
             "contract_action": {"status": "review"} if cov.get("contract") else {"status": "not_applicable"},
         })
     d["pending"] = pending
@@ -240,6 +253,92 @@ def apply_forecasts(d):
         d["counts"]["pending"] = len(pending)
         d["counts"]["forecasts"] = len(forecasts)
     return d
+
+
+_FILING_EVENT_ID_RE = re.compile(
+    r"(?<![A-Z0-9.-])[A-Z0-9.-]+\|filing\|\d{4}-\d{2}-\d{2}\|"
+    r"[0-9a-f]{12}(?![A-Z0-9])",
+    re.I,
+)
+
+
+def filing_resolution_target(text, data, ticker=None):
+    """从 Pages 快照定位要结案的 filing，返回 ``(event, error)``。
+
+    有完整 event_id 时精确匹配；只给代码+日期时仅在候选唯一时
+    帮用户补齐 ID，同日多文件必须回到完整 ID。
+    """
+    candidates = {}
+    for key in ("filing_updates", "pending", "calendar", "new"):
+        for event in data.get(key, []) or []:
+            if not isinstance(event, dict) or event.get("etype") != "filing":
+                continue
+            event_id = event.get("event_id") or ""
+            if not _FILING_EVENT_ID_RE.fullmatch(event_id):
+                continue
+            is_review = (
+                event.get("filing_relevant") is None
+                or event.get("current_status") in {"review", "expired"}
+                or event.get("kind") in {"review_pending", "expired"}
+            )
+            if is_review:
+                candidates[event_id] = event
+
+    raw = text or ""
+    explicit = _FILING_EVENT_ID_RE.search(raw)
+    if explicit:
+        event_id = explicit.group(0)
+        # 指纹为小写 hex；用快照中的原始 ID 进行大小写无关查找。
+        hit_id = next((key for key in candidates if key.lower() == event_id.lower()), None)
+        if hit_id:
+            return candidates[hit_id], ""
+        parts = event_id.split("|")
+        event_ticker = parts[0].upper()
+        if not cards.is_monitored_ticker(data, event_ticker):
+            return None, f"{event_ticker} 不在当前公司行动监控范围"
+        # 允许结案已从当前快照消失、但操作员保存了完整 ID 的积压项。
+        return {
+            "ticker": event_ticker,
+            "etype": "filing",
+            "date": parts[2],
+            "event_id": event_id,
+            "src_url": "",
+        }, ""
+
+    # 用户已经尝试粘贴 event_id 时，任何长度/字符错误都必须直接拒绝。
+    # 不能再退回“代码+日期唯一匹配”，否则多一位指纹会被悄悄截断后结案。
+    if "|filing|" in raw.lower():
+        return None, "event_id 格式不完整或指纹长度错误；请从卡片复制完整 event_id"
+
+    mdate = re.search(r"\d{4}-\d{2}-\d{2}", raw)
+    date = mdate.group(0) if mdate else ""
+    matches = [event for event in candidates.values()
+               if (not ticker or event.get("ticker") == ticker)
+               and (not date or event.get("date") == date)]
+    if len(matches) == 1:
+        return matches[0], ""
+    if len(matches) > 1:
+        ids = "\n".join(f"`{event['event_id']}`" for event in matches[:5])
+        return None, f"同日有多份待核实 filing，请复制完整 event_id：\n{ids}"
+    return None, "未找到可结案的 SEC 条款核验；请带完整 event_id，或使用唯一的代码+申报日"
+
+
+def filing_resolution_status(text):
+    """解析备案结论；不明确时 fail closed。"""
+    raw = (text or "").lower()
+    routine = any(word in raw for word in (
+        "排除备案", "普通备案", "无需操作", "routine", "no action",
+    ))
+    confirmed = any(word in raw for word in (
+        "确认备案", "公司行动", "confirmed", "confirm filing",
+    ))
+    if routine and confirmed:
+        return ""
+    if routine:
+        return "routine"
+    if confirmed:
+        return "confirmed"
+    return ""
 
 
 def _send(chat_id, msg_type, content):
@@ -332,6 +431,11 @@ def on_message(data: P2ImMessageReceiveV1):
         except Exception:
             pass
         cmd = parse_command(text)
+        # 所有会改 GitHub 业务状态的指令先鉴权，再取快照、更不能先写回。
+        # 白名单缺失也按拒绝处理，避免任何群成员借 Bot 的 GH_TOKEN 结案或改值。
+        if cmd in WRITE_COMMANDS and not write_authorized(sender_oid):
+            send_card(chat_id, cards.write_permission_card(SITE_URL))
+            return
         d = fetch_data()
         clean_command = re.sub(r"@_user_\d+|@_all", "", text or "").strip().lower()
         explicit_help = any(
@@ -351,6 +455,32 @@ def on_message(data: P2ImMessageReceiveV1):
         refs_ir = (d.get("refs") if isinstance(d, dict) and isinstance(d.get("refs"), dict) else None)
         ticker = cards.find_ticker(text, d)
         # 查代码:显式『查』指令,或直接发了一个已覆盖的代码(未命中其它指令时)
+        if cmd == "filing_resolve":
+            status = filing_resolution_status(text)
+            target, error = filing_resolution_target(text, d, ticker)
+            if not status:
+                send_card(chat_id, cards.filing_resolution_card(
+                    False, "请明确选择「公司行动」或「普通备案/无需操作」。",
+                    site_url=SITE_URL,
+                ))
+                return
+            if not target:
+                send_card(chat_id, cards.filing_resolution_card(
+                    False, error, status=status, site_url=SITE_URL,
+                ))
+                return
+            event_id = target["event_id"]
+            src_url = target.get("src_url") or target.get("sec_url") or target.get("url") or ""
+            print(f"[msg] chat={chat_id} -> filing_resolve {event_id} {status}")
+            ok, msg = ack.resolve_filing_review(
+                event_id, status,
+                ticker=target.get("ticker", ""), date=target.get("date", ""),
+                src_url=src_url,
+            )
+            send_card(chat_id, cards.filing_resolution_card(
+                ok, msg, event_id, status, SITE_URL,
+            ))
+            return
         if cmd == "forecast":
             clean = re.sub(r"@_user_\d+|@_all", "", text or "")
             m = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", clean)

@@ -180,7 +180,22 @@ def reconcile_ticker(results) -> List[EventGroup]:
         for e in evs:
             placed = False
             ed = _d(e.ex_date)
+            # A routine or merely suspected filing is not evidence for a nearby
+            # structural action.  Keep every explicit False/None event in its
+            # own group so a 6-K hint cannot merge with an unrelated vendor
+            # action, change its date/nature, or lend it the wrong SEC URL.
+            unverified_filing = (
+                etype == "filing" and isinstance(e.raw, dict)
+                and e.raw.get("relevant") is not True
+            )
             for cl in clusters:
+                if unverified_filing or (
+                    etype == "filing" and any(
+                        isinstance(x.raw, dict) and x.raw.get("relevant") is not True
+                        for x in cl
+                    )
+                ):
+                    continue
                 cd = _d(cl[0].ex_date)
                 if cd and ed and abs((ed - cd).days) <= win:
                     # 同一源同类不重复并入同簇(避免季度内多次)

@@ -31,20 +31,26 @@ def _now_label():
     return f"{et.strftime('%Y-%m-%d %H:%M')} ET / {bj.strftime('%H:%M')} 北京"
 
 
-def _provenance_meta():
+def _provenance_meta(now_utc=None):
     """生成供 Pages、问答助手和发布验收共同使用的机器可读版本信息。"""
-    now_utc = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+    now_utc = (now_utc or dt.datetime.now(dt.timezone.utc)).astimezone(
+        dt.timezone.utc
+    ).replace(microsecond=0)
     now_et = business_now(now_utc)
     # GitHub 定时任务可能排队；允许下一计划扫描点后 4 小时宽限。超过这个
     # 明确时点，网站与 Bot 必须显示数据不可用，不能只因 business_date 相同
     # 就在一天内持续“假绿”。
     slots = ((9, 35), (12, 45), (16, 5))
     next_run = None
-    for hour, minute in slots:
-        candidate = now_et.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if candidate > now_et:
-            next_run = candidate
-            break
+    # main push / Bot 状态写回也会触发构建。周末不能把“当天尚未到的工作日
+    # 扫描时点”当作下一次刷新，否则周六上午发布的数据会在周六下午过期，
+    # 网站与 Bot 一直 fail closed 到周一。这里只在工作日寻找当天剩余 slot。
+    if now_et.weekday() < 5:
+        for hour, minute in slots:
+            candidate = now_et.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if candidate > now_et:
+                next_run = candidate
+                break
     if next_run is None:
         day = now_et.date() + dt.timedelta(days=1)
         while day.weekday() >= 5:
@@ -70,6 +76,7 @@ os.makedirs(CACHE, exist_ok=True)
 STATE_PATH = os.path.join(DATA, "state.json")
 REFERENCE_PRICE_PATH = os.path.join(DATA, "reference_prices.json")
 FORECAST_WATCH_PATH = os.path.join(DATA, "forecast_watch.json")
+FILING_RESOLUTION_PATH = os.path.join(DATA, "filing_review_resolutions.json")
 OUT_HTML = os.path.join(HERE, "dashboard.html")
 OUT_DIGEST = os.path.join(DATA, "latest_digest.txt")
 OUT_SITEDATA = os.path.join(HERE, "site_data.json")  # 供交互机器人读取(会发布到 Pages/data.json)
@@ -104,6 +111,34 @@ def load_forecast_watches():
         return data if isinstance(data, list) else []
     except Exception:
         return []
+
+
+def load_filing_review_resolutions():
+    """读取 Bot 写回的 SEC filing 核验结论。
+
+    每条必须使用带文件指纹的完整 event_id；无效/旧宽键 fail closed，
+    不得影响同标的同日其它 SEC 文件。
+    """
+    if not os.path.exists(FILING_RESOLUTION_PATH):
+        return []
+    try:
+        with open(FILING_RESOLUTION_PATH, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    valid = []
+    for item in data:
+        if not isinstance(item, dict) or item.get("status") not in {"confirmed", "routine"}:
+            continue
+        event_id = item.get("event_id") or ""
+        if not re.fullmatch(
+                r"[A-Z0-9.-]+\|filing\|\d{4}-\d{2}-\d{2}\|[0-9a-f]{12}",
+                event_id):
+            continue
+        valid.append(item)
+    return valid
 
 
 def forecast_key(watch):
@@ -143,8 +178,21 @@ def schedule_event_reminder(event, signature, fired, today):
 
     # 核验提醒、现货动作和合约门槛动作使用独立去重轨道。现金分红的估算
     # 从 ≤3% 跨到 >3% 时，不能被此前的普通提醒静默压掉。
-    verification = bool(event.get("forecast") or event.get("follow_up_mode") == "verification")
-    if event.get("forecast"):
+    verification_kind = event.get("verification_kind")
+    if verification_kind not in {"forecast", "filing_terms", "contract_threshold"}:
+        # 兼容尚未带中央字段的旧状态/测试夹具；新 payload 一律由
+        # attach_product_action 明确下发 verification_kind。
+        if event.get("forecast"):
+            verification_kind = "forecast"
+        elif event.get("follow_up_mode") == "verification":
+            verification_kind = (
+                "filing_terms"
+                if event.get("etype") == "filing" and event.get("filing_relevant") is None
+                else "contract_threshold"
+            )
+        else:
+            verification_kind = ""
+    if verification_kind == "forecast":
         state_key = f"{signature}#verification"
     elif event.get("reminder_state_suffix"):
         state_key = f"{signature}#{event['reminder_state_suffix']}"
@@ -166,24 +214,34 @@ def schedule_event_reminder(event, signature, fired, today):
         return None
 
     reminder = {**event, "round": days, "cadence": due}
-    if event.get("forecast"):
+    if verification_kind == "forecast":
         reminder.update({
             "ops": "🔎 单源待核实：请核对公司官方公告或第二个独立源；未确认前勿执行。",
             "risk_copy": "数据核验提醒，不是公司行动执行指令。",
             "risk": [],
             "verification": True,
+            "verification_kind": "forecast",
         })
-    elif verification:
+    elif verification_kind == "filing_terms":
+        reminder.update({
+            "ops": "🔎 公司行动条款核验：请打开 SEC 原文确认事件类型、生效日与处理条款；核实前勿执行。",
+            "risk_copy": "公司行动条款核验提醒，核实前不得执行。",
+            "verification": True,
+            "verification_kind": "filing_terms",
+        })
+    elif verification_kind == "contract_threshold":
         reminder.update({
             "ops": "🔎 合约门槛待核实：请补齐可靠金额/比例或参考价；确认影响严格超过 3% 前不执行合约调整。",
             "risk_copy": "合约门槛核验提醒，不是执行指令。",
             "verification": True,
+            "verification_kind": "contract_threshold",
         })
     else:
         reminder.update({
-            "ops": C.alert_copy(days),
+            "ops": C.alert_copy(days, event.get("etype")),
             "risk_copy": C.ROUND_RISK_TBD,
             "verification": False,
+            "verification_kind": "",
         })
     return reminder
 
@@ -325,7 +383,8 @@ def active_forecast_watches(watches, *, allowed_tickers=None):
             if isinstance(w, dict) and w.get("ticker") in allowed_tickers]
 
 
-def _dividend_references(ticker, date, decl, refs, sec8k):
+def _dividend_references(ticker, date, decl, refs, sec8k, *, linked_sec_url="",
+                         linked_sec_form="6-K"):
     """返回同一份引用契约，供网页、推送和交互 Bot 共用。
 
     第三方仅用于交叉核对，明确标注可能滞后；正式化永远以官方公告/IR 或 SEC 为准。
@@ -347,6 +406,9 @@ def _dividend_references(ticker, date, decl, refs, sec8k):
         add(override.get("label") or "官方·本次公告/IR", override["url"], "official_event")
     if exact_8k:
         add("SEC·本次宣告 8-K", exact_8k, "official_filing")
+    if linked_sec_url:
+        add(f"SEC·本次宣告 {linked_sec_form or '6-K'}", linked_sec_url,
+            "official_filing")
     ir_url = ir_map.get(ticker, "")
     if ir_url:
         add("官方·IR 分红页", ir_url, "official_ir")
@@ -370,7 +432,15 @@ def attach_event_references(target, refs, sec8k):
         decl = R.pick_value(getattr(target, "by_source", {}), "declaration_date")
     if etype != "dividend":
         return
-    links = _dividend_references(ticker, date, decl, refs, sec8k)
+    linked_sec_url = (target.get("linked_sec_url", "") if isinstance(target, dict)
+                      else getattr(target, "linked_sec_url", ""))
+    linked_sec_form = (target.get("linked_sec_form", "6-K") if isinstance(target, dict)
+                       else getattr(target, "linked_sec_form", "6-K"))
+    links = _dividend_references(
+        ticker, date, decl, refs, sec8k,
+        linked_sec_url=linked_sec_url,
+        linked_sec_form=linked_sec_form,
+    )
     primary = next((x for x in links if x["kind"] != "third_party"), None)
     third = next((x for x in links if x["kind"] == "third_party"), None)
     fields = {
@@ -392,14 +462,27 @@ def attach_event_references(target, refs, sec8k):
 
 
 def _product_fields(g):
-    return {
+    fields = {
         "event_id": getattr(g, "event_id", ""),
         "contract_action": getattr(g, "contract_action", {}),
         "follow_up_mode": getattr(g, "follow_up_mode", "execution"),
+        "verification_kind": getattr(g, "verification_kind", ""),
         "reminder_state_suffix": getattr(g, "reminder_state_suffix", ""),
         "filing_relevant": getattr(g, "filing_relevant", None),
+        "filing_resolution_status": getattr(g, "filing_resolution_status", ""),
+        "linked_event_id": getattr(g, "linked_event_id", ""),
         "risk": getattr(g, "risk", []),
     }
+    if getattr(g, "linked_sec_url", ""):
+        fields.update({
+            "linked_sec_url": g.linked_sec_url,
+            "linked_sec_form": getattr(g, "linked_sec_form", "6-K"),
+            "linked_filing_event_id": getattr(g, "linked_filing_event_id", ""),
+        })
+    if getattr(g, "etype", "") == "filing":
+        sec_url = ((getattr(g, "by_source", {}) or {}).get("SEC") or {}).get("url", "")
+        fields.update({"url": sec_url, "sec_url": sec_url, "src_url": sec_url})
+    return fields
 
 
 def _is_routine_filing(event):
@@ -477,15 +560,34 @@ def attach_product_action(g, reference_price, today, forecast=False):
             amount_unit = next(iter(units))
 
     note = (g.note or "").lower()
-    relevance = [x.get("relevant") for x in (g.by_source or {}).values()]
+    # Preserve source-provided tri-state relevance.  In particular, SEC 6-K
+    # metadata hints use explicit None to mean "suspected, verify terms".  The
+    # translated note contains words such as 并购/分拆, but those words must not
+    # upgrade the filing to an executable action before its terms are read.
+    provided_relevance = [
+        x.get("relevant") for x in (g.by_source or {}).values()
+        if "relevant" in x
+    ]
     keyword_relevant = any(token in note for token in (
             "并购", "退市", "分拆", "证券变更", "要约", "merger", "spin_off",
             "spin-off", "name_change", "symbol_change", "redemption", "worthless",
         ))
-    if any(value is True for value in relevance) or keyword_relevant:
+    resolution_status = getattr(g, "filing_resolution_status", "")
+    if g.etype == "filing" and resolution_status == "confirmed":
         filing_relevant = True
-    elif relevance and all(value is False for value in relevance):
+    elif g.etype == "filing" and resolution_status in {"routine", "linked"}:
         filing_relevant = False
+    elif any(value is True for value in provided_relevance):
+        filing_relevant = True
+    elif any(value is None for value in provided_relevance):
+        filing_relevant = None
+    elif provided_relevance and all(value is False for value in provided_relevance):
+        filing_relevant = False
+    elif keyword_relevant:
+        # Legacy groups without a structured relevance field retain the old
+        # conservative heuristic.  All current SEC/Alpaca/FINX events carry
+        # the field explicitly and therefore never rely on translated text.
+        filing_relevant = True
     else:
         # Alpaca / FINX “其它公司行动”没有足够条款时必须 review，不能当普通备案 no-op。
         filing_relevant = None
@@ -521,11 +623,28 @@ def attach_product_action(g, reference_price, today, forecast=False):
         today=today,
     )
     g.value_verified = bool(value_verified and not (g.conflicts and not ack_value_verified))
-    # 预测无论是否含现货都只能核验，不能因为现货默认流程被误标为 execution。
-    mode = "verification" if forecast else CP.follow_up_mode(g.ticker, decision)
+    # 预测和条款未知的结构性 filing 无论是否含现货都只能核验，不能因为
+    # 现货默认流程被误标为 execution。尤其 6-K 元数据只命中提示词时，尚未
+    # 解析出真实条款，绝不能据此要求下架、调合约或触发正式执行 @。
+    needs_filing_verification = g.etype == "filing" and filing_relevant is None
+    mode = ("verification" if forecast or needs_filing_verification
+            else CP.follow_up_mode(g.ticker, decision))
+    verification_kind = (
+        "forecast" if forecast else
+        "filing_terms" if needs_filing_verification else
+        "contract_threshold" if mode == "verification" else
+        ""
+    )
     g.contract_action = decision
     g.follow_up_mode = mode
-    g.reminder_state_suffix = CP.reminder_state_suffix(g.ticker, decision, mode)
+    g.verification_kind = verification_kind
+    # Suspected filing terms need their own cadence key even for spot-only
+    # symbols.  If the filing is later confirmed, the resulting execution
+    # reminder must not be swallowed by the earlier verification reminder.
+    g.reminder_state_suffix = (
+        "filing-review" if verification_kind == "filing_terms"
+        else CP.reminder_state_suffix(g.ticker, decision, mode)
+    )
     g.risk = C.risk_note(
         g.ticker,
         g.etype,
@@ -561,6 +680,208 @@ def _grp_brief(g):
             **_product_fields(g)}
 
 
+def _filing_relevance_status(value, resolution_status=""):
+    """把 filing 三态压成可持久化的稳定状态名。"""
+    if resolution_status in {"confirmed", "routine", "linked"}:
+        return resolution_status
+    if value is True:
+        return "confirmed"
+    if value is False:
+        return "routine"
+    return "review"
+
+
+def track_filing_relevance(g, event_id, filing_state, today):
+    """记录 filing 条款核验状态，并返回一次性的状态迁移事件。
+
+    filing 的锚点通常就是 SEC 申报日，第二天便不再属于 future。状态迁移因此
+    不能放在未来事件分支里，否则 ``待核实 -> 已确认/普通备案`` 会静默消失。
+    这里按稳定 event_id 独立追踪；调用方只在投递成功后保存 state，所以失败
+    会在下轮原样重试。
+    """
+    if getattr(g, "etype", "") != "filing":
+        return None
+
+    current = _filing_relevance_status(
+        getattr(g, "filing_relevant", None),
+        getattr(g, "filing_resolution_status", ""),
+    )
+    previous_entry = filing_state.get(event_id)
+    previous = (
+        previous_entry.get("status") if isinstance(previous_entry, dict)
+        else previous_entry if previous_entry in {"review", "confirmed", "routine"}
+        else None
+    )
+    event = {
+        **_grp_brief(g),
+        "days": g.days_to,
+        "status": g.status,
+        "decl": R.pick_value(g.by_source, "declaration_date"),
+        "record": R.pick_value(g.by_source, "record_date"),
+        "pay": R.pick_value(g.by_source, "pay_date"),
+        "products": C.product_tags(g.ticker),
+    }
+    # 已过期的元数据提示若仍只是 review，不能在每次抓取时重开。
+    # 只有来源变为 confirmed/routine，或操作员写入明确结论才重开。
+    persisted_status = "expired" if previous == "expired" and current == "review" else current
+    snapshot = {
+        "status": persisted_status,
+        "last_seen": today,
+        # 即使某一轮来源暂时漏数，也能继续提醒尚未关闭的条款核验。
+        "event": event,
+    }
+    if isinstance(previous_entry, dict) and previous_entry.get("last_review_alert"):
+        snapshot["last_review_alert"] = previous_entry["last_review_alert"]
+    filing_state[event_id] = snapshot
+
+    if persisted_status == "expired":
+        return None
+    if previous not in {"review", "expired"} or current == "review":
+        return None
+
+    update = {
+        **event,
+        "kind": current,
+        "previous_status": "review",
+        "current_status": current,
+        "transition_date": today,
+        "filing_relevance_update": True,
+    }
+    if current in {"routine", "linked"}:
+        # 现货产品通常默认 execution；普通备案的解除通知必须显式覆盖为 no-op，
+        # 不能因为它曾经是疑似公司行动而误 @ 执行负责人。
+        update.update({
+            "follow_up_mode": "none",
+            "verification_kind": "",
+            "reminder_state_suffix": "",
+        })
+    return update
+
+
+def collect_overdue_filing_reviews(filing_state, today):
+    """提醒事件日已过的 filing；满期后停止日报，但不作无需操作判断。"""
+    updates = []
+    for event_id, entry in filing_state.items():
+        if not isinstance(entry, dict) or entry.get("status") != "review":
+            continue
+        event = entry.get("event")
+        if not isinstance(event, dict) or entry.get("last_review_alert") == today:
+            continue
+        try:
+            days = (dt.date.fromisoformat(str(event.get("date"))) -
+                    dt.date.fromisoformat(today)).days
+        except (TypeError, ValueError):
+            continue
+        if days >= 0:
+            # D0 仍由既有 30/14 cadence 提醒；这里只补事件日之后的盲区。
+            continue
+        if days < -getattr(C, "FILING_REVIEW_EXPIRE_DAYS", 30):
+            updates.append({
+                **event,
+                "event_id": event_id,
+                "days": days,
+                "kind": "expired",
+                "previous_status": "review",
+                "current_status": "expired",
+                "transition_date": today,
+                "filing_relevance_update": True,
+                "follow_up_mode": "none",
+                "verification_kind": "filing_terms",
+                "reminder_state_suffix": "",
+                "risk": [],
+            })
+            entry.update({
+                "status": "expired",
+                "resolved_at": today,
+                "resolution_source": "auto_expiry",
+                "last_review_alert": today,
+            })
+            continue
+        updates.append({
+            **event,
+            "event_id": event_id,
+            "days": days,
+            "kind": "review_pending",
+            "previous_status": "review",
+            "current_status": "review",
+            "transition_date": today,
+            "filing_relevance_update": True,
+        })
+        entry["last_review_alert"] = today
+    return updates
+
+
+def apply_missing_filing_resolutions(filing_state, resolutions, current_event_ids, today):
+    """即使 filing 已从本轮缓存消失，人工结论仍能按 event_id 关闭积压。"""
+    updates = []
+    by_id = {
+        item.get("event_id"): item for item in (resolutions or [])
+        if isinstance(item, dict) and item.get("status") in {"confirmed", "routine"}
+    }
+    for event_id, resolution in by_id.items():
+        if event_id in current_event_ids:
+            continue
+        entry = filing_state.get(event_id)
+        if not isinstance(entry, dict) or entry.get("status") not in {"review", "expired"}:
+            continue
+        event = entry.get("event")
+        if not isinstance(event, dict):
+            continue
+        current = resolution["status"]
+        update = {
+            **event,
+            "event_id": event_id,
+            "kind": current,
+            "previous_status": entry.get("status"),
+            "current_status": current,
+            "transition_date": today,
+            "filing_relevance_update": True,
+            "filing_relevant": current == "confirmed",
+            "filing_resolution_status": current,
+        }
+        if current == "routine":
+            update.update({
+                "follow_up_mode": "none",
+                "verification_kind": "",
+                "reminder_state_suffix": "",
+                "risk": [],
+            })
+        else:
+            # 当前抓取窗口里已经看不到 filing 时，也必须按“已确认公司行动”
+            # 重建产品动作，不能沿用旧 review 快照的 filing_terms/verification。
+            ticker = str(update.get("ticker") or "").upper()
+            decision = CP.evaluate(
+                ticker,
+                "filing",
+                value_verified=True,
+                filing_relevant=True,
+                today=today,
+            )
+            mode = CP.follow_up_mode(ticker, decision)
+            verification_kind = "contract_threshold" if mode == "verification" else ""
+            update.update({
+                "contract_action": decision,
+                "follow_up_mode": mode,
+                "verification_kind": verification_kind,
+                "reminder_state_suffix": CP.reminder_state_suffix(ticker, decision, mode),
+                "risk": C.risk_note(
+                    ticker,
+                    "filing",
+                    decision,
+                    filing_relevant=True,
+                ),
+            })
+        entry.update({
+            "status": current,
+            "last_seen": today,
+            "resolved_at": today,
+            "resolution_source": "operator",
+            "event": update,
+        })
+        updates.append(update)
+    return updates
+
+
 def load_state():
     if os.path.exists(STATE_PATH):
         with open(STATE_PATH, encoding="utf-8") as f:
@@ -570,10 +891,12 @@ def load_state():
             st.setdefault("declared", {})   # sig -> 已推送过的宣告日
             st.setdefault("forecast_status", {})  # 自动单源 + 人工观察的状态，供升级/改期/失效通知去重
             st.setdefault("contract_action_status", {})  # sig -> 合约门槛上次结论
+            st.setdefault("filing_relevance_status", {})  # 稳定 filing ID -> 条款核验/确认/普通备案状态
             st.setdefault("filing_signature_version", 1)
             return st
     return {"seen": {}, "fired_rounds": {}, "declared": {}, "forecast_status": {},
-            "contract_action_status": {}, "filing_signature_version": 1}
+            "contract_action_status": {}, "filing_relevance_status": {},
+            "filing_signature_version": 1}
 
 
 def save_state(st):
@@ -636,6 +959,111 @@ def sig(g):
     return f"{base}|{digest}"
 
 
+def apply_filing_review_resolutions(all_groups, resolutions, *, allowed_tickers=None):
+    """按稳定 filing event_id 应用 Bot/Git 人工结论。
+
+    这一步必须早于 ``attach_product_action`` 和状态 tracker，否则本轮
+    仍会产生「待核实」风险/提醒，下轮才关闭。
+    """
+    allowed = set(C.TICKERS if allowed_tickers is None else allowed_tickers)
+    by_id = {
+        item.get("event_id"): item for item in (resolutions or [])
+        if isinstance(item, dict) and item.get("status") in {"confirmed", "routine"}
+        and item.get("ticker", str(item.get("event_id") or "").split("|", 1)[0]) in allowed
+    }
+    matched = set()
+    for groups in all_groups.values():
+        for g in groups:
+            if g.etype != "filing":
+                continue
+            event_id = getattr(g, "event_id", "") or sig(g)
+            g.event_id = event_id
+            resolution = by_id.get(event_id)
+            if not resolution:
+                continue
+            g.filing_resolution_status = resolution["status"]
+            g.filing_resolution_source = "operator"
+            g.filing_resolution_note = resolution.get("note", "")
+            matched.add(event_id)
+    return matched
+
+
+def _suspected_dividend_filing(g):
+    """只识别「类型仅为分红/分派」的待核实 SEC 6-K。
+
+    同时出现拆股、并购等任一其它动作词就拒绝自动关联，确保不把
+    不同类型的公司行动合并成分红证据。
+    """
+    if g.etype != "filing":
+        return False
+    sec = (g.by_source or {}).get("SEC") or {}
+    if sec.get("form") not in {"6-K", "6-K/A"} or sec.get("relevant") is not None:
+        return False
+    note = (g.note or "").lower()
+    if not any(word in note for word in ("分红", "分派", "dividend", "distribution")):
+        return False
+    other_types = (
+        "拆股", "合股", "并购", "收购", "分拆", "退市", "要约", "供股",
+        "赎回", "名称变更", "代码变更", "split", "merger", "acquisition",
+        "spin-off", "spinoff", "delist", "tender", "rights offering", "redemption",
+        "name change", "symbol change",
+    )
+    return not any(word in note for word in other_types)
+
+
+def link_dividend_6k_evidence(all_groups):
+    """精确关联「已正式分红」与同日的分红提示 6-K。
+
+    匹配键只有 ticker + 分红 declaration_date == SEC filing date，并且分红
+    必须已有宣告日/官方源/交叉源且无未解决冲突。命中后只把 SEC URL
+    加入分红的证据链，不合并 event group；独立 filing review 标记为
+    ``linked`` 并从 CA 执行流抑制。
+    """
+    linked = {}
+    for ticker, groups in all_groups.items():
+        dividends_by_decl = {}
+        for dividend in groups:
+            if dividend.etype != "dividend" or R.is_disputed(dividend):
+                continue
+            decl = R.pick_value(dividend.by_source, "declaration_date")
+            formal = bool(
+                decl and (
+                    R.has_official_source(dividend.by_source)
+                    or dividend.status == "confirmed"
+                    or len(dividend.by_source) >= 2
+                    or bool(decl)
+                )
+            )
+            if formal:
+                dividends_by_decl.setdefault(decl, []).append(dividend)
+
+        for filing in groups:
+            if (not _suspected_dividend_filing(filing)
+                    or getattr(filing, "filing_resolution_source", "") == "operator"):
+                continue
+            matches = dividends_by_decl.get(filing.anchor_date, [])
+            # 多条分红共用宣告日时无法唯一定位，fail closed 继续人工核实。
+            if len(matches) != 1:
+                continue
+            dividend = matches[0]
+            sec = (filing.by_source or {}).get("SEC") or {}
+            sec_url = sec.get("url") or ""
+            if not sec_url:
+                continue
+            filing_id = getattr(filing, "event_id", "") or sig(filing)
+            dividend_id = getattr(dividend, "event_id", "") or sig(dividend)
+            filing.event_id = filing_id
+            dividend.event_id = dividend_id
+            filing.filing_resolution_status = "linked"
+            filing.filing_resolution_source = "auto_dividend_match"
+            filing.linked_event_id = dividend_id
+            dividend.linked_sec_url = sec_url
+            dividend.linked_sec_form = sec.get("form") or "6-K"
+            dividend.linked_filing_event_id = filing_id
+            linked[filing_id] = dividend_id
+    return linked
+
+
 # ---------------- FETCH ----------------
 def _fetch_one(tk, keys, av_on):
     results = S.fetch_all_for_ticker(tk, keys, av_enabled=av_on)
@@ -690,6 +1118,14 @@ def build():
     # 又继续参与零容忍冲突检测，不能只在渲染层偷偷换链接。
     refs_config = load_refs()
     apply_official_event_overrides(all_groups, refs_config)
+    # Bot 写回的 filing 结论与自动分红证据关联必须在产品动作判定前生效。
+    # 先分配完整事件 ID；人工结论优先，自动关联不得覆盖操作员结论。
+    for _groups in all_groups.values():
+        for _g in _groups:
+            _g.event_id = sig(_g)
+    filing_resolutions = load_filing_review_resolutions()
+    apply_filing_review_resolutions(all_groups, filing_resolutions)
+    link_dividend_6k_evidence(all_groups)
     sec8k_index = build_sec8k_index(all_groups)
     for groups in all_groups.values():
         for g in groups:
@@ -728,6 +1164,7 @@ def build():
     seen, fired, declared = state["seen"], state["fired_rounds"], state["declared"]
     forecast_state = state["forecast_status"]
     contract_state = state["contract_action_status"]
+    filing_state = state["filing_relevance_status"]
 
     # filing 从 ticker+date 升级为带文件指纹的 ID。首次上线时把当前缓存里已经
     # 见过的文件继承旧 seen，避免签名升级导致历史 8-K 整批重放；之后同日出现
@@ -742,7 +1179,7 @@ def build():
     today = today_d.isoformat()
     cutoff30 = (today_d - dt.timedelta(days=30)).isoformat()
     new_events, round_alerts, conflicts, gaps, pending, announced = [], [], [], [], [], []
-    forecasts, forecast_updates, contract_updates = [], [], []
+    forecasts, forecast_updates, contract_updates, filing_updates = [], [], [], []
     forecast_sigs, matched_watch_keys = set(), set()
 
     # 新标的首次纳入监控时是否静默建基线(见 config.BASELINE_NEW_TICKERS):
@@ -750,11 +1187,17 @@ def build():
     #   关(默认)→ 照常推,能一次看全新标的的存量事件
     known_tickers = {s.split("|", 1)[0] for s in seen}
 
+    current_filing_ids = set()
     for tk, groups in all_groups.items():
         first_time_ticker = getattr(C, "BASELINE_NEW_TICKERS", False) and tk not in known_tickers
         for g in groups:
             s = sig(g)
             g.event_id = s
+            if g.etype == "filing":
+                current_filing_ids.add(s)
+            filing_update = track_filing_relevance(g, s, filing_state, today)
+            if filing_update:
+                filing_updates.append(filing_update)
             if s not in seen:
                 seen[s] = today
                 if not first_time_ticker:
@@ -812,6 +1255,7 @@ def build():
                 _confirmed = (g.etype == "filing" or _official or bool(_decl) or
                               len(g.by_source) >= 2)
                 event = {"ticker": g.ticker, "etype": g.etype, "date": g.anchor_date,
+                         "note": g.note,
                          "days": g.days_to, "status": g.status,
                          "decl": _decl, "record": _pk("record_date"),
                          "pay": _pk("pay_date"), **_event_value_fields(g),
@@ -908,6 +1352,17 @@ def build():
                     if reminder:
                         round_alerts.append(reminder)
 
+    # filing 的事件日一过，普通 future/cadence 分支不会再命中。只要条款仍未
+    # 被确认或排除，就从持久化快照继续每天发一次核验提醒；最终状态迁移会在
+    # 上面的 tracker 中取代本提醒，并且同一业务日只出现一次。
+    # 缓存中已不再出现的文件仍可由 Bot 按稳定 ID 结案；先应用该结论，
+    # 再生成逾期提醒，以免同一轮既报「已结论」又报「待核实」。满 30 天只
+    # 停止每日提醒，不代表普通备案或无需操作。
+    filing_updates.extend(apply_missing_filing_resolutions(
+        filing_state, filing_resolutions, current_filing_ids, today,
+    ))
+    filing_updates.extend(collect_overdue_filing_reviews(filing_state, today))
+
     # 手工观察是一等预测事项：即使供应商当前完全没有对应 event group，也要在
     # Pages/Bot 中可见、按 30/14 天节奏核验，并在预计日过后主动失效；不能成为
     # 写入成功却永远看不见的“黑洞记录”。
@@ -920,6 +1375,7 @@ def build():
         if watch_date < today and prev.get("status") != "expired":
             forecast_updates.append({"ticker": watch.get("ticker"), "etype": watch.get("etype"),
                                      "date": watch_date, "event_id": wk, "kind": "expired",
+                                     "verification_kind": "forecast",
                                      "watching": True, "watch_note": watch.get("note", ""),
                                      "srcs": [], "products": C.product_tags(watch.get("ticker", ""))})
             forecast_state[wk] = {"status": "expired", "date": watch_date, "last_seen": today,
@@ -948,6 +1404,7 @@ def build():
             "forecast": True, "manual_watch": True, "srcs": [],
             "products": C.product_tags(ticker), "contract_action": decision,
             "follow_up_mode": "verification", "reminder_state_suffix": "verification",
+            "verification_kind": "forecast",
             "filing_relevant": None,
             "risk": C.risk_note(ticker, etype, decision, forecast=True),
             "watching": True, "watch_note": watch.get("note", ""),
@@ -980,6 +1437,8 @@ def build():
     pending.sort(key=lambda x: x["days"])
     announced.sort(key=lambda x: x.get("decl") or "", reverse=True)
     forecasts.sort(key=lambda x: x["days"])
+    filing_updates.sort(key=lambda x: (x.get("transition_date") or "", x.get("ticker") or ""),
+                        reverse=True)
 
     # 人工确认:把已确认的冲突/空缺从报警里剔除(停推+网页 finalize),记入 resolved
     # 确认 = 人工已核实该事件 → 冲突和空缺**一起**消(和机器人 apply_acks 口径一致);
@@ -1063,7 +1522,8 @@ def build():
                 e["value_display"] = ""
 
     _apply_display_value_contract(
-        pending + forecasts + forecast_updates + contract_updates + round_alerts + announced
+        pending + forecasts + forecast_updates + contract_updates + filing_updates
+        + round_alerts + announced
     )
 
     # 所有展示面共用同一份引用契约：先把 event group 和每类 dict 都补全，
@@ -1071,7 +1531,8 @@ def build():
     for groups in all_groups.values():
         for g in groups:
             attach_event_references(g, refs_config, sec8k_index)
-    for e in pending + forecasts + forecast_updates + contract_updates + round_alerts + announced:
+    for e in (pending + forecasts + forecast_updates + contract_updates + filing_updates
+              + round_alerts + announced):
         attach_event_references(e, refs_config, sec8k_index)
 
     # ---- 人工介入闭环:每条异常挂多久没人确认(不豁免、不自动消失、每次跑都重报)----
@@ -1109,7 +1570,8 @@ def build():
     alerts = {"new": new_events, "rounds": round_alerts, "conflicts": conflicts,
               "gaps": gaps, "pending": pending, "announced": announced, "resolved": resolved,
               "forecasts": forecasts, "forecast_updates": forecast_updates,
-              "contract_updates": contract_updates, "review": review_summary}
+              "contract_updates": contract_updates, "filing_updates": filing_updates,
+              "review": review_summary}
     meta = {"generated": _now_label(), "business_date": today, **_provenance_meta()}
 
     # 生产采用原子发布：先确认 Lark 已送达（或本地合法静默）并保存去重状态，
@@ -1228,7 +1690,7 @@ def build():
         "coverage": coverage,
         "counts": {"pending": len(pending), "forecasts": len(forecasts), "new": len(new_events),
                    "conflicts": len(conflicts), "gaps": len(gaps),
-                   "announced": len(announced)},
+                   "announced": len(announced), "filing_updates": len(filing_updates)},
         "announced": announced,
         "recent_declares": recent_declares,
         # Pages 是公开数据；保留业务结果与时间，但不发布确认人的 open_id。
@@ -1242,6 +1704,7 @@ def build():
         "forecasts": forecasts,
         "forecast_updates": forecast_updates,
         "contract_updates": contract_updates,
+        "filing_updates": filing_updates,
         "new": [_grp_brief(g) for g in new_events],
         "conflicts": [_grp_brief(g) for g in conflicts],
         "gaps": [_grp_brief(g) for g in gaps],

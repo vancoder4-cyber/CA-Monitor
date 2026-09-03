@@ -39,6 +39,14 @@ def _label(e):
     event_name = e.get("event_label") or TYPE_LABEL.get(t, "事件")
     if e.get("forecast"):
         return f"{e['ticker']} {event_name} 🔎预测"
+    verification_kind = e.get("verification_kind")
+    if (verification_kind == "filing_terms" or
+            (not verification_kind and e.get("follow_up_mode") == "verification"
+             and t == "filing" and e.get("filing_relevant") is None)):
+        return f"{e['ticker']} {event_name} 条款核验"
+    if (verification_kind == "contract_threshold" or
+            (not verification_kind and e.get("follow_up_mode") == "verification")):
+        return f"{e['ticker']} {event_name} 合约门槛核验"
     if e.get("disputed") or e.get("value_verified") is False:
         return f"{e['ticker']} {event_name} ⚠️待核实"
     action = e.get("contract_action") or {}

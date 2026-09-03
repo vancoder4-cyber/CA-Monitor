@@ -379,6 +379,101 @@ def _av_ratio(factor):
 _CIK_CACHE = {}
 _CIK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "cik_map.json")
 
+# Foreign private issuers file Form 6-K instead of 8-K.  The submissions feed
+# does not expose 8-K-style Item codes for 6-K, and most 6-Ks are ordinary
+# earnings / monthly-sales / governance disclosures.  Only strong metadata
+# hints are therefore promoted to *review* (relevant=None); a human or a
+# structured source still has to confirm the actual corporate action.
+_SEC_6K_CA_PATTERNS = (
+    (r"\b(?:cash|quarterly|interim|special|final|annual)?\s*dividends?\b", "分红"),
+    (r"\b(?:cash|stock|share)\s+distributions?\b", "分派"),
+    (r"\b(?:stock|share)\s+splits?\b|\bsubdivision\s+of\s+shares?\b", "拆股"),
+    (r"\breverse\s+(?:stock|share)?\s*splits?\b|\b(?:share|stock)\s+consolidations?\b", "合股"),
+    (r"\bspin[ -]?offs?\b|\bspin[ -]?outs?\b", "分拆"),
+    (r"\bmergers?\b", "并购"),
+    (r"\bacquisitions?\b", "收购"),
+    (r"\btender\s+offers?\b", "要约收购"),
+    (r"\bschemes?\s+of\s+arrangement\b", "安排计划"),
+    (r"\bdelist(?:ing|ed)?\b", "退市"),
+    (r"\b(?:ticker|symbol)\s+changes?\b", "代码变更"),
+    (r"\bname\s+changes?\b", "名称变更"),
+    (r"\brights?\s+offerings?\b|\b(?:shareholders?|shares?|equity)\s+rights?\s+issues?\b|"
+     r"\brights?\s+issues?\s+(?:of|to)\s+(?:shares?|shareholders?)\b", "供股"),
+    (r"\b(?:share|stock|equity)\s+redemptions?\b|\bredemption\s+of\s+(?:shares?|stock|equity)\b", "股份赎回"),
+)
+
+# These phrases routinely occur in 6-K metadata but are not equity corporate
+# actions.  Remove them before matching so a bond redemption or financial
+# statement heading cannot create a false company-action review.
+_SEC_6K_NON_CA_PATTERNS = (
+    r"\bdistribution\s+agreements?\b",
+    r"\bconsolidat(?:ed|ion)\s+(?:of\s+)?financial\s+(?:results?|statements?|information)\b",
+    r"\bredemption\s+of\s+(?:(?:senior|subordinated|convertible)\s+)?(?:notes?|bonds?|debentures?)\b",
+    r"\bhuman\s+rights?\s+issues?\b",
+)
+
+
+def _sec_filing_note_relevance(form, items_str="", primary_document="",
+                               primary_description=""):
+    """Return ``(note, relevant)`` for a SEC filing.
+
+    ``True`` means the form metadata alone proves a structural action;
+    ``False`` means it is kept only in the raw SEC audit table; ``None`` means
+    a conservative 6-K metadata hint requires verification.  This tri-state
+    contract is consumed centrally by ``run.py`` and every renderer.
+    """
+    if form in ("8-K", "8-K/A"):
+        descs, relevant = C.describe_8k(items_str)
+        return f"{form} · " + ("、".join(descs) if descs else "重大事件"), relevant
+
+    if form in ("6-K", "6-K/A"):
+        # Filenames/descriptions vary (spaces, hyphens, underscores), but broad
+        # substring matching is unsafe: "Distribution Agreement",
+        # "Consolidation of Financial Results" and senior-note redemptions are
+        # common non-CA filings.  Match explicit equity-action phrases only.
+        haystack = re.sub(
+            r"[_\-]+", " ",
+            f"{primary_document or ''} {primary_description or ''}".lower(),
+        )
+        haystack = re.sub(r"\.[a-z0-9]{1,5}\b", " ", haystack)
+        haystack = re.sub(r"\s+", " ", haystack)
+        for pattern in _SEC_6K_NON_CA_PATTERNS:
+            haystack = re.sub(pattern, " ", haystack)
+        hits = []
+        for pattern, label in _SEC_6K_CA_PATTERNS:
+            if re.search(pattern, haystack) and label not in hits:
+                hits.append(label)
+        # Some issuers concatenate words in the primary-document filename.
+        # Keep a deliberately short allowlist for known unambiguous compounds;
+        # do not reintroduce generic distribution/consolidation/redemption.
+        compact = re.sub(r"[^a-z0-9]+", "", haystack)
+        compact = re.sub(r"humanrightsissues?", "", compact)
+        for token, label in (
+            ("dividendadjustment", "分红"),
+            ("stocksplit", "拆股"),
+            ("sharesplit", "拆股"),
+            ("reversestocksplit", "合股"),
+            ("reversesharesplit", "合股"),
+            ("tenderoffer", "要约收购"),
+            ("schemeofarrangement", "安排计划"),
+            ("symbolchange", "代码变更"),
+            ("namechange", "名称变更"),
+            ("rightsoffering", "供股"),
+            ("rightsissue", "供股"),
+        ):
+            if token in compact and label not in hits:
+                hits.append(label)
+        if hits:
+            return f"{form} · 疑似公司行动（{'、'.join(hits)}，待核实）", None
+        return f"{form} · 外国发行人普通备案", False
+
+    note = f"{form} · {C.SEC_FORMS_OF_INTEREST[form]}"
+    relevant_forms = {
+        "25", "25-NSE", "425", "S-4", "DEFM14A", "8-K12B", "15-12B",
+        "SC TO-I", "SC 14D9",
+    }
+    return note, form in relevant_forms
+
 def _load_cik_map():
     global _CIK_CACHE
     if _CIK_CACHE:
@@ -419,12 +514,10 @@ def fetch_sec(ticker: str, lookback_days: int) -> SourceResult:
         dates = recent.get("filingDate", [])
         accns = recent.get("accessionNumber", [])
         docs = recent.get("primaryDocument", [])
+        descriptions = recent.get("primaryDocDescription", [])
         items_all = recent.get("items", [])
         accepted_all = recent.get("acceptanceDateTime", [])
         cutoff = (business_today() - dt.timedelta(days=lookback_days)).isoformat()
-        # 非 8-K 的关注表格本身就与公司行动相关
-        _form_relevant = {"25", "25-NSE", "425", "S-4", "DEFM14A", "8-K12B", "15-12B",
-                          "SC TO-I", "SC 14D9"}
         evs = []
         for i, form in enumerate(forms):
             if form not in C.SEC_FORMS_OF_INTEREST:
@@ -434,19 +527,18 @@ def fetch_sec(ticker: str, lookback_days: int) -> SourceResult:
                 continue
             accn = accns[i].replace("-", "") if i < len(accns) else ""
             doc = docs[i] if i < len(docs) else ""
+            description = descriptions[i] if i < len(descriptions) else ""
             url = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{accn}/{doc}" if accn else ""
             items_str = items_all[i] if i < len(items_all) else ""
             accepted = (accepted_all[i] if i < len(accepted_all) else "") or ""
             accepted = accepted.replace("T", " ")[:16]   # 'YYYY-MM-DD HH:MM'
-            if form == "8-K":
-                descs, relevant = C.describe_8k(items_str)
-                note = "8-K · " + ("、".join(descs) if descs else "重大事件")
-            else:
-                note = f"{form} · {C.SEC_FORMS_OF_INTEREST[form]}"
-                relevant = form in _form_relevant
+            note, relevant = _sec_filing_note_relevance(
+                form, items_str, doc, description,
+            )
             evs.append(Event(ticker, "filing", "SEC", ex_date=fdate, note=note,
                              raw={"form": form, "url": url, "items": items_str,
-                                  "relevant": relevant, "accepted": accepted}))
+                                  "relevant": relevant, "accepted": accepted,
+                                  "primary_description": description}))
         return SourceResult("SEC", ticker, "ok", evs)
     except Exception as e:
         return SourceResult("SEC", ticker, "unavailable", detail=f"{e}")

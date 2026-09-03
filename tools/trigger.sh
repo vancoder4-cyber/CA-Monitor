@@ -57,7 +57,7 @@ for attempt in {1..30}; do
 import datetime as dt, json, os, sys
 d=json.load(sys.stdin)
 checks={
-  "schema_version": d.get("schema_version") == 3,
+  "schema_version": d.get("schema_version") == 4,
   "source_sha": d.get("source_sha") == os.environ["EXPECTED_SHA"],
   "run_id": str(d.get("run_id")) == os.environ["EXPECTED_RUN_ID"],
   "delivery_status": d.get("delivery_status") in ("sent", "legal_skip"),
@@ -82,5 +82,5 @@ print("{} · delivery={}".format(d.get("generated", "?"), d.get("delivery_status
 done
 [[ -n "$VERIFIED" ]] || { echo "❌ Action 已成功，但 Pages 150 秒内仍未发布本次可验证快照"; exit 1; }
 echo "✅ 完成。网页数据生成于:$VERIFIED"
-echo "   commit:$EXPECTED_SHA · run:$RUN_ID · schema:v3"
+echo "   commit:$EXPECTED_SHA · run:$RUN_ID · schema:v4"
 echo "   $SITE/"

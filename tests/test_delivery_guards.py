@@ -200,7 +200,7 @@ class LarkDeliveryTests(unittest.TestCase):
                 ensure_ascii=False,
             )
 
-        self.assertIn("单源核验 **1**", text)
+        self.assertIn("核验提醒 **1**", text)
         self.assertIn("单源待核实·勿执行", text)
         self.assertIn("单一数据源：Alpaca", text)
         self.assertNotIn("有正式临近催办事项", text)

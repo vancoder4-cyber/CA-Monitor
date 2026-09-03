@@ -11,6 +11,9 @@ import re
 import json
 import time
 import datetime as dt
+import threading
+import math
+from fractions import Fraction
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -31,6 +34,9 @@ class Event:
     declaration_date: Optional[str] = None
     amount: Optional[float] = None      # 分红金额
     ratio: Optional[str] = None         # 拆股比例 "num:den"
+    subtype: str = ""                   # cash_dividend | stock_dividend | split ...
+    amount_currency: str = ""           # USD 等；现金分红必须与参考价同币种
+    amount_unit: str = ""               # listed_security | additional_share_per_share
     note: str = ""                      # filing 描述等
     raw: dict = field(default_factory=dict)
 
@@ -83,6 +89,99 @@ _HDR_BROWSER = {
 }
 
 
+# 合约 3% 门槛使用的行情快照。每只标的抓取过程中记录前一完整交易日的
+# 未调整收盘价；同日优先 Tiingo，其次 yfinance。快照随缓存落盘，
+# build/各展示面不再自行联网取价。
+_REFERENCE_PRICES = {}
+_REFERENCE_PRICE_LOCK = threading.Lock()
+_REFERENCE_PRICE_PRIORITY = {"Tiingo": 0, "yfinance": 1}
+
+
+def clear_reference_price(ticker):
+    with _REFERENCE_PRICE_LOCK:
+        _REFERENCE_PRICES.pop(ticker.upper(), None)
+
+
+def replace_reference_prices(prices):
+    """以磁盘中的 last-known-good 快照初始化本轮；源短暂失败时不丢失有效价。"""
+    cleaned = {}
+    for ticker, snap in (prices or {}).items():
+        if not isinstance(snap, dict):
+            continue
+        value = _f(snap.get("value"))
+        date = _norm_date(snap.get("date"))
+        currency = str(snap.get("currency") or "").upper()
+        unit = str(snap.get("unit") or "")
+        if (value is None or not math.isfinite(value) or value <= 0 or not date
+                or not currency or not unit):
+            continue
+        cleaned[str(ticker).upper()] = {
+            "value": value,
+            "date": date,
+            "source": snap.get("source") or "",
+            "basis": snap.get("basis") or "previous_session_unadjusted_close",
+            "currency": currency,
+            "unit": unit,
+        }
+    with _REFERENCE_PRICE_LOCK:
+        _REFERENCE_PRICES.clear()
+        _REFERENCE_PRICES.update(cleaned)
+
+
+def all_reference_prices():
+    with _REFERENCE_PRICE_LOCK:
+        return {ticker: dict(snap) for ticker, snap in _REFERENCE_PRICES.items()}
+
+
+def record_reference_price(ticker, value, date, source):
+    value = _f(value)
+    date = _norm_date(date)
+    if value is None or not math.isfinite(value) or value <= 0 or not date:
+        return
+    candidate = {
+        "value": value,
+        "date": date,
+        "source": source,
+        "basis": "previous_session_unadjusted_close",
+        "currency": "USD",
+        "unit": "listed_security",
+    }
+    key = ticker.upper()
+    with _REFERENCE_PRICE_LOCK:
+        current = _REFERENCE_PRICES.get(key)
+        if (not current or date > current.get("date", "") or
+                (date == current.get("date") and
+                 _REFERENCE_PRICE_PRIORITY.get(source, 99) <
+                 _REFERENCE_PRICE_PRIORITY.get(current.get("source"), 99))):
+            _REFERENCE_PRICES[key] = candidate
+
+
+def reference_price(ticker):
+    with _REFERENCE_PRICE_LOCK:
+        current = _REFERENCE_PRICES.get(ticker.upper())
+        return dict(current) if current else None
+
+
+def _capture_yfinance_reference_price(ticker, yf_ticker):
+    """记录前一完整交易日收盘价；当天价格即使收盘后也不作为本轮分母。"""
+    try:
+        # 1mo 兼容 requirements 允许的 yfinance 0.2.40；旧版不接受自定义 10d。
+        history = yf_ticker.history(period="1mo", auto_adjust=False, actions=False)
+        rows = []
+        for stamp, close in history["Close"].items():
+            day = stamp.date() if hasattr(stamp, "date") else dt.date.fromisoformat(str(stamp)[:10])
+            value = _f(close)
+            if (day < business_today() and value is not None and
+                    math.isfinite(value) and value > 0):
+                rows.append((day.isoformat(), value))
+        if rows:
+            day, close = max(rows, key=lambda item: item[0])
+            record_reference_price(ticker, close, day, "yfinance")
+    except Exception:
+        # 行情缺失只会让合约判定进入 review，不应拖垮公司行动抓取。
+        return
+
+
 def _get_retry(url, headers=None, params=None, timeout=20, tries=3, backoff=1.5):
     """带重试退避的 GET(Nasdaq 等抽风接口用)。"""
     last = None
@@ -109,12 +208,15 @@ def fetch_yfinance(ticker: str) -> List[SourceResult]:
     except Exception as e:
         return [SourceResult("yfinance", ticker, "unavailable", detail=f"{e}")]
 
+    _capture_yfinance_reference_price(ticker, t)
+
     # 分红
     dev = []
     try:
         for d, amt in divs.items():
             dev.append(Event(ticker, "dividend", "yfinance",
-                             ex_date=_norm_date(d), amount=_f(amt)))
+                             ex_date=_norm_date(d), amount=_f(amt), subtype="cash_dividend",
+                             amount_currency="USD", amount_unit="listed_security"))
     except Exception as e:
         out.append(SourceResult("yfinance", ticker, "unavailable", detail=f"div:{e}"))
     else:
@@ -136,14 +238,41 @@ def fetch_yfinance(ticker: str) -> List[SourceResult]:
 def _ratio_from_float(f):
     """yfinance 用浮点表示拆股(4.0=4:1, 0.1=1:10)。转成 num:den。"""
     try:
-        f = float(f)
+        value = float(f)
     except (TypeError, ValueError):
         return None
-    if f <= 0:
+    if not math.isfinite(value) or value <= 0:
         return None
-    if f >= 1:
-        return f"{int(round(f))}:1"
-    return f"1:{int(round(1/f))}"
+    # 不能 round 成整数：1.05 是 21:20（约 4.76% 价格影响），不是 1:1。
+    frac = Fraction(str(value)).limit_denominator(1_000_000)
+    return f"{frac.numerator}:{frac.denominator}"
+
+
+def _ratio_from_pair(new, old):
+    """把供应商的 new_rate / old_rate 保真归一化成整数比。"""
+    try:
+        ratio = Fraction(str(new)) / Fraction(str(old))
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+    if ratio <= 0:
+        return None
+    ratio = ratio.limit_denominator(1_000_000)
+    return f"{ratio.numerator}:{ratio.denominator}"
+
+
+def normalize_ratio(value):
+    """确认入口既接受完整 new:old，也兼容旧式单一 split factor。"""
+    if value is None:
+        return None
+    text = str(value).strip().replace("：", ":")
+    match = re.fullmatch(
+        r"(\d+(?:\.\d+)?)\s*(?::|-|for)\s*(\d+(?:\.\d+)?)",
+        text,
+        re.I,
+    )
+    if match:
+        return _ratio_from_pair(match.group(1), match.group(2))
+    return _ratio_from_float(text)
 
 
 # ---------------- 2) FMP(stable 接口)----------------
@@ -165,7 +294,8 @@ def fetch_fmp(ticker: str, key: str) -> List[SourceResult]:
                              record_date=_norm_date(x.get("recordDate")),
                              pay_date=_norm_date(x.get("paymentDate")),
                              declaration_date=_norm_date(x.get("declarationDate")),
-                             amount=_f(x.get("dividend")), raw=x)
+                             amount=_f(x.get("dividend")), subtype="cash_dividend",
+                             amount_currency="USD", amount_unit="listed_security", raw=x)
                        for x in data]
                 out.append(SourceResult("FMP", ticker, "ok", evs))
     except Exception as e:
@@ -183,7 +313,7 @@ def fetch_fmp(ticker: str, key: str) -> List[SourceResult]:
                 evs = []
                 for x in data:
                     num, den = x.get("numerator"), x.get("denominator")
-                    ratio = f"{int(num)}:{int(den)}" if num and den else None
+                    ratio = _ratio_from_pair(num, den) if num and den else None
                     evs.append(Event(ticker, "split", "FMP",
                                      ex_date=_norm_date(x.get("date")), ratio=ratio, raw=x))
                 out.append(SourceResult("FMP", ticker, "ok", evs))
@@ -217,7 +347,8 @@ def fetch_alphavantage(ticker: str, key: str, do_splits: bool = True) -> List[So
                          record_date=_norm_date(x.get("record_date")),
                          pay_date=_norm_date(x.get("payment_date")),
                          declaration_date=_norm_date(x.get("declaration_date")),
-                         amount=_f(x.get("amount")), raw=x)
+                         amount=_f(x.get("amount")), subtype="cash_dividend",
+                         amount_currency="USD", amount_unit="listed_security", raw=x)
                    for x in j.get("data", [])]
             out.append(SourceResult("AlphaVantage", ticker, "ok", evs))
     except Exception as e:
@@ -340,7 +471,8 @@ def fetch_nasdaq_dividends(ticker: str) -> SourceResult:
                              record_date=_norm_date_us(x.get("recordDate")),
                              pay_date=_norm_date_us(x.get("paymentDate")),
                              declaration_date=_norm_date_us(x.get("declarationDate")),
-                             amount=_money(x.get("amount")), raw=x))
+                             amount=_money(x.get("amount")), subtype="cash_dividend",
+                             amount_currency="USD", amount_unit="listed_security", raw=x))
         return SourceResult("Nasdaq", ticker, "ok", evs)
     except Exception as e:
         return SourceResult("Nasdaq", ticker, "unavailable", detail=f"{e}")
@@ -393,16 +525,26 @@ def fetch_tiingo(ticker: str, token: str) -> List[SourceResult]:
             return [SourceResult("Tiingo", ticker, "unavailable", detail=f"HTTP {r.status_code}")]
         data = r.json()
         divs, splits = [], []
+        completed_prices = []
         for x in data:
             d = _norm_date(x.get("date"))
+            close = _f(x.get("close"))
+            if (d and d < business_today().isoformat() and close is not None and
+                    math.isfinite(close) and close > 0):
+                completed_prices.append((d, close))
             if x.get("divCash"):
                 amt = _f(x.get("divCash"))
                 if amt and amt > 0:
-                    divs.append(Event(ticker, "dividend", "Tiingo", ex_date=d, amount=amt, raw=x))
+                    divs.append(Event(ticker, "dividend", "Tiingo", ex_date=d, amount=amt,
+                                      subtype="cash_dividend", amount_currency="USD",
+                                      amount_unit="listed_security", raw=x))
             sf = x.get("splitFactor")
             if sf and float(sf) != 1.0:
                 splits.append(Event(ticker, "split", "Tiingo", ex_date=d,
                                     ratio=_ratio_from_float(sf), raw=x))
+        if completed_prices:
+            price_day, close = max(completed_prices, key=lambda item: item[0])
+            record_reference_price(ticker, close, price_day, "Tiingo")
         return [SourceResult("Tiingo", ticker, "ok", divs),
                 SourceResult("Tiingo", ticker, "ok", splits)]
     except Exception as e:
@@ -449,26 +591,35 @@ def prefetch_alpaca(tickers, key_id, secret):
                     if not sym:
                         continue
                     if "dividend" in kind:
+                        subtype = "stock_dividend" if "stock" in kind else "cash_dividend"
+                        amount_unit = ("additional_share_per_share" if subtype == "stock_dividend"
+                                       else "listed_security")
                         bt.setdefault(sym, []).append(Event(
                             sym, "dividend", "Alpaca",
                             ex_date=_norm_date(x.get("ex_date")),
                             record_date=_norm_date(x.get("record_date")),
                             pay_date=_norm_date(x.get("payable_date")),
                             declaration_date=_norm_date(x.get("declaration_date")),
-                            amount=_f(x.get("rate")), raw=x))
+                            amount=_f(x.get("rate")), subtype=subtype,
+                            amount_currency=(x.get("currency") or "USD") if subtype == "cash_dividend" else "",
+                            amount_unit=amount_unit, raw=x))
                     elif "split" in kind:
                         nd = x.get("new_rate"); od = x.get("old_rate")
-                        ratio = f"{int(float(nd))}:{int(float(od))}" if nd and od else None
+                        ratio = _ratio_from_pair(nd, od) if nd and od else None
                         bt.setdefault(sym, []).append(Event(
                             sym, "split", "Alpaca",
                             ex_date=_norm_date(x.get("ex_date") or x.get("process_date")),
                             ratio=ratio, raw=x))
-                    else:  # merger / spinoff / name_change / symbol_change
+                    else:  # merger / spinoff / name_change / symbol_change / unknown
+                        known_structural = any(token in kind for token in (
+                            "merger", "spin_off", "spinoff", "name_change", "symbol_change",
+                            "redemption", "rights", "worthless", "liquidation",
+                        ))
                         bt.setdefault(sym, []).append(Event(
                             sym, "filing", "Alpaca",
                             ex_date=_norm_date(x.get("process_date") or x.get("effective_date")),
                             note=f"{kind} · {x.get('target_symbol','') or x.get('new_symbol','')}".strip(" ·"),
-                            raw=x))
+                            raw={**x, "relevant": True if known_structural else None}))
             page_token = j.get("next_page_token")
             if not page_token:
                 break
@@ -577,6 +728,9 @@ def fetch_finx(ticker: str, user: str, pwd: str, base: str = "") -> List[SourceR
                 pay_date=_norm_date(_pick(x, "dividendPaymentDate", "divPayDate", "payDate")),
                 declaration_date=_norm_date(_pick(x, "annoucementDate", "announcementDate", "declarationDate")),
                 amount=_f(_pick(x, "dividendAmount", "divRate", "amount")),
+                subtype="cash_dividend",
+                amount_currency="USD",
+                amount_unit="listed_security",
                 raw=x))
         out.append(SourceResult("FINX", ticker, "ok", evs))
     except Exception as e:
@@ -615,7 +769,7 @@ def fetch_finx(ticker: str, user: str, pwd: str, base: str = "") -> List[SourceR
                     ticker, "filing", "FINX",
                     ex_date=_norm_date(_pick(x, "startDate", "annoucementDate", "announcementDate", "lastUpdate")),
                     note=f"FINX · {desc}",
-                    raw=x))
+                    raw={**x, "relevant": True if et == "MA" else None}))
             out.append(SourceResult("FINX", ticker, "ok", evs))
         except Exception as e:
             out.append(SourceResult("FINX", ticker, "unavailable", detail=f"{et}:{e}"))

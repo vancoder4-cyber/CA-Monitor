@@ -8,6 +8,7 @@
 |---|---|
 | 指令 / Bot 文案 | `bot/cards.py`、`bot/bot.py`、根 `README.md`、`bot/README.md`、`CHANGELOG.md` |
 | 事件字段 / 取值 / 门禁 | `run.py` 产出 ↔ `report.py` 网页 ↔ `notify_lark.py` 推送 ↔ `bot/cards.py` 交互卡 ↔ 月历 / `calendar_events` |
+| 合约公司行动 / 3% 门槛 / 参考价 | `contract_policy.py`、行情快照缓存、pending/rounds、网页、定时 Lark、Bot 今日/本周/新公告/临近/日历/查代码、`CHANGELOG.md` |
 | 分红核对链接 / 官方宣告 | `refs.json`、单标的查询、今日/本周、临近催办、预测、日历、公告、网页、定时推送、确认留痕 |
 | 标的数 / 代码别名 / 数据源 / 时点 | `config.py`、Pages `ticker_aliases`、根 README、`about_card`、操作手册、群 briefing、workflow |
 | Railway / Bot 运行方式 | `bot/README.md`、环境变量、心跳、生产验证步骤 |
@@ -26,8 +27,10 @@
 
 - 未见宣告日且单源：`预测观察·不执行`；按 30 天首次知会、14 天内每日推送**数据核验提醒**，但不能进入正式执行催办或运营动作。
 - 有官方宣告或双源确认，但仍有未确认冲突：保持异常，不能进入催办。
-- 只有一个采集源的金额：默认门禁；逐项核验的 `CompanyIR` 官方覆盖层可以显示正式值，但必须展示官方链接和来源。
+- 只有一个采集源的金额：默认门禁；逐项核验的 `CompanyIR` 只有在自身带有对应金额/比例时才能验证该数值，只有日期的官方覆盖不能替供应商单源金额背书。
 - `reconcile.pick_value()` 是字段取值唯一真相；检查是否又出现了 `next((v.get(...` 的平行取值逻辑。
+- 公司行动展示与合约操作必须分离：现金分红、送股、拆股、合股等均按估算价格影响判断；`>3%` 才是 `required`，恰好 3% 和以下均为 `not_required`；缺价/日期、币种或证券单位不一致、过期价、未过金额门禁为 `review`，绝不能误写无需操作。
+- contract-only + `not_required` 仍应出现在日历/新公告/查代码，并明确「合约：本次无需操作」，但不得进入 `rounds` 或触发正式 @；现货+合约则保留现货催办。
 
 ## 4. 本地自动检查（必须全绿）
 
@@ -35,7 +38,7 @@
 python3 tools/check_commands.py
 python3 -m unittest discover -s tests -v
 python3 tools/check_surface_consistency.py
-python3 -m py_compile run.py reconcile.py report.py notify_lark.py bot/cards.py bot/ack.py bot/bot.py
+python3 -m py_compile run.py reconcile.py contract_policy.py sources.py report.py notify_lark.py bot/cards.py bot/ack.py bot/bot.py
 python3 run.py build       # 有缓存时验证真实产物；会跳过未配置的 Lark webhook
 ```
 
@@ -53,7 +56,7 @@ python3 run.py build       # 有缓存时验证真实产物；会跳过未配置
 
 1. **GitHub Actions**：手动 Run workflow 或等待下一 ET 扫描窗口；分别确认 `build` / `deploy` 和 Lark 投递结果，不能只看 workflow 总体颜色。单纯 `git push` 不会立即刷新 Pages / 推送。
 2. **Pages**：打开根地址，检查 `data.json` 生成时间与本次 Actions 一致，并确认 `changelog[0]` 等于本次 `CHANGELOG.md` 顶部条目后，才可称 Bot「最近更新」已刷新；资产覆盖应为现货 62 / 合约 39 / 共 81 / 监控 75，且仅从现货移除、后续以合约重上的标的应正确显示「仅合约」；`ticker_aliases` 应包含 `BBX → BB`。不要手工修改构建产物 `site_data.json`。
-3. **定时推送**：下一次有内容的运行检查官方链接、第三方链接、预测/催办状态和 @ 名单；单源应明确写「核验、勿执行」且不能触发正式催办 @；15–29 天静默期不应收到只有统计没有明细的卡片。
+3. **定时推送**：下一次有内容的运行检查官方链接、第三方链接、预测/催办状态和 @ 名单；单源与合约门槛 review 应明确写「核验、勿执行」且不能触发正式催办 @；合约 ≤3% 应正常首报并写「本次无需操作」，但不得进入 30/14 日重复催办；15–29 天静默期不应收到只有统计没有明细的卡片。
 4. **Railway Bot**：确认已部署到同一提交/镜像；在群里测试 `帮助`、`查 AAPL`、`查 BBX`（应返回 `BB`）、`查 BRK-B`、`查 SKHY`、`临近催办`、`观察预测`。Pages 更新不代表 Railway 已更新。
 
 ## 一句话流程

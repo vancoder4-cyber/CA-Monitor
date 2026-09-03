@@ -5,6 +5,7 @@
 data/cache/
 data/state.json
 data/cik_map.json
+data/reference_prices.json
 data/*.log
 data/latest_digest.txt
 dashboard.html

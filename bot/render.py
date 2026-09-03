@@ -62,6 +62,12 @@ def _label(e):
     return f"{e['ticker']} {(e.get('note') or '公告')[:8]}"
 
 
+def _is_visible_event(event):
+    """PNG 只绘制真正的公司行动，不绘制普通 SEC 备案。"""
+    return not (event.get("etype") == "filing" and
+                event.get("filing_relevant") is False)
+
+
 def draw_month(events, out_path="/tmp/calendar.png", year=None, month=None, business_date=None):
     """events: [{ticker, etype, date 'YYYY-MM-DD', amount, ratio, note, products}]
     只画 year-month(默认当月)当月有除息/生效/公告日的事件。"""
@@ -75,6 +81,10 @@ def draw_month(events, out_path="/tmp/calendar.png", year=None, month=None, busi
     # 收集当月事件 -> {day: [event,...]}
     by_day = {}
     for e in events:
+        # Pages 会先过滤；图片渲染器再做一道边界保护，避免历史
+        # 快照把财报/高管变动等普通 8-K 画成「并购/退市」。
+        if not _is_visible_event(e):
+            continue
         d = e.get("date")
         try:
             dd = dt.date.fromisoformat(d)

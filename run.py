@@ -402,6 +402,12 @@ def _product_fields(g):
     }
 
 
+def _is_routine_filing(event):
+    """已明确为普通备案的 filing 只进 SEC 原文表，不进 CA 流。"""
+    return (getattr(event, "etype", None) == "filing" and
+            getattr(event, "filing_relevant", None) is False)
+
+
 def _event_value_fields(g):
     amount = getattr(g, "selected_amount", None)
     ratio = getattr(g, "selected_ratio", None)
@@ -753,9 +759,13 @@ def build():
                 seen[s] = today
                 if not first_time_ticker:
                     new_events.append(g)
-            if g.conflicts:
+            # 普通 SEC 备案仅保留在原文表，不应进入公司行动的
+            # 数据异常队列，否则即使日历/推送做了过滤，review 计数
+            # 仍会把「财报/高管变动」算成待处理公司行动。
+            is_routine_filing = _is_routine_filing(g)
+            if g.conflicts and not is_routine_filing:
                 conflicts.append(g)
-            if g.gaps:
+            if g.gaps and not is_routine_filing:
                 gaps.append(g)
 
             def _pk(f, _g=g):
@@ -793,8 +803,7 @@ def build():
                                       "products": C.product_tags(g.ticker),
                                       **_product_fields(g)})
 
-            if (g.is_future and g.days_to is not None and
-                    (g.etype != "filing" or getattr(g, "filing_relevant", None) is not False)):
+            if g.is_future and g.days_to is not None and not _is_routine_filing(g):
                 # 持续展示所有正式未来公司行动；普通 SEC 备案只留在原文表，
                 # 结构性/未知公司行动则按中央产品结论进入执行或核验节奏。
                 _decl = _pk("declaration_date")
@@ -963,8 +972,7 @@ def build():
     cutoff = (today_d - dt.timedelta(days=30)).isoformat()
     new_events = [g for g in new_events
                   if (g.anchor_date or "") >= cutoff and sig(g) not in forecast_sigs
-                  and not (g.etype == "filing" and
-                           getattr(g, "filing_relevant", None) is False)]
+                  and not _is_routine_filing(g)]
     new_events.sort(key=lambda g: g.anchor_date or "", reverse=True)
     round_alerts.sort(key=lambda x: x["days"])
     conflicts.sort(key=lambda g: g.anchor_date or "", reverse=True)
@@ -1134,7 +1142,7 @@ def build():
             if g.etype == "filing":
                 # 只过滤中央判定已明确是普通备案的记录。Alpaca/FINX 的英文
                 # merger/spin_off/name_change 及未知结构性行动必须持续留在日历供核验。
-                if getattr(g, "filing_relevant", None) is False:
+                if _is_routine_filing(g):
                     continue
             elif g.etype not in ("dividend", "split"):
                 continue

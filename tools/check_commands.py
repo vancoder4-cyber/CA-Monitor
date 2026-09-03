@@ -52,7 +52,7 @@ for c in cards.COMMANDS:
 # ⑥ CHANGELOG.md 存在且可解析(至少一条 `## ` 条目)
 changelog_path = os.path.join(ROOT, "CHANGELOG.md")
 if not os.path.exists(changelog_path):
-    errors.append("[changelog] 缺少 CHANGELOG.md(每次 push 必须记一条)")
+    errors.append("[changelog] 缺少 CHANGELOG.md(每次修复完成时必须立即记录)")
 else:
     cl = open(changelog_path, encoding="utf-8").read()
     if not re.search(r"^## ", cl, re.M):

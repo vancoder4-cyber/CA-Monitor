@@ -1,0 +1,37 @@
+name: CA Monitor CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            bot/requirements.txt
+      - name: 安装根服务与 Bot 依赖
+        run: pip install -r requirements.txt -r bot/requirements.txt
+      - name: Python 与跨展示面回归
+        run: |
+          python -m py_compile run.py reconcile.py contract_policy.py sources.py report.py notify_lark.py bot/cards.py bot/ack.py bot/bot.py bot/render.py
+          python -m unittest discover -s tests -v
+          python tools/check_commands.py
+          python tools/check_surface_consistency.py
+      - name: 最近更新变更门禁
+        if: ${{ github.event_name == 'pull_request' }}
+        run: python tools/check_changelog_update.py --base "${{ github.event.pull_request.base.sha }}"
+      - name: Bot 容器构建 smoke
+        run: docker build -t ca-monitor-bot-smoke ./bot

@@ -41,6 +41,16 @@ def _label(e):
         return f"{e['ticker']} {event_name} 🔎预测"
     if e.get("disputed") or e.get("value_verified") is False:
         return f"{e['ticker']} {event_name} ⚠️待核实"
+    action = e.get("contract_action") or {}
+    status = action.get("status")
+    products = e.get("products") or []
+    if status == "not_required":
+        scope = "现货处理·合约无需" if "现货" in products else "合约无需"
+        return f"{e['ticker']} {event_name} {scope}"
+    if status == "required":
+        return f"{e['ticker']} {event_name} 合约需操作"
+    if status == "review":
+        return f"{e['ticker']} {event_name} 合约待核实"
     if t == "dividend":
         value = e.get("value_display")
         if not value and e.get("amount") is not None:  # 兼容旧 Pages 数据

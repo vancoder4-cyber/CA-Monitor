@@ -12,6 +12,7 @@ import os
 import json
 import base64
 import datetime as dt
+import hashlib
 import re
 
 import requests
@@ -82,15 +83,21 @@ def _load_refs_ir():
         return {}
 
 
-def authoritative_source(ticker, etype, refs_ir=None):
+def _sec_company_url(ticker):
+    return ("https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany"
+            f"&ticker={ticker}&type=&dateb=&owner=include&count=40")
+
+
+def authoritative_source(ticker, etype, refs_ir=None, src_url=""):
     """给一条确认自动带出『最权威的核对来源』链接,确认人点开核对即可。
-    优先级:公司 IR(refs,最权威)→ SEC EDGAR 该标的全部备案(8-K 普通股 / 6-K 外国发行人 ADR 都能覆盖)。
+    分红优先使用公司分红 IR；拆股/filing 不能复用分红页，优先本事件原文，
+    再回退 SEC EDGAR 该标的全部备案(8-K 普通股 / 6-K 外国发行人 ADR 都能覆盖)。
     不用 Nasdaq 分红页 —— 它是 JS 渲染、常空白,且不覆盖 NYSE/ADR(HPE、BABA 都点不出)。"""
-    ir = (refs_ir if refs_ir is not None else _load_refs_ir()).get(ticker) or ""
-    # EDGAR 用 ticker= 参数直接按代码解析到公司,列出全部 filing(含 8-K/6-K),始终有内容
-    edgar = (f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany"
-             f"&ticker={ticker}&type=&dateb=&owner=include&count=40")
-    return ir or edgar
+    if etype == "dividend":
+        ir = (refs_ir if refs_ir is not None else _load_refs_ir()).get(ticker) or ""
+        if ir:
+            return ir
+    return src_url or _sec_company_url(ticker)
 
 
 def quick_look(ticker, etype):
@@ -108,11 +115,14 @@ def verify_link(ticker, etype, src_url="", refs_ir=None):
       T3 聚合页 stockanalysis(服务端渲染,美股+ADR 都显示 USD 分红历史,快速核对)
     注意:ADR 的 USD/ADR 是存托行折算,SEC 里没有,所以那种情况 T3 反而比 SEC 有用。"""
     tk = ticker or ""
-    ir = (refs_ir if refs_ir is not None else _load_refs_ir()).get(tk) or ""
-    if ir:
-        return ir, "公司IR·最权威", 1
+    if etype == "dividend":
+        ir = (refs_ir if refs_ir is not None else _load_refs_ir()).get(tk) or ""
+        if ir:
+            return ir, "公司IR·最权威", 1
     if src_url:
         return src_url, "SEC原文", 2
+    if etype in ("split", "filing"):
+        return _sec_company_url(tk), "SEC·公司备案", 2
     return quick_look(tk, etype), "聚合页·第三方(快速核对)", 3
 
 
@@ -151,7 +161,8 @@ def get_ack_log(limit=None):
         return []
 
 
-def add_ack(ticker, value=None, etype=None, date=None, by="lark", by_name="", note="", *, refs_ir=None):
+def add_ack(ticker, value=None, etype=None, date=None, by="lark", by_name="", note="", *,
+            refs_ir=None, src_url=""):
     """记录一条确认。写两处:留痕库(只追加)+ 生效值(去重)。返回 (ok, msg)。"""
     if not GH_TOKEN:
         return False, "未配置 GH_TOKEN —— 请在 Railway 加一个对本仓库 Contents 有写权限的细粒度 PAT"
@@ -171,7 +182,7 @@ def add_ack(ticker, value=None, etype=None, date=None, by="lark", by_name="", no
             "ticker": ticker, "etype": etype, "date": date,
             "value": value, "prev_value": prev,
             "by_name": by_name or "", "by": by or "",
-            "source": authoritative_source(ticker, etype, refs_ir=refs_ir),
+            "source": authoritative_source(ticker, etype, refs_ir=refs_ir, src_url=src_url),
             "note": (note or "").strip(),
             "action": "confirm",
         }
@@ -189,14 +200,16 @@ def add_ack(ticker, value=None, etype=None, date=None, by="lark", by_name="", no
                      "by": by, "by_name": by_name or "", "at": now.isoformat(timespec="seconds")})
         rack = _put_file(ACK_PATH, data, sha, f"ack: {ticker} {value if value is not None else ''}".strip())
         if rack.status_code not in (200, 201):
-            return True, "已留痕,但生效值写入失败(报警可能未即时消解),稍后会自动重试口径。"
+            return False, (f"确认仅留痕、未生效：生效值写入失败 HTTP {rack.status_code}: "
+                           f"{rack.text[:140]}；报警不会解除，请重试。")
         chg = f"(原 {prev} → {value})" if prev not in (None, "", value) else ""
         return True, f"已记录确认并留痕{chg}"
     except Exception as e:
         return False, f"确认写入异常: {e}"
 
 
-def add_forecast(ticker, etype, date, by="lark", by_name="", note="", *, refs_ir=None):
+def add_forecast(ticker, etype, date, by="lark", by_name="", note="", *, refs_ir=None,
+                 src_url=""):
     """把单源预测置为「观察中」。
 
     观察不会把事件当成已确认公司行动：流水线仍会持续抓取，后续有宣告日/第二源时自动升级。
@@ -219,14 +232,15 @@ def add_forecast(ticker, etype, date, by="lark", by_name="", note="", *, refs_ir
                     "at_utc": now.isoformat(timespec="seconds"), "ticker": ticker,
                     "etype": etype, "date": date, "value": None, "prev_value": None,
                     "by_name": by_name or "", "by": by or "",
-                    "source": authoritative_source(ticker, etype, refs_ir=refs_ir),
+                    "source": authoritative_source(ticker, etype, refs_ir=refs_ir, src_url=src_url),
                     "note": (note or "").strip(), "action": "watch_forecast"})
         rlog = _put_file(LOG_PATH, log, log_sha, f"forecast-watch-log: {ticker} @{date}")
         if rlog.status_code not in (200, 201):
             return False, f"留痕写入失败 HTTP {rlog.status_code}: {rlog.text[:140]}"
         r = _put_file(FORECAST_PATH, data, sha, f"forecast-watch: {ticker} @{date}")
         if r.status_code not in (200, 201):
-            return True, "观察已留痕，但观察状态写入失败；稍后请重试。"
+            return False, (f"观察仅留痕、未生效：观察状态写入失败 HTTP {r.status_code}: "
+                           f"{r.text[:140]}；请重试。")
         return True, ("已标记为预测观察：临近时会推数据核验提醒，但不会进入正式执行催办；"
                       "出现公司宣告或第二个独立源时会自动升级并推送。")
     except Exception as e:
@@ -237,7 +251,7 @@ REQ_PATH = "requests.md"
 
 
 def add_request(text, by=""):
-    """把需求追加到 repo 的 requests.md(供负责人汇总)。返回 (ok, msg)。"""
+    """把需求追加到公开 repo 的 requests.md；不持久化 Lark 身份。"""
     if not GH_TOKEN:
         return False, "未配置 GH_TOKEN —— 请在 Railway 加一个对本仓库 Contents 有写权限的细粒度 PAT"
     try:
@@ -250,10 +264,17 @@ def add_request(text, by=""):
         else:
             content = "# 需求提报汇总\n\n> 群里 @机器人 + 「需求 内容」自动追加到这里。\n"
             sha = None
-        ts = dt.datetime.now(dt.timezone.utc).isoformat(timespec="minutes")
-        content += f"\n- [ ] {ts} · 提报人 {by or '未知'}\n  {text}\n"
+        request_time = dt.datetime.now(dt.timezone.utc)
+        ts = request_time.isoformat(timespec="minutes")
+        request_id = hashlib.sha256(
+            f"{request_time.isoformat(timespec='microseconds')}\0{text}".encode("utf-8")
+        ).hexdigest()[:10]
+        # requests.md 位于公开仓库。只保存匿名编号与需求正文，不写 open_id、姓名，
+        # commit subject 也不能携带用户原文，避免 Git 历史形成第二份敏感副本。
+        content += f"\n- [ ] {ts} · 编号 {request_id}\n  {text}\n"
         new_content = base64.b64encode(content.encode("utf-8")).decode("utf-8")
-        body = {"message": f"需求提报: {text[:40]}", "content": new_content, "branch": GH_BRANCH}
+        body = {"message": f"request: add bot submission {request_id}",
+                "content": new_content, "branch": GH_BRANCH}
         if sha:
             body["sha"] = sha
         r = requests.put(f"{API}/repos/{GH_REPO}/contents/{REQ_PATH}",

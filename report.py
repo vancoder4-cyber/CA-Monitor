@@ -2,8 +2,10 @@
 """生成 HTML 面板 + 文本预警 digest + 月历视图。"""
 import os
 import html
+import re
 import calendar as _cal
 import datetime as dt
+from urllib.parse import urlsplit
 import config as C
 import reconcile as R
 from business_time import today as business_today
@@ -18,24 +20,150 @@ def _business_date(meta=None):
         return business_today()
 
 
-def load_changelog():
-    """解析 CHANGELOG.md -> [{head, items:[...]}, ...](最新在前)。"""
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "CHANGELOG.md")
+def _event_key(event):
+    """跨展示面统一事件 ID；同日多份 filing 不能按 ticker/date 互相吞掉。"""
+    if isinstance(event, dict):
+        return event.get("event_id") or (
+            event.get("ticker"), event.get("etype"), event.get("date")
+        )
+    return getattr(event, "event_id", None) or (
+        getattr(event, "ticker", None),
+        getattr(event, "etype", None),
+        getattr(event, "anchor_date", None),
+    )
+
+
+def _is_routine_filing(event):
+    if isinstance(event, dict):
+        return event.get("etype") == "filing" and event.get("filing_relevant") is False
+    return (getattr(event, "etype", None) == "filing" and
+            getattr(event, "filing_relevant", None) is False)
+
+
+def _visible_alert_items(alerts):
+    """与定时 Lark 一致：同一事件在报警区只展示最高优先级的一次。"""
+    claimed = set()
+
+    def take(items):
+        visible = []
+        for item in items or []:
+            if _is_routine_filing(item):
+                continue
+            key = _event_key(item)
+            if key in claimed:
+                continue
+            claimed.add(key)
+            visible.append(item)
+        return visible
+
+    actionable_rounds = [
+        item for item in alerts.get("rounds", [])
+        if not (isinstance(item, dict) and item.get("follow_up_mode") == "none")
+    ]
+    return {
+        "rounds": take(actionable_rounds),
+        "forecast_updates": take(alerts.get("forecast_updates", [])),
+        "contract_updates": take(alerts.get("contract_updates", [])),
+        "announced": take(alerts.get("announced", [])),
+        "new": take(alerts.get("new", [])),
+    }
+
+
+def load_changelog(path=None):
+    """解析 CHANGELOG.md；保留 ``items`` 平铺兼容字段及缩进列表树。"""
+    path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "CHANGELOG.md")
     if not os.path.exists(path):
         return []
-    entries, cur = [], None
+    entries, cur, stack = [], None, []
     with open(path, encoding="utf-8") as f:
         for line in f:
             s = line.rstrip()
             if s.startswith("## "):
                 if cur:
                     entries.append(cur)
-                cur = {"head": s[3:].strip(), "items": []}
-            elif s.startswith("- ") and cur is not None:
-                cur["items"].append(s[2:].strip())
+                cur = {"head": s[3:].strip(), "items": [], "tree": []}
+                stack = [(-1, cur["tree"])]
+                continue
+            match = re.match(r"^([ \t]*)[-*+]\s+(.*)$", s)
+            if match and cur is not None:
+                indent = len(match.group(1).expandtabs(4))
+                text = match.group(2).strip()
+                node = {"text": text, "children": []}
+                while len(stack) > 1 and indent <= stack[-1][0]:
+                    stack.pop()
+                stack[-1][1].append(node)
+                stack.append((indent, node["children"]))
+                # 旧调用仍可把 items 当作字符串列表消费；树只供网页保留层级。
+                cur["items"].append(text)
     if cur:
         entries.append(cur)
     return entries
+
+
+def _inline_markdown_html(value):
+    """安全渲染更新日志需要的少量行内 Markdown。"""
+    rendered = html.escape(str(value or ""), quote=True)
+    placeholders = []
+
+    def stash(markup):
+        token = f"\x00CHANGELOG{len(placeholders)}\x00"
+        placeholders.append((token, markup))
+        return token
+
+    # 先整体 escape，再把受控语法替换为固定标签；代码中的 Markdown 不再二次解释。
+    rendered = re.sub(
+        r"`([^`\n]+)`",
+        lambda match: stash(f"<code>{match.group(1)}</code>"),
+        rendered,
+    )
+
+    def link(match):
+        label, escaped_url = match.group(1), match.group(2)
+        raw_url = html.unescape(escaped_url).strip()
+        try:
+            parsed = urlsplit(raw_url)
+        except ValueError:
+            return match.group(0)
+        if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
+            return match.group(0)
+        safe_url = html.escape(raw_url, quote=True)
+        return stash(
+            f'<a href="{safe_url}" target="_blank" rel="noopener noreferrer">{label}</a>'
+        )
+
+    rendered = re.sub(r"\[([^\]\n]+)\]\(([^)\s]+)\)", link, rendered)
+    rendered = re.sub(r"\*\*([^*\n]+)\*\*", r"<strong>\1</strong>", rendered)
+    for token, markup in placeholders:
+        rendered = rendered.replace(token, markup)
+    return rendered
+
+
+def _changelog_items_html(entry):
+    def render_nodes(nodes):
+        if not nodes:
+            return ""
+        return "<ul>" + "".join(
+            f"<li>{_inline_markdown_html(node.get('text', ''))}"
+            f"{render_nodes(node.get('children') or [])}</li>"
+            for node in nodes
+        ) + "</ul>"
+
+    tree = entry.get("tree")
+    if tree is None:  # 兼容外部仍传旧的 {head, items:[str]} 结构。
+        tree = [{"text": item, "children": []} for item in entry.get("items", [])]
+    return render_nodes(tree)
+
+
+def _changelog_entries_html(entries):
+    parts = []
+    for entry in entries:
+        parts.append(
+            "<h3 style='margin:14px 0 4px'>"
+            + html.escape(str(entry.get("head", "")), quote=True)
+            + "</h3>"
+            + _changelog_items_html(entry)
+        )
+    return "".join(parts) if parts else "<p style='color:#888'>暂无</p>"
 
 def load_refs():
     """读取当前覆盖范围内的 refs.json ir_dividend 映射。"""
@@ -187,12 +315,14 @@ def _risk_html(x):
 def build_dashboard(all_groups, source_health, alerts, meta):
     today = _business_date(meta)
     rows_html = []
+    visible = _visible_alert_items(alerts)
 
     # 未来事件(分红/拆股/filing),按日期升序
     upcoming = []
     for tk, groups in all_groups.items():
         for g in groups:
-            if g.is_future:
+            if (g.is_future and not
+                    (g.etype == "filing" and getattr(g, "filing_relevant", None) is False)):
                 upcoming.append(g)
     upcoming.sort(key=lambda g: g.anchor_date or "")
 
@@ -240,7 +370,7 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         base += _risk_html(g)
         base += _reference_html(g)
         return base
-    new_html = alert_block("🆕 新发现事件", alerts["new"], _new_render)
+    new_html = alert_block("🆕 新发现事件", visible["new"], _new_render)
 
     # 已确认未来事项持续展示；“展示”不等于合约需要操作。
     def _pending_render(x):
@@ -282,10 +412,6 @@ def build_dashboard(all_groups, source_health, alerts, meta):
     def _forecast_render(x):
         prod = ("<span style='background:#fff8c5;color:#7a4b00;border-radius:4px;padding:0 6px;font-size:12px'>"
                 + "+".join(x["products"]) + "</span> ") if x.get("products") else ""
-        value = x.get("value_display") or (
-            x.get("amount") if x.get("amount") is not None else x.get("ratio")
-        )
-        val = f" 预测 {html.escape(str(value))}" if value else ""
         dates = " · ".join(p for p in [
             f"登记 {x['record']}" if x.get("record") else "",
             f"{'除息' if x.get('etype') == 'dividend' else '生效'} {x.get('date')}",
@@ -293,8 +419,8 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         ] if p)
         srcs = html.escape(", ".join(x.get("srcs") or []) or "未知")
         note = f"<br><span style='color:#555'>📝 {html.escape(x['watch_note'])}</span>" if x.get("watch_note") else ""
-        return (f"{prod}<b>{html.escape(x['ticker'])}</b> {_etype_label(x)}{val} — "
-                f"<b style='color:#bf8700'>🔎 预测观察 · 不执行</b>　"
+        return (f"{prod}<b>{html.escape(x['ticker'])}</b> {_etype_label(x)} — "
+                f"<b style='color:#bf8700'>🔎 预测观察 · 数值待核实 · 不执行</b>　"
                 f"<span style='color:#555;font-size:12px'>{html.escape(dates)}</span>"
                 f"<br><span style='color:#555'>📡 数据源:{srcs}；按 30/14 天节奏推核验提醒；"
                 f"确认后转正式事项，再按现货流程/合约 3% 结论决定是否催办</span>{note}{_reference_html(x)}")
@@ -311,7 +437,7 @@ def build_dashboard(all_groups, source_health, alerts, meta):
                     f"{html.escape(str(x.get('date')))}")
         return (f"❌ <b>{html.escape(x['ticker'])}</b> 预测失效：预计日 "
                 f"{html.escape(str(x.get('date')))} 已过仍未证实，不执行。{_reference_html(x)}")
-    forecast_updates_html = alert_block("🔄 预测状态更新(自动追踪)", alerts.get("forecast_updates", []), _forecast_update_render)
+    forecast_updates_html = alert_block("🔄 预测状态更新(自动追踪)", visible["forecast_updates"], _forecast_update_render)
 
     def _contract_update_render(x):
         labels = {
@@ -324,16 +450,9 @@ def build_dashboard(all_groups, source_health, alerts, meta):
                 f"{html.escape(labels.get(x.get('current_status'), x.get('current_status') or '结论更新'))}"
                 f"{_risk_html(x)}")
 
-    _round_keys = {(x.get("ticker"), x.get("etype"), x.get("date")) for x in alerts.get("rounds", [])}
-    _forecast_update_keys = {
-        (x.get("ticker"), x.get("etype"), x.get("date")) for x in alerts.get("forecast_updates", [])
-    }
-    _contract_web = [
-        x for x in alerts.get("contract_updates", [])
-        if (x.get("ticker"), x.get("etype"), x.get("date")) not in _round_keys
-        and (x.get("ticker"), x.get("etype"), x.get("date")) not in _forecast_update_keys
-    ]
-    contract_updates_html = alert_block("🔄 合约操作结论更新", _contract_web, _contract_update_render)
+    contract_updates_html = alert_block(
+        "🔄 合约操作结论更新", visible["contract_updates"], _contract_update_render
+    )
 
     # 📣 新公告(刚扫到 declaration date)
     def _ann_render(x):
@@ -348,10 +467,7 @@ def build_dashboard(all_groups, source_health, alerts, meta):
                 f"<span style='color:#0969da'>宣告 {x.get('decl')}</span> · 除息 {x['date']}{days}"
                 f"{_risk_html(x)}{_reference_html(x)}")
     # 网页报警去重:已在「临近预警(催办)」里的事件,不在「新公告」重复;「待执行」整块由时间线覆盖,不再单列
-    _round_sigs = {(x.get("ticker"), x.get("etype"), x.get("date")) for x in alerts.get("rounds", [])}
-    _ann_web = [x for x in alerts.get("announced", [])
-                if (x.get("ticker"), x.get("etype"), x.get("date")) not in _round_sigs]
-    announced_html = alert_block("📣 新公告(刚宣告)", _ann_web, _ann_render)
+    announced_html = alert_block("📣 新公告(刚宣告)", visible["announced"], _ann_render)
     def _round_dates(x):
         bits = []
         if x.get("decl"): bits.append(f"宣告 {x['decl']}")
@@ -414,7 +530,8 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         "<b>🙋 人工介入(零容忍·不豁免)</b>:字段冲突和数据空缺每次扫描都重报、一直挂着并显示「已挂 N 天」,"
         "超 3 天没人确认会在推送里 @ 负责人。消解方式:群里发 "
         "<code>确认 代码 [正确值]</code>(如 <code>确认 AAPL 0.26</code>)"
-        "→ 门禁解除、停报警、按你给的值显示,并留痕(谁确认、何时)。"
+        "→ 即时写入生效库并标记异常；金额/比例门禁及 3% 产品结论由下一轮流水线按币种、"
+        "证券单位和参考价重算，资料不足时仍保留核验提醒，并完整留痕(谁确认、何时)。"
         "</div></details>")
 
     review_html = ""
@@ -479,11 +596,7 @@ def build_dashboard(all_groups, source_health, alerts, meta):
 
     # 更新日志
     chg = load_changelog()
-    chg_parts = []
-    for e in chg:
-        items = "".join(f"<li>{html.escape(i)}</li>" for i in e["items"])
-        chg_parts.append(f"<h3 style='margin:14px 0 4px'>{html.escape(e['head'])}</h3><ul>{items}</ul>")
-    chg_html = "".join(chg_parts) if chg_parts else "<p style='color:#888'>暂无</p>"
+    chg_html = _changelog_entries_html(chg)
 
     # 参考链接维护台(refs.json 的 ir_dividend):分红核对链接的人工维护源
     _refs_ir = load_refs()
@@ -540,7 +653,7 @@ def build_dashboard(all_groups, source_health, alerts, meta):
   {pager}""" if sec_rows else "")
 
     n_conf = len(alerts["conflicts"]); n_gap = len(alerts["gaps"])
-    n_new = len(alerts["new"]); n_round = len(alerts["rounds"])
+    n_new = len(visible["new"]); n_round = len(visible["rounds"])
     n_upcoming = len(upcoming)
 
     body = f"""
@@ -597,11 +710,7 @@ def build_dashboard(all_groups, source_health, alerts, meta):
 def build_changelog_panel(meta):
     """独立「更新日志」面板:更新日志 + 参考链接维护台。"""
     chg = load_changelog()
-    chg_parts = []
-    for e in chg:
-        items = "".join(f"<li>{html.escape(i)}</li>" for i in e["items"])
-        chg_parts.append(f"<h3 style='margin:14px 0 4px'>{html.escape(e['head'])}</h3><ul>{items}</ul>")
-    chg_html = "".join(chg_parts) if chg_parts else "<p style='color:#888'>暂无</p>"
+    chg_html = _changelog_entries_html(chg)
 
     refs = load_refs()
     ref_rows = []
@@ -628,6 +737,7 @@ def build_changelog_panel(meta):
 def build_text_digest(alerts, meta):
     """定时推送用的纯文本预警清单。"""
     L = [f"【公司行动预警】{meta['generated']}", ""]
+    visible = _visible_alert_items(alerts)
     def sec(title, items, fmt):
         L.append(f"== {title} ({len(items)}) ==")
         if not items:
@@ -651,16 +761,16 @@ def build_text_digest(alerts, meta):
         for risk in x.get("risk", []):
             s += f"\n      ⚠️ {risk}"
         return s
-    sec("临近提醒(执行催办 + 数据/合约门槛核验；非本周清单；≤14天每天 · 30天知会)", alerts["rounds"], _round_line)
+    sec("临近提醒(执行催办 + 数据/合约门槛核验；非本周清单；≤14天每天 · 30天知会)", visible["rounds"], _round_line)
 
     # 优先级互斥去重:催办 > 新公告 > 待执行
     def _sig(x):
-        return (x.get("ticker"), x.get("etype"), x.get("date"))
-    _claimed = {_sig(x) for x in alerts.get("rounds", [])}
+        return _event_key(x)
+    _claimed = {_sig(x) for x in visible["rounds"]}
     _promotion_round_sigs = {
-        _sig(x) for x in alerts.get("rounds", []) if x.get("promoted_from_forecast")
+        _sig(x) for x in visible["rounds"] if x.get("promoted_from_forecast")
     }
-    _ann = [x for x in alerts.get("announced", []) if _sig(x) not in _claimed]
+    _ann = visible["announced"]
     for x in _ann:
         _claimed.add(_sig(x))
     _pend = [x for x in alerts.get("pending", []) if _sig(x) not in _claimed]
@@ -690,11 +800,8 @@ def build_text_digest(alerts, meta):
 
     def _forecast_line(x):
         prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
-        value = x.get("value_display") or (
-            x.get("amount") if x.get("amount") is not None else x.get("ratio")
-        )
         lab = "除息" if x.get("etype") == "dividend" else "生效"
-        return (f"{prod}{x['ticker']} {_etype_label(x)} 预测 {value if value is not None else '—'} | "
+        return (f"{prod}{x['ticker']} {_etype_label(x)} 数值待核实 | "
                 f"{lab} {x.get('date')} · 不执行;等待公司宣告或第二个独立源")
     _forecast_rest = [x for x in alerts.get("forecasts", []) if _sig(x) not in _claimed]
     sec("其余待核实预测(临近会推核验提醒 · 未确认勿执行)", _forecast_rest, _forecast_line)
@@ -709,15 +816,12 @@ def build_text_digest(alerts, meta):
             return f"{x['ticker']} 预测更新：日期 {x.get('previous_date') or '—'} → {x.get('date')}"
         return f"{x['ticker']} 预测失效：预计日 {x.get('date')} 已过仍未证实，不执行"
     _forecast_updates_rest = [
-        x for x in alerts.get("forecast_updates", []) if _sig(x) not in _promotion_round_sigs
+        x for x in visible["forecast_updates"] if _sig(x) not in _promotion_round_sigs
     ]
     sec("预测状态更新(自动追踪)", _forecast_updates_rest, _forecast_update_line)
 
     _forecast_update_sigs = {_sig(x) for x in _forecast_updates_rest}
-    _contract_updates_rest = [
-        x for x in alerts.get("contract_updates", [])
-        if _sig(x) not in _claimed and _sig(x) not in _forecast_update_sigs
-    ]
+    _contract_updates_rest = visible["contract_updates"]
     def _contract_update_line(x):
         labels = {
             "required": "现已达到 >3% 合约操作门槛",
@@ -727,7 +831,7 @@ def build_text_digest(alerts, meta):
         return (f"{x['ticker']} {x.get('date')}：{labels.get(x.get('current_status'), '结论更新')}" +
                 "".join(f"\n      ⚠️ {risk}" for risk in x.get("risk", [])))
     sec("合约操作结论更新", _contract_updates_rest, _contract_update_line)
-    sec("新发现事件", alerts["new"],
+    sec("新发现事件", visible["new"],
         lambda g: (f"{g.ticker} {_etype_label(g)} {g.anchor_date} {(_strip(g))}" +
                    "".join(f"\n      ⚠️ {risk}" for risk in getattr(g, "risk", []))))
     sec("字段冲突(零容忍·需人工确认)", alerts["conflicts"],
@@ -776,11 +880,13 @@ def _collect_calendar_marks(all_groups, start, end):
         for g in groups:
             if g.etype == "filing":
                 note = (g.note or "")
-                # 只放并购/退市类(8-K 太多,过滤关键词)
-                if any(k in note for k in ("并购", "退市", "分拆", "证券变更", "要约")):
+                # 统一消费 run.py 的三态判定；普通备案留在 SEC 原文表，英文或
+                # 未知结构性行动继续显示并明确待核实。
+                if getattr(g, "filing_relevant", None) is not False:
                     add(g.anchor_date, {"tk": g.ticker, "kind": "ex", "etype": "filing",
                                         "status": g.status, "text": note[:18],
-                                        "tip": f"{g.ticker} {note}(点击看 SEC 原文)",
+                                        "tip": (f"{g.ticker} {note}(点击看 SEC 原文) | " +
+                                                " · ".join(getattr(g, "risk", []))),
                                         "url": _sec_url(g)})
                 continue
             amt = getattr(g, "selected_amount", None)
@@ -914,11 +1020,23 @@ def build_calendar(all_groups, meta, months_ahead=3, lookback_days=15):
 
 # ==================== 合并站点(预警面板 + 日历,标签切换)====================
 def _site_shell(meta, dash_body, cal_body, log_body):
+    business_date = html.escape(str(meta.get("business_date") or ""))
+    generated_utc = html.escape(str(meta.get("generated_at_utc") or ""))
+    valid_until_utc = html.escape(str(meta.get("valid_until_utc") or ""))
+    source_sha = html.escape(str(meta.get("source_sha") or "unknown"))
+    short_sha = source_sha[:12]
+    run_url = str(meta.get("run_url") or "")
+    version_link = (f"<a href='{html.escape(run_url)}' target='_blank' rel='noopener'>{short_sha}</a>"
+                    if run_url.startswith("https://github.com/") else short_sha)
+    schema_version = html.escape(str(meta.get("schema_version") or "?"))
     css = """
     body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:0;background:#f6f8fa;color:#1f2328}
     .wrap{max-width:1180px;margin:0 auto;padding:24px}
     h1{font-size:22px;margin:0 0 4px}.sub{color:#656d76;font-size:13px;margin-bottom:16px}
     .sub2{color:#656d76;font-size:12px;margin:6px 0 16px}
+    .snapshot{border-radius:8px;padding:9px 12px;margin:0 0 14px;font-size:13px}
+    .snapshot.ok{background:#dafbe1;color:#116329;border:1px solid #82e596}
+    .snapshot.bad{background:#ffebe9;color:#82071e;border:1px solid #ff8182;font-weight:600}
     /* 标签 */
     .tabs{display:flex;gap:8px;border-bottom:2px solid #e2e6ea;margin-bottom:20px}
     .tab{padding:9px 18px;font-size:14px;font-weight:600;color:#656d76;cursor:pointer;border:none;background:none;border-bottom:2px solid transparent;margin-bottom:-2px}
@@ -974,6 +1092,28 @@ def _site_shell(meta, dash_body, cal_body, log_body):
       if(info) info.textContent='第 '+secCur+' / '+pages+' 页(共 '+total+' 条)';
     }
     function secPage(d){ secCur+=d; secRender(); }
+    function nyToday(){
+      var parts=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());
+      var out={}; parts.forEach(function(p){out[p.type]=p.value});
+      return new Date(out.year+'-'+out.month+'-'+out.day+'T00:00:00Z');
+    }
+    function crossedWeekdays(from,to){
+      var n=0,d=new Date(from.getTime());
+      while(d<to){d.setUTCDate(d.getUTCDate()+1);var w=d.getUTCDay();if(w!==0&&w!==6)n++;}
+      return n;
+    }
+    (function(){
+      var el=document.getElementById('snapshot-status');
+      var snap=new Date(el.dataset.businessDate+'T00:00:00Z'), now=nyToday();
+      var generated=new Date(el.dataset.generatedUtc), validUntil=new Date(el.dataset.validUntil), wallClock=new Date();
+      var stale=isNaN(snap.getTime())||isNaN(generated.getTime())||isNaN(validUntil.getTime())||
+        snap>now||crossedWeekdays(snap,now)>1||generated>new Date(wallClock.getTime()+10*60*1000)||
+        validUntil<=generated||wallClock>validUntil;
+      el.className='snapshot '+(stale?'bad':'ok');
+      el.textContent=stale
+        ? '⛔ 数据快照已过期或时间异常，请勿据此判断“无风险 / 无需操作”，并检查 GitHub Actions。'
+        : '✅ 数据快照处于允许的美东业务日窗口。';
+    })();
     // 支持用 ?tab=log 或 #log 直接打开某个标签页(供「最近更新」按钮跳转)
     (function(){
       var p = new URLSearchParams(location.search).get('tab') || (location.hash||'').replace('#','');
@@ -985,7 +1125,8 @@ def _site_shell(meta, dash_body, cal_body, log_body):
 <title>公司行动监控</title><style>{css}</style></head>
 <body><div class="wrap">
   <h1>公司行动监控</h1>
-  <div class="sub">更新 {meta['generated']} · 标的 {len(C.TICKERS)} 支 · 多源交叉核对(零容忍)</div>
+  <div class="sub">更新 {html.escape(str(meta['generated']))} · 标的 {len(C.TICKERS)} 支 · 多源交叉核对(零容忍) · schema v{schema_version} · commit {version_link}</div>
+  <div id="snapshot-status" class="snapshot" data-business-date="{business_date}" data-generated-utc="{generated_utc}" data-valid-until="{valid_until_utc}">正在核验快照时效…</div>
   <div class="tabs">
     <button class="tab active" id="tab-cal" onclick="showTab('cal')">📅 公司行动日历</button>
     <button class="tab" id="tab-dash" onclick="showTab('dash')">🔔 预警面板</button>

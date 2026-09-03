@@ -34,20 +34,58 @@ def _event_key(event):
 
 
 def _is_routine_filing(event):
+    """只过滤中央分类已明确为普通备案的 filing；未知事项继续 fail closed。"""
     if isinstance(event, dict):
         return event.get("etype") == "filing" and event.get("filing_relevant") is False
     return (getattr(event, "etype", None) == "filing" and
             getattr(event, "filing_relevant", None) is False)
 
 
+def _non_routine(items):
+    """报告边界防线：旧缓存误带的普通备案不能进入公司行动业务区。"""
+    return [item for item in (items or []) if not _is_routine_filing(item)]
+
+
+def _verification_kind(event):
+    """消费 producer 的中央核验类型；仅为旧对象保留保守回退。"""
+    if isinstance(event, dict):
+        get = event.get
+    else:
+        get = lambda key, default=None: getattr(event, key, default)
+    kind = get("verification_kind")
+    if kind in {"forecast", "filing_terms", "contract_threshold"}:
+        return kind
+    if get("forecast"):
+        return "forecast"
+    if get("follow_up_mode") != "verification" and not get("verification"):
+        return ""
+    if get("etype") == "filing" and get("filing_relevant") is None:
+        return "filing_terms"
+    return "contract_threshold"
+
+
+def _verification_label(event):
+    return {
+        "forecast": "单源核验",
+        "filing_terms": "公司行动条款核验",
+        "contract_threshold": "合约门槛核验",
+    }.get(_verification_kind(event), "")
+
+
+def _event_date_label(event):
+    """按事件类型返回主日期名称，避免把拆股生效日误称为除息日。"""
+    etype = event.get("etype") if isinstance(event, dict) else getattr(event, "etype", None)
+    return {"dividend": "除息", "split": "生效", "filing": "事件日"}.get(etype, "事件日")
+
+
 def _visible_alert_items(alerts):
     """与定时 Lark 一致：同一事件在报警区只展示最高优先级的一次。"""
     claimed = set()
 
-    def take(items):
+    def take(items, *, include_routine=False):
         visible = []
         for item in items or []:
-            if _is_routine_filing(item):
+            if _is_routine_filing(item) and not include_routine:
                 continue
             key = _event_key(item)
             if key in claimed:
@@ -61,6 +99,7 @@ def _visible_alert_items(alerts):
         if not (isinstance(item, dict) and item.get("follow_up_mode") == "none")
     ]
     return {
+        "filing_updates": take(alerts.get("filing_updates", []), include_routine=True),
         "rounds": take(actionable_rounds),
         "forecast_updates": take(alerts.get("forecast_updates", [])),
         "contract_updates": take(alerts.get("contract_updates", [])),
@@ -201,16 +240,30 @@ def _sec_url(g):
     return (g.by_source.get("SEC") or {}).get("url", "") or g.by_source.get("Alpaca", {}).get("url", "")
 
 
+def _filing_url(x):
+    if isinstance(x, dict):
+        return x.get("url") or x.get("sec_url") or x.get("src_url") or ""
+    return _sec_url(x) if getattr(x, "etype", "") == "filing" else ""
+
+
 def _reference_html(x):
-    """统一渲染 run.py 下发的分红核对链接；网页不再自行回退到 Nasdaq。"""
+    """统一渲染 run.py 下发的分红引用或 filing 本事件 SEC 原文。"""
     if isinstance(x, dict):
         etype, ticker = x.get("etype"), x.get("ticker", "")
         links = x.get("references") or []
         primary = x.get("primary_url") or x.get("decl_url") or x.get("ir_url")
+        filing_url = _filing_url(x)
     else:
         etype, ticker = getattr(x, "etype", ""), getattr(x, "ticker", "")
         links = getattr(x, "references", []) or []
         primary = getattr(x, "primary_url", "") or getattr(x, "decl_url", "") or getattr(x, "ir_url", "")
+        filing_url = _filing_url(x)
+    if etype == "filing":
+        if not filing_url:
+            return ""
+        safe_url = html.escape(str(filing_url))
+        return ("<br><span style='font-size:12px'>📄 "
+                f"<a href='{safe_url}' target='_blank' rel='noopener'>SEC原文(本事件) ↗</a></span>")
     if etype != "dividend":
         return ""
     if not links:
@@ -260,7 +313,7 @@ def _fmt_event_fields(g):
 
 
 def _fmt_key_dates(g):
-    """关键日列:宣告 / 除息除权 / 登记 / 派发,缺的标 —。"""
+    """关键日列:宣告 / 除息或生效 / 登记 / 派发,缺的标 —。"""
     if g.etype == "filing":
         return ""
     decl = _pick(g, "declaration_date")
@@ -276,7 +329,7 @@ def _fmt_key_dates(g):
     rows = [cell("首发(公告)", first, "#0969da")]
     if not decl or decl != first:
         rows.append(cell("宣告", decl))
-    rows += [cell("除息/除权", ex, "#cf222e"), cell("登记", rec), cell("派发", pay)]
+    rows += [cell(_event_date_label(g), ex, "#cf222e"), cell("登记", rec), cell("派发", pay)]
     return "<br>".join(rows)
 
 
@@ -316,6 +369,13 @@ def build_dashboard(all_groups, source_health, alerts, meta):
     today = _business_date(meta)
     rows_html = []
     visible = _visible_alert_items(alerts)
+    # ``run.py`` 正常会在生产端过滤普通 SEC 备案；网页仍需独立防御旧快照或
+    # 误传数据，且所有计数、人工确认横幅必须基于过滤后的同一组事实。
+    pending_items = _non_routine(alerts.get("pending", []))
+    forecast_items = _non_routine(alerts.get("forecasts", []))
+    conflict_items = _non_routine(alerts.get("conflicts", []))
+    gap_items = _non_routine(alerts.get("gaps", []))
+    resolved_items = _non_routine(alerts.get("resolved", []))
 
     # 未来事件(分红/拆股/filing),按日期升序
     upcoming = []
@@ -329,22 +389,36 @@ def build_dashboard(all_groups, source_health, alerts, meta):
     for g in upcoming:
         days = g.days_to
         urgent = days is not None and days <= 7
+        verification_kind = _verification_kind(g)
+        is_filing_review = verification_kind == "filing_terms"
         date_cell = f"<b>{g.anchor_date}</b><br><span style='color:#666'>D-{days}</span>"
         if urgent:
-            date_cell = f"<b style='color:#cf222e'>{g.anchor_date}</b><br><span style='color:#cf222e'>D-{days}</span>"
+            urgent_color = "#bf8700" if is_filing_review else "#cf222e"
+            date_cell = (f"<b style='color:{urgent_color}'>{g.anchor_date}</b><br>"
+                         f"<span style='color:{urgent_color}'>D-{days}</span>")
         srcs = ", ".join(sorted(g.by_source.keys()))
         is_forecast = getattr(g, "forecast", False)
+        verification_label = _verification_label(g)
+        verification_badge = (
+            f"<span style='color:#bf8700;font-weight:700'>🔎{html.escape(verification_label)} · "
+            "核实前勿执行</span><br>"
+            if verification_label else ""
+        )
         fields = ("<span style='color:#bf8700;font-weight:700'>🔎预测观察 · 不执行</span>"
-                  if is_forecast else _fmt_event_fields(g))
+                  if is_forecast else verification_badge + _fmt_event_fields(g))
         fields += _risk_html(g)
         fields += _reference_html(g)
-        status = "预测观察(不执行)" if is_forecast else STATUS_CN.get(g.status, g.status)
-        status_color = "#9a6700" if is_forecast else STATUS_COLOR.get(g.status)
+        status = (
+            "预测观察(不执行)" if is_forecast else
+            "疑似相关·待核实" if is_filing_review else
+            STATUS_CN.get(g.status, g.status)
+        )
+        status_color = "#9a6700" if (is_forecast or is_filing_review) else STATUS_COLOR.get(g.status)
         conf = ""
         if g.conflicts:
             conf = "<br>".join("⚠ " + html.escape(c) for c in g.conflicts)
         rows_html.append(f"""
-        <tr style="background:{'#fff8e1' if is_forecast else STATUS_BG.get(g.status,'#fff')}">
+        <tr style="background:{'#fff8e1' if (is_forecast or is_filing_review) else STATUS_BG.get(g.status,'#fff')}">
           <td>{date_cell}</td>
           <td><b>{html.escape(g.ticker)}</b><br><span style='color:#666;font-size:12px'>{html.escape(C.NAMES.get(g.ticker,''))}</span></td>
           <td>{_etype_label(g)}</td>
@@ -363,7 +437,13 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         return f"<h3>{title} <span style='color:#cf222e'>· {len(items)}</span></h3><ul>{lis}</ul>"
 
     def _new_render(g):
-        base = f"<b>{g.ticker}</b> {_etype_label(g)} {g.anchor_date} ({_fmt_event_fields(g) or g.note})"
+        verification = (
+            f"🔎 {html.escape(_verification_label(g))} · 核实前勿执行 · "
+            if _verification_label(g) else ""
+        )
+        base = (f"{verification}<b>{g.ticker}</b> {_etype_label(g)} "
+                f"{_event_date_label(g)} {g.anchor_date} "
+                f"({_fmt_event_fields(g) or g.note})")
         u = _sec_url(g) if g.etype == "filing" else ""
         if u:
             base += f" <a href='{html.escape(u)}' target='_blank' rel='noopener'>原文 ↗</a>"
@@ -372,7 +452,7 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         return base
     new_html = alert_block("🆕 新发现事件", visible["new"], _new_render)
 
-    # 已确认未来事项持续展示；“展示”不等于合约需要操作。
+    # 未来事项持续展示（含已确认事件与条款待核实 filing）；“展示”不等于需要操作。
     def _pending_render(x):
         prod = ""
         if x.get("products"):
@@ -387,16 +467,20 @@ def build_dashboard(all_groups, source_health, alerts, meta):
             dates += f"宣告 {x['decl']} · "
         if x.get("record"):
             dates += f"登记 {x['record']} · "
-        dates += f"{'除息' if x.get('etype') == 'dividend' else '生效'} {x['date']}"
+        dates += f"{_event_date_label(x)} {x['date']}"
         if x.get("pay"):
             dates += f" · 派发 {x['pay']}"
         risk = _risk_html(x)
         ref = _reference_html(x)
         tip = ""
         if x.get("days") is not None and x.get("follow_up_mode") == "execution":
-            tip = f"<br><span style='color:#0969da'>👉 {html.escape(C.alert_copy(x['days']))}</span>"
+            tip = (f"<br><span style='color:#0969da'>👉 "
+                   f"{html.escape(C.alert_copy(x['days'], x.get('etype')))}</span>")
+        elif _verification_kind(x) == "filing_terms":
+            tip = ("<br><span style='color:#bf8700'>👉 公司行动条款核验："
+                   "请确认事件类型、生效日与处理条款；核实前勿执行。</span>")
         elif x.get("follow_up_mode") == "verification":
-            tip = "<br><span style='color:#bf8700'>👉 只核验合约门槛；未确认前不执行调整。</span>"
+            tip = "<br><span style='color:#bf8700'>👉 合约门槛核验；未确认前不执行调整。</span>"
         elif x.get("follow_up_mode") == "none":
             tip = "<br><span style='color:#1a7f37'>👉 仅信息展示，不进入合约周期催办。</span>"
         action_status = (x.get("contract_action") or {}).get("status")
@@ -405,7 +489,7 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         )
         return (f"{prod}<b>{x['ticker']}</b> {_etype_label(x)}{val} — "
                 f"<b style='color:{countdown_color}'>还剩 {x['days']} 天</b>　<span style='color:#555;font-size:12px'>{html.escape(dates)}</span>{tip}{risk}{ref}")
-    pending_html = alert_block("📋 已确认未来事项(含合约无需操作；仅需处理/核验项进入 30/14 日提醒)", alerts.get("pending", []), _pending_render)
+    pending_html = alert_block("📋 未来跟踪事项(已确认 + 条款核验；仅需处理/核验项进入 30/14 日提醒)", pending_items, _pending_render)
 
     # 🔎 单源且无宣告日 = 预测观察：保留追踪，并按 30/14 天推核验提醒；
     # 绝不进入正式执行催办。
@@ -414,7 +498,7 @@ def build_dashboard(all_groups, source_health, alerts, meta):
                 + "+".join(x["products"]) + "</span> ") if x.get("products") else ""
         dates = " · ".join(p for p in [
             f"登记 {x['record']}" if x.get("record") else "",
-            f"{'除息' if x.get('etype') == 'dividend' else '生效'} {x.get('date')}",
+            f"{_event_date_label(x)} {x.get('date')}",
             f"派发 {x['pay']}" if x.get("pay") else "",
         ] if p)
         srcs = html.escape(", ".join(x.get("srcs") or []) or "未知")
@@ -424,13 +508,39 @@ def build_dashboard(all_groups, source_health, alerts, meta):
                 f"<span style='color:#555;font-size:12px'>{html.escape(dates)}</span>"
                 f"<br><span style='color:#555'>📡 数据源:{srcs}；按 30/14 天节奏推核验提醒；"
                 f"确认后转正式事项，再按现货流程/合约 3% 结论决定是否催办</span>{note}{_reference_html(x)}")
-    forecast_html = alert_block("🔎 待核实预测(会推核验提醒 · 未确认勿执行)", alerts.get("forecasts", []), _forecast_render)
+    forecast_html = alert_block("🔎 待核实预测(会推核验提醒 · 未确认勿执行)", forecast_items, _forecast_render)
+
+    def _filing_update_render(x):
+        kind = x.get("kind")
+        if kind == "confirmed":
+            conclusion = "✅ 条款核验已确认：已转为正式公司行动"
+            if x.get("follow_up_mode") == "execution":
+                conclusion += "，请按现货/产品流程及时处理"
+        elif kind == "routine":
+            conclusion = "✅ 核验完成：普通备案，不属于公司行动；本次无需操作"
+        elif kind == "linked":
+            conclusion = "🔗 已关联至同日已确认分红，仅作为 SEC 证据；不单独操作"
+        elif kind == "expired":
+            conclusion = ("⌛ 元数据提示超过核验期仍无证据，已停止每日提醒；"
+                          "事项仍未核实，不得据此判断无需操作或执行")
+        else:
+            conclusion = (f"🔎 条款仍待核实：事件日已过 "
+                          f"{abs(x.get('days') or 0)} 天；核实前勿执行")
+        note = (f"<br><span style='color:#555'>📝 {html.escape(str(x.get('note')))}</span>"
+                if x.get("note") else "")
+        return (f"<b>{html.escape(str(x.get('ticker')))}</b> {_etype_label(x)} — "
+                f"{html.escape(conclusion)}；{_event_date_label(x)} "
+                f"{html.escape(str(x.get('date')))}{note}{_risk_html(x)}{_reference_html(x)}")
+
+    filing_updates_html = alert_block(
+        "🔄 公司行动条款状态更新", visible["filing_updates"], _filing_update_render
+    )
 
     def _forecast_update_render(x):
         if x.get("kind") in ("promoted", "declared"):
             why = (("公司官方宣告" if x.get("official") else "已获取宣告日")
                    if x.get("kind") == "declared" else "第二个独立源已确认")
-            return (f"✅ <b>{html.escape(x['ticker'])}</b> 预测已转正式：{why}，除息/生效 "
+            return (f"✅ <b>{html.escape(x['ticker'])}</b> 预测已转正式：{why}，{_event_date_label(x)} "
                     f"{html.escape(str(x.get('date')))}{_risk_html(x)}{_reference_html(x)}")
         if x.get("kind") == "updated":
             return (f"🔄 <b>{html.escape(x['ticker'])}</b> 预测更新：日期 {html.escape(str(x.get('previous_date') or '—'))} → "
@@ -463,8 +573,10 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         val = _val_html(x)
         days = f" · <b style='color:#cf222e'>还剩 {x['days']} 天</b>" if x.get("days") is not None else ""
         prefix = "✅ 预测已转正式 · " if x.get("forecast_watch") else ""
+        if _verification_label(x):
+            prefix += f"🔎 {html.escape(_verification_label(x))} · 核实前勿执行 · "
         return (f"{prefix}{prod}<b>{x['ticker']}</b> {_etype_label(x)}{val} — "
-                f"<span style='color:#0969da'>宣告 {x.get('decl')}</span> · 除息 {x['date']}{days}"
+                f"<span style='color:#0969da'>宣告 {x.get('decl')}</span> · {_event_date_label(x)} {x['date']}{days}"
                 f"{_risk_html(x)}{_reference_html(x)}")
     # 网页报警去重:已在「临近预警(催办)」里的事件,不在「新公告」重复;「待执行」整块由时间线覆盖,不再单列
     announced_html = alert_block("📣 新公告(刚宣告)", visible["announced"], _ann_render)
@@ -472,12 +584,15 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         bits = []
         if x.get("decl"): bits.append(f"宣告 {x['decl']}")
         if x.get("record"): bits.append(f"登记 {x['record']}")
-        bits.append(f"{'除息' if x.get('etype') == 'dividend' else '生效'} {x['date']}")
+        bits.append(f"{_event_date_label(x)} {x['date']}")
         if x.get("pay"): bits.append(f"派发 {x['pay']}")
         return " · ".join(html.escape(b) for b in bits)
     def _round_render(x):
         prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
-        s = (f"{prod}<b>{x['ticker']}</b> {_etype_label(x)} — "
+        verification_prefix = (
+            f"🔎 {html.escape(_verification_label(x))} · " if _verification_label(x) else ""
+        )
+        s = (f"{verification_prefix}{prod}<b>{x['ticker']}</b> {_etype_label(x)} — "
              f"<b style='color:#cf222e'>D-{x['days']}</b> ({x['round']}天轮)"
              f"<br><span style='font-size:12px;color:#555'>{_round_dates(x)}</span>")
         if x.get("ops"):
@@ -500,12 +615,12 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         n = R.adr_tax_note(g.ticker, g.by_source) if g.etype == "dividend" else ""
         n = n.replace("**", "")
         return (f"<br><span style='color:#cf222e'>{html.escape(n)}</span>") if n else ""
-    conf_html = alert_block("❗ 字段冲突(零容忍 · 需人工确认)", alerts["conflicts"],
-        lambda g: f"<b>{g.ticker}</b> {_etype_label(g)} {g.anchor_date}: "
+    conf_html = alert_block("❗ 字段冲突(零容忍 · 需人工确认)", conflict_items,
+        lambda g: f"<b>{g.ticker}</b> {_etype_label(g)} {_event_date_label(g)} {g.anchor_date}: "
                   + "; ".join(html.escape(c) for c in g.conflicts) + _aged(g) + _adr_html(g)
                   + _risk_html(g) + _reference_html(g))
-    gap_html = alert_block("🕳 数据空缺(需人工确认)", alerts["gaps"],
-        lambda g: f"<b>{g.ticker}</b> {_etype_label(g)} {g.anchor_date}: "
+    gap_html = alert_block("🕳 数据空缺(需人工确认)", gap_items,
+        lambda g: f"<b>{g.ticker}</b> {_etype_label(g)} {_event_date_label(g)} {g.anchor_date}: "
                   + "; ".join(html.escape(x) for x in g.gaps) + _aged(g))
 
     # 顶部「待人工确认」横幅:不确认就一直在
@@ -535,16 +650,22 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         "</div></details>")
 
     review_html = ""
-    if _rv.get("open"):
-        od = _rv.get("overdue", 0)
+    review_ages = [
+        getattr(g, "age_days", 0) or 0 for g in conflict_items + gap_items
+    ]
+    review_open = len(conflict_items) + len(gap_items)
+    review_overdue = sum(1 for age in review_ages if age >= _esc)
+    review_max_age = max(review_ages) if review_ages else 0
+    if review_open:
+        od = review_overdue
         bg, bd = ("#fff5f5", "#cf222e") if od else ("#fffbe6", "#bf8700")
         over = (f"<br><b style='color:#cf222e'>其中 {od} 条已超过 {_esc} 天没人确认(推送会 @ 负责人)</b>"
                 if od else "")
         review_html = (
             f"<div style='background:{bg};border-left:4px solid {bd};padding:12px 14px;border-radius:6px;margin:12px 0'>"
-            f"<b style='font-size:15px'>🙋 待人工确认 {_rv['open']} 条</b>"
-            f"　<span style='color:#555'>字段冲突 {_rv.get('conflicts',0)} · 数据空缺 {_rv.get('gaps',0)}"
-            f"　最久已挂 <b>{_rv.get('max_age',0)}</b> 天</span>{over}"
+            f"<b style='font-size:15px'>🙋 待人工确认 {review_open} 条</b>"
+            f"　<span style='color:#555'>字段冲突 {len(conflict_items)} · 数据空缺 {len(gap_items)}"
+            f"　最久已挂 <b>{review_max_age}</b> 天</span>{over}"
             f"<div style='color:#555;font-size:13px;margin-top:6px'>零容忍:<b>不做口径豁免</b>。"
             f"核对后在群里发 <code>确认 代码 [正确值]</code>(例:<code>确认 AAPL 0.26</code>)才会消解;"
             f"不确认则每次扫描都会继续报。</div></div>")
@@ -554,9 +675,9 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         meta_line = f"原冲突:{html.escape(r.get('detail',''))}"
         if r.get("at"):
             meta_line += f" · 确认于 {html.escape(str(r['at']))}"
-        return (f"<b>{html.escape(r['ticker'])}</b> {_etype_label(r)} {r['date']}{v}"
+        return (f"<b>{html.escape(r['ticker'])}</b> {_etype_label(r)} "
+                f"{_event_date_label(r)} {r['date']}{v}"
                 f"<br><span style='font-size:12px;color:#555'>{meta_line}</span>")
-    resolved_items = alerts.get("resolved", [])
     resolved_html = (f"<h3>✅ 已人工确认(finalize) <span style='color:#1a7f37'>· {len(resolved_items)}</span></h3>"
                      + "<ul>" + "".join(f"<li>{_resolved_render(r)}</li>" for r in resolved_items) + "</ul>"
                      ) if resolved_items else ""
@@ -609,7 +730,7 @@ def build_dashboard(all_groups, source_health, alerts, meta):
     ref_html = ("".join(ref_rows) if ref_rows
                 else "<tr><td colspan='2' style='color:#888'>refs.json 暂无条目</td></tr>")
 
-    # ---- SEC 原文(近期 filing 类公司行动文件)----
+    # ---- SEC 原文（普通备案 + 公司行动相关/疑似相关文件）----
     today_s = today.isoformat()
     cutoff_s = (today - dt.timedelta(days=90)).isoformat()
     filings = []
@@ -625,10 +746,22 @@ def build_dashboard(all_groups, source_health, alerts, meta):
         u = sec.get("url", "") or _sec_url(g)
         accepted = sec.get("accepted", "")
         relevant = sec.get("relevant", False)
+        resolution = getattr(g, "filing_resolution_status", "")
         link = (f"<a href='{html.escape(u)}' target='_blank' rel='noopener'>查看原文 ↗</a>"
                 if u else "<span style='color:#bbb'>—</span>")
-        rel_cell = ("<span style='background:#fff1f0;color:#cf222e;border-radius:4px;padding:1px 6px'>公司行动相关</span>"
-                    if relevant else "<span style='color:#999'>一般</span>")
+        if resolution == "linked":
+            rel_cell = ("<span style='background:#dafbe1;color:#1a7f37;border-radius:4px;"
+                        "padding:1px 6px'>已关联分红证据</span>")
+        elif resolution == "routine":
+            rel_cell = "<span style='color:#999'>人工结案·普通备案</span>"
+        elif resolution == "confirmed" or relevant is True:
+            rel_cell = ("<span style='background:#fff1f0;color:#cf222e;border-radius:4px;"
+                        "padding:1px 6px'>公司行动相关</span>")
+        elif relevant is None:
+            rel_cell = ("<span style='background:#fffbe6;color:#9a6700;border-radius:4px;"
+                        "padding:1px 6px'>疑似相关 · 待核实</span>")
+        else:
+            rel_cell = "<span style='color:#999'>一般</span>"
         acc = f"<br><span style='color:#aaa;font-size:11px'>{html.escape(accepted)}</span>" if accepted else ""
         hide = " style='display:none'" if idx >= PER_PAGE else ""
         sec_rows.append(
@@ -644,15 +777,15 @@ def build_dashboard(all_groups, source_health, alerts, meta):
       <button onclick="secPage(1)" class="pgbtn">下一页</button>
     </div>""" if n_pages > 1 else "")
     sec_table = (f"""
-  <h2>📄 SEC 原文(近 90 天公司行动文件)</h2>
-  <div class="sub2">「事件」来自 8-K 的 Item 细分;标「公司行动相关」的多与并购/退市/分红等需发公告事项有关。</div>
+  <h2>📄 SEC 原文(近 90 天：普通备案 + 公司行动相关文件)</h2>
+  <div class="sub2">本表保留近 90 天 SEC 原文供审计，既含普通备案，也含公司行动相关文件。8-K / 8-K/A 按 Item 细分；6-K 只有命中强公司行动元数据提示时才标为「疑似相关 · 待核实」。标为「公司行动相关」或「疑似相关」的项目进入公司行动流，标为「一般」的普通备案不进入。</div>
   <table id="sec-table">
-    <tr><th>申报日 / 时刻</th><th>标的</th><th>事件(8-K Item)</th><th>相关</th><th>原文</th></tr>
+    <tr><th>申报日 / 时刻</th><th>标的</th><th>备案 / 事件说明</th><th>相关性</th><th>原文</th></tr>
     {''.join(sec_rows)}
   </table>
   {pager}""" if sec_rows else "")
 
-    n_conf = len(alerts["conflicts"]); n_gap = len(alerts["gaps"])
+    n_conf = len(conflict_items); n_gap = len(gap_items)
     n_new = len(visible["new"]); n_round = len(visible["rounds"])
     n_upcoming = len(upcoming)
 
@@ -673,7 +806,7 @@ def build_dashboard(all_groups, source_health, alerts, meta):
 
   <h2>未来事件时间线</h2>
   <table>
-    <tr><th>除息/除权日</th><th>标的</th><th>类型</th><th>详情</th><th>关键日期</th><th>核对状态</th><th>来源</th><th>冲突</th></tr>
+    <tr><th>除息/生效/事件日</th><th>标的</th><th>类型</th><th>详情</th><th>关键日期</th><th>核对状态</th><th>来源</th><th>冲突</th></tr>
     {''.join(rows_html) if rows_html else '<tr><td colspan=8 style="color:#888">暂无未来事件</td></tr>'}
   </table>
 
@@ -681,6 +814,7 @@ def build_dashboard(all_groups, source_health, alerts, meta):
   {rules_html}
   {review_html}
   {round_html}
+  {filing_updates_html}
   {forecast_updates_html}
   {contract_updates_html}
   {announced_html}
@@ -738,6 +872,11 @@ def build_text_digest(alerts, meta):
     """定时推送用的纯文本预警清单。"""
     L = [f"【公司行动预警】{meta['generated']}", ""]
     visible = _visible_alert_items(alerts)
+    pending_items = _non_routine(alerts.get("pending", []))
+    forecast_items = _non_routine(alerts.get("forecasts", []))
+    conflict_items = _non_routine(alerts.get("conflicts", []))
+    gap_items = _non_routine(alerts.get("gaps", []))
+
     def sec(title, items, fmt):
         L.append(f"== {title} ({len(items)}) ==")
         if not items:
@@ -745,12 +884,44 @@ def build_text_digest(alerts, meta):
         for x in items:
             L.append("  • " + fmt(x))
         L.append("")
+
+    def _filing_update_line(x):
+        kind = x.get("kind")
+        if kind == "confirmed":
+            conclusion = "条款核验已确认，已转为正式公司行动"
+            if x.get("follow_up_mode") == "execution":
+                conclusion += "；请按现货/产品流程及时处理"
+        elif kind == "routine":
+            conclusion = "核验完成：普通备案，不属于公司行动；本次无需操作"
+        elif kind == "linked":
+            conclusion = "已关联至同日已确认分红，仅作为 SEC 证据；不单独操作"
+        elif kind == "expired":
+            conclusion = ("元数据提示超过核验期仍无证据，已停止每日提醒；"
+                          "事项仍未核实，不得据此判断无需操作或执行")
+        else:
+            conclusion = f"条款仍待核实：事件日已过 {abs(x.get('days') or 0)} 天；核实前勿执行"
+        line = (f"{x.get('ticker')} {_etype_label(x)} | {conclusion} | "
+                f"{_event_date_label(x)} {x.get('date')}")
+        if x.get("note"):
+            line += f"\n      📝 {x['note']}"
+        for risk in x.get("risk", []):
+            line += f"\n      ⚠️ {risk}"
+        if _filing_url(x):
+            line += f"\n      📄 SEC原文(本事件): {_filing_url(x)}"
+        return line
+
+    sec("公司行动条款状态更新", visible["filing_updates"], _filing_update_line)
+
     def _round_line(x):
         prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
-        lab = "除息" if x.get("etype") == "dividend" else "生效"
-        prefix = ("[单源核验·勿执行] " if x.get("forecast") else
-                  "[合约门槛核验·勿执行] " if x.get("verification") else
-                  "[单源已转正式] " if x.get("promoted_from_forecast") else "[正式催办] ")
+        lab = _event_date_label(x)
+        verification_kind = _verification_kind(x)
+        prefix = ({
+            "forecast": "[单源核验·勿执行] ",
+            "filing_terms": "[公司行动条款核验·勿执行] ",
+            "contract_threshold": "[合约门槛核验·勿执行] ",
+        }.get(verification_kind) or
+                  ("[单源已转正式] " if x.get("promoted_from_forecast") else "[正式催办] "))
         s = (f"{prefix}{prod}{x['ticker']} {_etype_label(x)} D-{x['days']} |"
              + (f" 宣告 {x['decl']}" if x.get('decl') else "")
              + (f" 登记 {x['record']}" if x.get('record') else "")
@@ -760,8 +931,10 @@ def build_text_digest(alerts, meta):
             s += f"\n      👉 {x['ops']}"
         for risk in x.get("risk", []):
             s += f"\n      ⚠️ {risk}"
+        if _filing_url(x):
+            s += f"\n      📄 SEC原文(本事件): {_filing_url(x)}"
         return s
-    sec("临近提醒(执行催办 + 数据/合约门槛核验；非本周清单；≤14天每天 · 30天知会)", visible["rounds"], _round_line)
+    sec("临近提醒(执行催办 + 单源/公司行动条款/合约门槛核验；非本周清单；≤14天每天 · 30天知会)", visible["rounds"], _round_line)
 
     # 优先级互斥去重:催办 > 新公告 > 待执行
     def _sig(x):
@@ -773,13 +946,17 @@ def build_text_digest(alerts, meta):
     _ann = visible["announced"]
     for x in _ann:
         _claimed.add(_sig(x))
-    _pend = [x for x in alerts.get("pending", []) if _sig(x) not in _claimed]
+    _pend = [x for x in pending_items if _sig(x) not in _claimed]
 
     def _ann_line(x):
         prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
         val = _val_html(x)
         d = f" 还剩{x['days']}天" if x.get("days") is not None else ""
-        s = f"{prod}{x['ticker']} {_etype_label(x)}{val} 宣告 {x.get('decl')} · 除息 {x['date']}{d}"
+        verification_prefix = (
+            f"[{_verification_label(x)}·核实前勿执行] " if _verification_label(x) else ""
+        )
+        s = (f"{verification_prefix}{prod}{x['ticker']} {_etype_label(x)}{val} 宣告 {x.get('decl')} · "
+             f"{_event_date_label(x)} {x['date']}{d}")
         for risk in x.get("risk", []):
             s += f"\n      ⚠️ {risk}"
         return s
@@ -788,29 +965,35 @@ def build_text_digest(alerts, meta):
     def _pending_line(x):
         prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
         val = _val_html(x)
-        s = f"{prod}{x['ticker']} {_etype_label(x)}{val} 还剩{x['days']}天 · 除息 {x['date']}"
+        verification_prefix = (
+            f"[{_verification_label(x)}·核实前勿执行] " if _verification_label(x) else ""
+        )
+        s = (f"{verification_prefix}{prod}{x['ticker']} {_etype_label(x)}{val} 还剩{x['days']}天 · "
+             f"{_event_date_label(x)} {x['date']}")
         if x.get("record"):
             s += f" 登记 {x['record']}"
         if x.get("pay"):
             s += f" 派发 {x['pay']}"
         for r in x.get("risk", []):
             s += f"\n      ⚠️ {r}"
+        if _filing_url(x):
+            s += f"\n      📄 SEC原文(本事件): {_filing_url(x)}"
         return s
-    sec("已确认未来事项(含合约无需操作)", _pend, _pending_line)
+    sec("未来跟踪事项(已确认 + 条款核验；含合约无需操作)", _pend, _pending_line)
 
     def _forecast_line(x):
         prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
-        lab = "除息" if x.get("etype") == "dividend" else "生效"
+        lab = _event_date_label(x)
         return (f"{prod}{x['ticker']} {_etype_label(x)} 数值待核实 | "
                 f"{lab} {x.get('date')} · 不执行;等待公司宣告或第二个独立源")
-    _forecast_rest = [x for x in alerts.get("forecasts", []) if _sig(x) not in _claimed]
+    _forecast_rest = [x for x in forecast_items if _sig(x) not in _claimed]
     sec("其余待核实预测(临近会推核验提醒 · 未确认勿执行)", _forecast_rest, _forecast_line)
 
     def _forecast_update_line(x):
         if x.get("kind") in ("promoted", "declared"):
             why = (("公司官方宣告" if x.get("official") else "已获取宣告日")
                    if x.get("kind") == "declared" else "第二个独立源已确认")
-            return (f"{x['ticker']} 预测已转正式：{why}，除息/生效 {x.get('date')}" +
+            return (f"{x['ticker']} 预测已转正式：{why}，{_event_date_label(x)} {x.get('date')}" +
                     "".join(f"\n      ⚠️ {risk}" for risk in x.get("risk", [])))
         if x.get("kind") == "updated":
             return f"{x['ticker']} 预测更新：日期 {x.get('previous_date') or '—'} → {x.get('date')}"
@@ -832,13 +1015,16 @@ def build_text_digest(alerts, meta):
                 "".join(f"\n      ⚠️ {risk}" for risk in x.get("risk", [])))
     sec("合约操作结论更新", _contract_updates_rest, _contract_update_line)
     sec("新发现事件", visible["new"],
-        lambda g: (f"{g.ticker} {_etype_label(g)} {g.anchor_date} {(_strip(g))}" +
+        lambda g: (f"{g.ticker} {_etype_label(g)} {_event_date_label(g)} "
+                   f"{g.anchor_date} {(_strip(g))}" +
                    "".join(f"\n      ⚠️ {risk}" for risk in getattr(g, "risk", []))))
-    sec("字段冲突(零容忍·需人工确认)", alerts["conflicts"],
-        lambda g: (f"{g.ticker} {_etype_label(g)} {g.anchor_date}: " + "; ".join(g.conflicts)
+    sec("字段冲突(零容忍·需人工确认)", conflict_items,
+        lambda g: (f"{g.ticker} {_etype_label(g)} {_event_date_label(g)} {g.anchor_date}: "
+                   + "; ".join(g.conflicts)
                    + "".join(f"\n      ⚠️ {risk}" for risk in getattr(g, "risk", []))))
-    sec("数据空缺(需人工确认)", alerts["gaps"],
-        lambda g: f"{g.ticker} {_etype_label(g)} {g.anchor_date}: " + "; ".join(g.gaps))
+    sec("数据空缺(需人工确认)", gap_items,
+        lambda g: (f"{g.ticker} {_etype_label(g)} {_event_date_label(g)} {g.anchor_date}: "
+                   + "; ".join(g.gaps)))
     return "\n".join(L)
 
 
@@ -883,10 +1069,19 @@ def _collect_calendar_marks(all_groups, start, end):
                 # 统一消费 run.py 的三态判定；普通备案留在 SEC 原文表，英文或
                 # 未知结构性行动继续显示并明确待核实。
                 if getattr(g, "filing_relevant", None) is not False:
+                    is_filing_review = _verification_kind(g) == "filing_terms"
+                    verification_tip = (
+                        f" | {_verification_label(g)}(核实前勿执行)"
+                        if _verification_label(g) else ""
+                    )
+                    display_status = "single" if is_filing_review else g.status
+                    status_text = ("疑似相关·待核实" if is_filing_review
+                                   else STATUS_CN.get(g.status))
                     add(g.anchor_date, {"tk": g.ticker, "kind": "ex", "etype": "filing",
-                                        "status": g.status, "text": note[:18],
+                                        "status": display_status, "text": note[:18],
                                         "tip": (f"{g.ticker} {note}(点击看 SEC 原文) | " +
-                                                " · ".join(getattr(g, "risk", []))),
+                                                " · ".join(getattr(g, "risk", [])) +
+                                                verification_tip + f" | {status_text}"),
                                         "url": _sec_url(g)})
                 continue
             amt = getattr(g, "selected_amount", None)
@@ -908,9 +1103,13 @@ def _collect_calendar_marks(all_groups, start, end):
                 )
             forecast_tip = " · 预测观察(未证实，不执行)" if getattr(g, "forecast", False) else ""
             action_tip = " · ".join(getattr(g, "risk", []))
+            verification_tip = (
+                f" · {_verification_label(g)}(核实前勿执行)"
+                if _verification_label(g) else ""
+            )
             tip = (f"{g.ticker} {_etype_label(g)} {val}{forecast_tip} | 首发 {first or '—'} · "
-                   f"宣告 {decl or '—'} · 除息 {ex or '—'} · 登记 {rec or '—'} · 派发 {pay or '—'} | "
-                   f"{STATUS_CN.get(g.status)}" + (f" | {action_tip}" if action_tip else ""))
+                   f"宣告 {decl or '—'} · {_event_date_label(g)} {ex or '—'} · 登记 {rec or '—'} · 派发 {pay or '—'} | "
+                   f"{STATUS_CN.get(g.status)}{verification_tip}" + (f" | {action_tip}" if action_tip else ""))
             add(ex, {"tk": g.ticker, "kind": "ex", "etype": g.etype, "status": g.status,
                      "text": f"{val}", "tip": tip,
                      "url": getattr(g, "primary_url", "") if g.etype == "dividend" else ""})
@@ -926,7 +1125,7 @@ def _collect_calendar_marks(all_groups, start, end):
 # 关键日的中文标签
 KIND_LABEL = {
     "record": "登记日", "pay": "派发日",
-    "ex": {"dividend": "除息", "split": "除权·生效", "filing": "公告"},
+    "ex": {"dividend": "除息", "split": "生效", "filing": "公告"},
 }
 
 
@@ -1009,7 +1208,7 @@ def build_calendar(all_groups, meta, months_ahead=3, lookback_days=15):
     <span class="c" style="background:#dbeafe;color:#1e40af">分红</span>
     <span class="c" style="background:#ede9fe;color:#6d28d9">拆股</span>
     <span class="c" style="background:#ffedd5;color:#c2410c">并购/退市</span>
-    &nbsp;&nbsp;<b>关键日</b> 主块=除息/除权(带金额) · <i>登记日</i> · <i>派发日</i>(浅色)
+    &nbsp;&nbsp;<b>关键日</b> 分红主块=除息、拆股主块=生效(带金额/比例) · <i>登记日</i> · <i>派发日</i>(浅色)
     &nbsp;&nbsp;<b>核对</b>
     <span class="rb" style="box-shadow:0 0 0 2px #cf222e inset">红框=冲突</span>
     <span class="rb" style="box-shadow:0 0 0 2px #d4a72c inset">黄框=单源</span>

@@ -8,7 +8,8 @@
     LARK_DASHBOARD_URL=（可选,卡片底部"打开面板"按钮指向的地址)
     LARK_NOTIFY_EMPTY=0      # 1=即使没有任何预警也推一条"全部正常"
 
-发送交互卡片:执行催办 / 合约门槛核验 / 单源核验 / 新发现 / 冲突 / 空缺，filing 带 SEC 原文链接。
+发送交互卡片:执行催办 / 公司行动条款核验 / 合约门槛核验 / 单源核验 /
+新发现 / 冲突 / 空缺，filing 带 SEC 原文链接。
 """
 import os
 import time
@@ -29,6 +30,38 @@ def _etype_label(event):
     if isinstance(event, dict):
         return event.get("event_label") or ETYPE_CN.get(event.get("etype"), event.get("etype"))
     return getattr(event, "event_label", "") or ETYPE_CN.get(event.etype, event.etype)
+
+
+def _date_label(event):
+    """事件锚定日的对外名称：分红=除息，拆/合股=生效。"""
+    etype = event.get("etype") if isinstance(event, dict) else getattr(event, "etype", None)
+    return C.alert_date_label(etype)
+
+
+def _verification_kind(event):
+    """消费 producer 的中央核验类型；兼容尚未刷新字段的旧事件。"""
+    if isinstance(event, dict):
+        get = event.get
+    else:
+        get = lambda key, default=None: getattr(event, key, default)
+    kind = get("verification_kind")
+    if kind in {"forecast", "filing_terms", "contract_threshold"}:
+        return kind
+    if get("forecast"):
+        return "forecast"
+    if not get("verification") and get("follow_up_mode") != "verification":
+        return ""
+    if get("etype") == "filing" and get("filing_relevant") is None:
+        return "filing_terms"
+    return "contract_threshold"
+
+
+def _verification_prefix(event):
+    return {
+        "forecast": "🔎 单源核验 · ",
+        "filing_terms": "🔎 公司行动条款核验 · ",
+        "contract_threshold": "🔎 合约门槛核验 · ",
+    }.get(_verification_kind(event), "")
 
 
 class LarkDeliveryError(RuntimeError):
@@ -95,12 +128,18 @@ def _quick_look(ticker, etype):
 def _refs(ticker, etype, g=None, decl_url=None, ir_url=None, references=None):
     """核对链接:消费 run.py 预先生成的统一引用契约，避免不同卡片各自回退。"""
     if g is not None:
-        u = _sec_url(g)
+        if isinstance(g, dict):
+            u = g.get("url") or g.get("sec_url") or g.get("src_url") or ""
+            references = references or g.get("references")
+            decl_url = decl_url or g.get("decl_url", "")
+            ir_url = ir_url or g.get("ir_url", "")
+        else:
+            u = _sec_url(g)
+            references = references or getattr(g, "references", None)
+            decl_url = decl_url or getattr(g, "decl_url", "")
+            ir_url = ir_url or getattr(g, "ir_url", "")
         if u:
             return f"\n　📄 [SEC原文(本事件)]({u})"
-        references = references or getattr(g, "references", None)
-        decl_url = decl_url or getattr(g, "decl_url", "")
-        ir_url = ir_url or getattr(g, "ir_url", "")
     if etype == "dividend":
         links = references or []
         if links:
@@ -138,9 +177,7 @@ def _dates(x):
     """关键日链：宣告、登记、除息/生效/事件日、派发（有哪个显示哪个）。"""
     # filing 的 anchor 可能是 SEC 申报日，也可能是供应商给出的 process/effective
     # date；缺少明确 date_basis 时不能武断写成「生效」。与 Bot 一样用中性事件日。
-    lab = {"dividend": "除息", "split": "生效", "filing": "事件日"}.get(
-        x.get("etype"), "关键日"
-    )
+    lab = _date_label(x)
     parts = []
     if x.get("decl"):
         parts.append(f"宣告 {x['decl']}")
@@ -151,6 +188,23 @@ def _dates(x):
     if x.get("pay"):
         parts.append(f"派发 {x['pay']}")
     return " · ".join(parts)
+
+
+def _ops_copy(x):
+    """展示层统一催办文案，并修正旧快照中拆股被写成「除息」的情况。"""
+    raw = x.get("ops") or ""
+    if not raw:
+        return ""
+    # 数据/合约核验提醒有独立指令，不改写成执行催办。
+    if x.get("forecast") or x.get("verification"):
+        return raw
+    days = x.get("days")
+    if isinstance(days, int):
+        return C.alert_copy(days, x.get("etype"))
+    label = _date_label(x)
+    for old in ("距除息约", "距生效约", "距关键日约", "距事件日约"):
+        raw = raw.replace(old, f"距{label}约")
+    return raw
 
 
 
@@ -216,17 +270,18 @@ def _visible_alert_items(alerts):
     """按卡片优先级生成互斥的可见事件列表。
 
     同一公司行动可能同时处于临近催办、状态更新、刚宣告与新发现。推送卡片只
-    展示一次，优先级固定为：round > forecast update > contract update > announced
-    > new。每个列表内部也按事件签名去重，header 与投递计数共用这里的结果。
+    展示一次，优先级固定为：filing relevance update > round > forecast update
+    > contract update > announced > new。filing 状态迁移必须优先，否则同日的
+    cadence round 会把「待核实已转确认/普通备案」这一关键信息吞掉。
     """
     claimed = set()
 
-    def take(items):
+    def take(items, *, include_routine=False):
         visible = []
         for item in items or []:
             # 正常情况下 run.py 已经在入队前过滤；这里是投递边界的最后一道
             # 防线，防止旧缓存或调用方误传把 10-Q/普通 8-K 当公司行动推送。
-            if _is_routine_filing(item):
+            if _is_routine_filing(item) and not include_routine:
                 continue
             signature = _event_sig(item)
             if signature in claimed:
@@ -244,6 +299,9 @@ def _visible_alert_items(alerts):
     ]
 
     return {
+        # routine resolution 本身是需要投递的一次性结论，不能被普通备案边界
+        # 过滤；它只存在于 filing_updates，不会重新进入 CA 日历/执行流。
+        "filing_updates": take(alerts.get("filing_updates", []), include_routine=True),
         "rounds": take(actionable_rounds),
         "forecast_updates": take(alerts.get("forecast_updates", [])),
         "contract_updates": take(alerts.get("contract_updates", [])),
@@ -254,6 +312,7 @@ def _visible_alert_items(alerts):
 
 def _build_card(alerts, meta, dashboard_url=""):
     visible = _visible_alert_items(alerts)
+    visible_filing_updates = visible["filing_updates"]
     rounds = visible["rounds"]
     visible_forecast_updates = visible["forecast_updates"]
     visible_contract_updates = visible["contract_updates"]
@@ -268,11 +327,13 @@ def _build_card(alerts, meta, dashboard_url=""):
     n_forecast = len(_non_routine(alerts.get("forecasts", [])))
     n_forecast_updates = len(visible_forecast_updates)
     n_contract_updates = len(visible_contract_updates)
+    n_filing_updates = len(visible_filing_updates)
     n_ann = len(visible_announced)
     # 有冲突/空缺 → 红;有临近/新发现 → 蓝;否则绿
     if n_conf or n_gap:
         template = "red"
-    elif n_round or n_verify or n_ann or n_new or n_forecast_updates or n_contract_updates:
+    elif (n_round or n_verify or n_ann or n_new or n_forecast_updates or
+          n_contract_updates or n_filing_updates):
         template = "blue"
     else:
         template = "green"
@@ -281,7 +342,7 @@ def _build_card(alerts, meta, dashboard_url=""):
         "tag": "div",
         "text": {"tag": "lark_md",
                  "content": f"📣 新公告 **{n_ann}**　🔔 执行催办 **{n_round}**　🔎 核验提醒 **{n_verify}**　🆕 新发现 **{n_new}**"
-                            f"　🔄 预测状态 **{n_forecast_updates}**　🔄 合约结论 **{n_contract_updates}**"
+                            f"　🔄 条款状态 **{n_filing_updates}**　🔄 预测状态 **{n_forecast_updates}**　🔄 合约结论 **{n_contract_updates}**"
                             f"　❗冲突 **{n_conf}**　🕳 空缺 **{n_gap}**　🔎 预测观察 **{n_forecast}**"}
     }, {"tag": "hr"}]
 
@@ -295,12 +356,25 @@ def _build_card(alerts, meta, dashboard_url=""):
         if x.get("current_status") == "required" and signature not in required_update_sigs:
             required_update_sigs.add(signature)
             required_contract_updates.append(x)
+    required_filing_updates = [
+        x for x in visible_filing_updates
+        if x.get("current_status") == "confirmed"
+        and x.get("follow_up_mode") == "execution"
+    ]
     # 正式 @ 不只覆盖 cadence round；合约结论刚跨成 required 时即使当前没有
     # 新 round、或明细按全局优先级合并进「预测状态」区，也必须让负责人看到。
     # 所有正式事项合并成一条 @，避免重复提醒。
     _mentions = _load_mentions()
-    if (formal_rounds or required_contract_updates) and _mentions:
-        if formal_rounds and required_contract_updates:
+    if (formal_rounds or required_contract_updates or required_filing_updates) and _mentions:
+        if required_filing_updates:
+            kinds = []
+            if formal_rounds:
+                kinds.append("正式临近催办")
+            if required_contract_updates:
+                kinds.append("合约需操作结论更新")
+            kinds.append("公司行动条款已确认")
+            notice = "🔔 有" + "及".join(kinds) + ",请及时处理"
+        elif formal_rounds and required_contract_updates:
             notice = "🔔 有正式临近催办及合约需操作结论更新,请及时处理"
         elif required_contract_updates:
             notice = "🔔 有合约结论更新为需操作,请及时处理"
@@ -317,6 +391,34 @@ def _build_card(alerts, meta, dashboard_url=""):
         elements.append({"tag": "div", "text": {"tag": "lark_md",
                         "content": f"**{title}**\n{body}{more}"}})
 
+    def filing_update_line(x):
+        prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
+        kind = x.get("kind")
+        if kind == "confirmed":
+            conclusion = "✅ 条款核验已确认：已转为正式公司行动"
+            if x.get("follow_up_mode") == "execution":
+                conclusion += "，请按现货/产品流程及时处理"
+        elif kind == "routine":
+            conclusion = "✅ 核验完成：普通备案，不属于公司行动；本次无需操作"
+        elif kind == "linked":
+            conclusion = "🔗 已关联至同日已确认分红，仅作为 SEC 证据；不单独操作"
+        elif kind == "expired":
+            conclusion = ("⌛ 元数据提示超过核验期仍无证据，已停止每日提醒；"
+                          "事项仍未核实，不得据此判断无需操作或执行")
+        else:
+            overdue = abs(x.get("days") or 0)
+            conclusion = f"🔎 条款仍待核实：事件日已过 {overdue} 天；核实前勿执行"
+        note = f"\n　📝 {_md_escape(x.get('note'))}" if x.get("note") else ""
+        return (f"• {prod}**{x['ticker']}** {_etype_label(x)} — {conclusion}；"
+                f"{_date_label(x)} {x.get('date')}{note}"
+                + _risk_lines(x)
+                + _refs(x["ticker"], x.get("etype"), g=x,
+                        references=x.get("references")))
+
+    section("🔄 公司行动条款状态更新", [
+        filing_update_line(x) for x in visible_filing_updates
+    ])
+
     def forecast_update_line(x):
         kind = x.get("kind")
         prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
@@ -325,18 +427,18 @@ def _build_card(alerts, meta, dashboard_url=""):
             why = ("已核验公司官方宣告" if x.get("official") else "已获取宣告日") \
                 if kind == "declared" else "已获第二个独立源确认"
             return (f"• ✅ {prod}**{x['ticker']}** {label} 预测已转正式 — "
-                    f"除息/生效 {x.get('date')}；{why}" + _risk_lines(x))
+                    f"{_date_label(x)} {x.get('date')}；{why}" + _risk_lines(x))
         if kind == "updated":
             old_date = x.get("previous_date") or "—"
             old_amt = x.get("previous_amount")
             value = x.get("amount") if x.get("amount") is not None else x.get("ratio")
             return (f"• 🔄 {prod}**{x['ticker']}** {label} 预测更新 — "
-                    f"日期 {old_date} → {x.get('date')}；值 {old_amt if old_amt is not None else '—'} → {value if value is not None else '—'}")
+                    f"{_date_label(x)} {old_date} → {x.get('date')}；值 {old_amt if old_amt is not None else '—'} → {value if value is not None else '—'}")
         return (f"• ❌ {prod}**{x['ticker']}** {label} 预测失效 — "
-                f"预计日 {x.get('date')} 已过仍未获公司宣告或独立源确认；不执行。")
+                f"预计{_date_label(x)} {x.get('date')} 已过仍未获公司宣告或独立源确认；不执行。")
 
     section("🔄 预测状态更新(自动追踪)",
-            [forecast_update_line(x) + _refs(x["ticker"], x.get("etype"), references=x.get("references"))
+            [forecast_update_line(x) + _refs(x["ticker"], x.get("etype"), g=x, references=x.get("references"))
              for x in visible_forecast_updates])
 
     def contract_update_line(x):
@@ -347,7 +449,7 @@ def _build_card(alerts, meta, dashboard_url=""):
         }
         current = x.get("current_status")
         return (f"• 🔄 **{x['ticker']}** {_etype_label(x)} "
-                f"{x.get('date')} — {labels.get(current, current or '结论更新')}" + _risk_lines(x))
+                f"{_date_label(x)} {x.get('date')} — {labels.get(current, current or '结论更新')}" + _risk_lines(x))
 
     section("🔄 合约操作结论更新",
             [contract_update_line(x) for x in visible_contract_updates])
@@ -382,24 +484,29 @@ def _build_card(alerts, meta, dashboard_url=""):
         dates = _dates(x)
         val = _val(x)
         prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
-        is_forecast = bool(x.get("forecast"))
-        is_verification = bool(is_forecast or x.get("verification"))
-        prefix = ("🔎 单源核验 · " if is_forecast else
-                  "🔎 合约门槛核验 · " if is_verification else
-                  "✅ 单源已转正式 · " if x.get("promoted_from_forecast") else "")
+        verification_kind = _verification_kind(x)
+        is_forecast = verification_kind == "forecast"
+        is_verification = bool(verification_kind)
+        prefix = ({
+            "forecast": "🔎 单源核验 · ",
+            "filing_terms": "🔎 公司行动条款核验 · ",
+            "contract_threshold": "🔎 合约门槛核验 · ",
+        }.get(verification_kind) or
+                  ("✅ 单源已转正式 · " if x.get("promoted_from_forecast") else ""))
         color = "orange" if is_verification else "red"
         line = (f"• {prefix}{prod}**{x['ticker']}** {_etype_label(x)}{val} — "
                 f"<font color='{color}'>D-{x['days']}</font>　{dates}")
         if is_forecast:
             srcs = ", ".join(x.get("srcs") or []) or "未知"
             line += f"\n　📡 单一数据源：{srcs}"
-        if x.get("ops"):
-            line += f"\n　👉 {x['ops']}"
+        ops = _ops_copy(x)
+        if ops:
+            line += f"\n　👉 {ops}"
         line += _risk_lines(x)
-        line += _refs(x["ticker"], x["etype"], decl_url=x.get("decl_url"), ir_url=x.get("ir_url"),
+        line += _refs(x["ticker"], x["etype"], g=x, decl_url=x.get("decl_url"), ir_url=x.get("ir_url"),
                       references=x.get("references"))
         rl.append(line)
-    section("🔔 临近提醒(执行催办 + 数据/合约门槛核验；非本周清单：≤14天每天 · 30天知会)", rl)
+    section("🔔 临近提醒(执行催办 + 单源/公司行动条款/合约门槛核验；非本周清单：≤14天每天 · 30天知会)", rl)
 
     # 📣 新公告:全局互斥后的可见项
     al = []
@@ -408,9 +515,11 @@ def _build_card(alerts, meta, dashboard_url=""):
         val = _val(x)
         days = f" · <font color='red'>还剩 {x['days']} 天</font>" if x.get("days") is not None else ""
         prefix = "✅ 预测已转正式 · " if x.get("forecast_watch") else ""
+        prefix += _verification_prefix(x)
         line = (f"• {prefix}{prod}**{x['ticker']}** {_etype_label(x)}{val} —— "
-                f"宣告 {x.get('decl')} · 除息 {x['date']}{days}")
-        al.append(line + _risk_lines(x) + _refs(x["ticker"], x["etype"], references=x.get("references")))
+                f"宣告 {x.get('decl')} · {_date_label(x)} {x['date']}{days}")
+        al.append(line + _risk_lines(x) + _refs(x["ticker"], x["etype"], g=x,
+                                                references=x.get("references")))
     section("📣 新公告(刚宣告)", al)
     # 「待执行」区已并入上面的「临近催办」,不再单列。
 
@@ -427,13 +536,13 @@ def _build_card(alerts, meta, dashboard_url=""):
         except Exception:
             n = ""
         return f"\n　<font color='red'>{n}</font>" if n else ""
-    cl = [f"• **{g.ticker}** {_etype_label(g)} {g.anchor_date}:"
+    cl = [f"• **{g.ticker}** {_etype_label(g)} {_date_label(g)} {g.anchor_date}:"
           f" {_md_escape('; '.join(g.conflicts))}{_aged(g)}{_adr(g)}{_risk_lines(g)}{_refs(g.ticker, g.etype, g)}"
           for g in visible_conflicts]
     section("❗ 字段冲突(零容忍 · 需人工确认)", cl)
 
     # 数据空缺(同样需人工确认)
-    gl = [f"• **{g.ticker}** {_etype_label(g)} {g.anchor_date}{_aged(g)}:"
+    gl = [f"• **{g.ticker}** {_etype_label(g)} {_date_label(g)} {g.anchor_date}{_aged(g)}:"
           f" {_md_escape('; '.join(g.gaps))}" for g in visible_gaps]
     section("🕳 数据空缺", gl)
 
@@ -463,7 +572,8 @@ def _build_card(alerts, meta, dashboard_url=""):
                 val = (f" ${amt}" if amt is not None else "") + (f" {ratio}" if ratio else "")
         products = C.product_tags(g.ticker)
         prod = ("[" + "+".join(products) + "] ") if products else ""
-        line = f"• {prod}**{g.ticker}** {_etype_label(g)} {g.anchor_date}{val}"
+        line = (f"• {_verification_prefix(g)}{prod}**{g.ticker}** {_etype_label(g)} "
+                f"{_date_label(g)} {g.anchor_date}{val}")
         if g.etype == "filing":
             line += f" {_md_escape(g.note or '')}"
             u = _sec_url(g)

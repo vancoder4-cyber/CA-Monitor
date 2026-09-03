@@ -33,7 +33,7 @@ from tools.validate_state import validate as validate_state
 
 def _public_snapshot():
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "generated": "fixture",
         "generated_at_utc": "2026-09-03T13:35:00Z",
         "valid_until_utc": "2026-09-03T20:45:00Z",
@@ -44,6 +44,7 @@ def _public_snapshot():
         "counts": {},
         "coverage": [], "pending": [], "forecasts": [], "calendar": [],
         "announced": [], "recent_declares": [], "conflicts": [], "gaps": [],
+        "filing_updates": [],
         "changelog": [{"head": "2026-09-03 · fixture", "items": []}],
     }
 
@@ -85,11 +86,11 @@ class PublicSnapshotTests(unittest.TestCase):
             "generated": "fixture", "business_date": "2026-09-03",
             "generated_at_utc": "2026-09-03T13:35:00Z",
             "valid_until_utc": "2026-09-03T20:45:00Z",
-            "source_sha": "abcdef1234567890", "schema_version": 3,
+            "source_sha": "abcdef1234567890", "schema_version": 4,
             "run_url": "https://github.com/example/repo/actions/runs/99",
         }
         page = report._site_shell(meta, "dash", "calendar", "log")
-        self.assertIn("schema v3", page)
+        self.assertIn("schema v4", page)
         self.assertIn("abcdef123456", page)
         self.assertIn('data-valid-until="2026-09-03T20:45:00Z"', page)
         self.assertIn("validUntil<=generated", page)
@@ -155,6 +156,26 @@ class ProvenanceTests(unittest.TestCase):
         self.assertGreater(valid_until, generated)
         self.assertEqual("abc123", meta["source_sha"])
         self.assertTrue(meta["run_url"].endswith("/99"))
+
+    def test_weekend_push_remains_valid_until_the_next_weekday_scan(self):
+        saturday = dt.datetime(2026, 9, 5, 14, 0, tzinfo=dt.timezone.utc)
+
+        meta = run._provenance_meta(saturday)
+
+        self.assertEqual("2026-09-05T14:00:00Z", meta["generated_at_utc"])
+        # Monday 09:35 ET + the documented four-hour queue allowance.
+        self.assertEqual("2026-09-07T17:35:00Z", meta["valid_until_utc"])
+
+    def test_friday_after_close_validity_advances_to_monday_scan_window(self):
+        friday_after_close = dt.datetime(
+            2026, 9, 11, 21, 0, tzinfo=dt.timezone.utc
+        )
+        meta = run._provenance_meta(friday_after_close)
+
+        # Friday 17:00 ET is after the last scan.  The next scheduled scan is
+        # Monday 09:35 ET (13:35Z), plus the documented four-hour grace.
+        self.assertEqual("2026-09-11T21:00:00Z", meta["generated_at_utc"])
+        self.assertEqual("2026-09-14T17:35:00Z", meta["valid_until_utc"])
 
 
 if __name__ == "__main__":

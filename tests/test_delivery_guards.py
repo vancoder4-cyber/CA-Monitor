@@ -314,7 +314,7 @@ class LarkDeliveryTests(unittest.TestCase):
 
         visible = notify_lark._visible_alert_items(alerts)
         self.assertEqual(
-            {"rounds": 1, "forecast_updates": 1, "contract_updates": 1,
+            {"filing_updates": 0, "rounds": 1, "forecast_updates": 1, "contract_updates": 1,
              "announced": 1, "new": 1},
             {key: len(items) for key, items in visible.items()},
         )

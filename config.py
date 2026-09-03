@@ -7,7 +7,7 @@ import os
 
 # Pages ``data.json`` 与独立部署的问答助手之间的公开数据契约版本。
 # 改动会影响 Bot 消费语义的字段时必须递增，并同步 bot/cards.py。
-PUBLIC_DATA_SCHEMA_VERSION = 3
+PUBLIC_DATA_SCHEMA_VERSION = 4
 
 # ---- 极简 .env 加载(无需第三方依赖)----
 def _load_dotenv():
@@ -240,11 +240,15 @@ REVIEW_ESCALATE_DAYS = 3
 
 # ---- 预警节奏(产品动作命中=执行催办；门槛待定/单源预测=核验提醒)----
 # 规则:进入 30 天窗口时提醒一次(heads-up);15–29 天安静(已知会过);
-#       ≤14 天每天提醒一次(每天去重,不是每次跑都刷),直到除息日。
+#       ≤14 天每天提醒一次(每天去重,不是每次跑都刷),直到除息/生效日。
 # 单源预测沿用同一节奏，但文案明确「待核实、勿执行」。
-ALERT_HEADSUP_DAY = 30      # 距除息 ≤ 这个天数时,首次提醒一次
-ALERT_DAILY_WITHIN = 14     # 距除息 ≤ 这个天数时,每天提醒一次
-ALERT_ANCHOR = "ex_date"    # 以除息日为基准
+ALERT_HEADSUP_DAY = 30      # 距除息/生效 ≤ 这个天数时,首次提醒一次
+ALERT_DAILY_WITHIN = 14     # 距除息/生效 ≤ 这个天数时,每天提醒一次
+ALERT_ANCHOR = "ex_date"    # 数据字段名为 ex_date；分红表示除息，拆/合股表示生效
+# SEC 6-K 只凭元数据命中的「条款核验」不能无限日报。超过申报日
+# 30 个日历日仍无新证据/人工结论时发一次未决归档通知并停止日报；这不是
+# 「无需操作」结论，后续若真正确认仍会重新报。
+FILING_REVIEW_EXPIRE_DAYS = 30
 # 旧节奏(已弃用,保留常量避免外部引用报错)
 ALERT_ROUNDS = [30, 14, 7, 3, 1]
 
@@ -260,21 +264,36 @@ CONTRACT_REFERENCE_PRICE_MAX_AGE_DAYS = 7
 ROUND_RISK_TBD = "风控提醒:待风控团队明确(占位)"
 
 
-def alert_copy(days):
+ALERT_DATE_LABEL = {
+    "dividend": "除息",
+    "split": "生效",
+    "filing": "事件日",
+}
+
+
+def alert_date_label(etype):
+    """返回对外文案使用的事件日名称；类型不明时保持中性。"""
+    return ALERT_DATE_LABEL.get(etype, "关键日")
+
+
+def alert_copy(days, etype=None):
     """只给已命中现货/合约执行条件的事件生成运营催办文案。"""
-    if days <= 1:
-        return "⏱ 最后确认:仅剩 1 天 —— 确保文案已就绪、定时发送已备好。"
+    anchor = alert_date_label(etype)
+    if days <= 0:
+        return f"🔴 今日{anchor} —— 立即做最终核对并按既定方案执行。"
+    if days == 1:
+        return f"⏱ 最后确认:距{anchor}仅剩 1 天 —— 确保文案已就绪、定时发送已备好。"
     if days <= 3:
-        return f"⏱ 收尾:剩 {days} 天 —— 确保相关文案全部写完。"
+        return f"⏱ 收尾:距{anchor}剩 {days} 天 —— 确保相关文案全部写完。"
     if days <= 7:
-        return f"⏱ 催办:剩 {days} 天 —— 准备文案、明确「具体哪天」执行各项操作、完成排期。"
+        return f"⏱ 催办:距{anchor}剩 {days} 天 —— 准备文案、明确「具体哪天」执行各项操作、完成排期。"
     if days <= ALERT_DAILY_WITHIN:
-        return f"进入 {ALERT_DAILY_WITHIN} 天窗口:剩 {days} 天 —— 每天跟进,确认本次活动安排。"
-    return f"提前知会:距除息约 {days} 天 —— 请留意并排入计划(之后 {ALERT_DAILY_WITHIN} 天内会每天催)。"
+        return f"进入 {ALERT_DAILY_WITHIN} 天窗口:距{anchor}剩 {days} 天 —— 每天跟进,确认本次活动安排。"
+    return f"提前知会:距{anchor}约 {days} 天 —— 请留意并排入计划(之后 {ALERT_DAILY_WITHIN} 天内会每天催)。"
 
 
-def round_copy(rnd):  # 兼容旧调用
-    return alert_copy(rnd), ROUND_RISK_TBD
+def round_copy(rnd, etype=None):  # 兼容旧调用
+    return alert_copy(rnd, etype), ROUND_RISK_TBD
 
 # ---- 产品归属(用于风控运营提示;SPOT_TICKERS / CONTRACT_TICKERS 见文件上方业务范围)----
 def product_tags(ticker):
@@ -358,7 +377,11 @@ def describe_8k(items_str):
 
 # 哪些 SEC 表格视为公司行动信号
 SEC_FORMS_OF_INTEREST = {
-    "8-K": "重大事件",
+    "8-K": "重大事件", "8-K/A": "重大事件修订",
+    # 6-K 本身不是公司行动：大多数只是外国发行人的例行披露。sources.py
+    # 仅把文件名/描述中命中强公司行动关键词的 6-K 送入「待核实」，其余只留
+    # SEC 原文审计表，避免 ARM/BABA/TSM 等 ADR 全量误报。
+    "6-K": "外国发行人报告", "6-K/A": "外国发行人报告修订",
     "25": "退市", "25-NSE": "退市(交易所)",
     "425": "并购要约/沟通", "S-4": "并购注册", "DEFM14A": "并购股东投票",
     "8-K12B": "证券变更", "15-12B": "注销登记/退市",

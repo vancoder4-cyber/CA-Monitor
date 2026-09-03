@@ -53,7 +53,7 @@ class BotWindowTests(unittest.TestCase):
 
         text = _card_text(cards.week_card(data, ""))
 
-        self.assertIn("共 **4** 个事件", text)
+        self.assertIn("正式事项 **4** 个", text)
         for ticker in ("HD", "QCOM", "GOOGL", "TER"):
             self.assertEqual(1, text.count(f"**{ticker}**"))
         self.assertNotIn("**WDC**", text)

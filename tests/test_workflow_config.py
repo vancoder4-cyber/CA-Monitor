@@ -6,6 +6,18 @@ WORKFLOW = ROOT / ".github" / "workflows" / "monitor.yml"
 
 
 class WorkflowConfigTests(unittest.TestCase):
+    def test_main_push_triggers_production_snapshot_refresh(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("push:\n    branches: [main]", text)
+        self.assertIn('      - "data/ack_log.json"', text)
+        self.assertIn('      - "requests.md"', text)
+
+        # The first anonymous audit-log commit may stay quiet, but the second
+        # commit carrying the operative filing decision must rebuild Pages,
+        # run the pipeline and close the review without waiting for cron.
+        ignored = text.split("paths-ignore:", 1)[1].split("schedule:", 1)[0]
+        self.assertNotIn("filing_review_resolutions.json", ignored)
+
     def test_schedule_uses_new_york_timezone_without_a_runtime_gate(self):
         text = WORKFLOW.read_text(encoding="utf-8")
         schedules = ("35 9 * * 1-5", "45 12 * * 1-5", "5 16 * * 1-5")

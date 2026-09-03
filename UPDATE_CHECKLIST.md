@@ -9,12 +9,13 @@
 | 指令 / Bot 文案 | `bot/cards.py`、`bot/bot.py`、根 `README.md`、`bot/README.md`、`CHANGELOG.md` |
 | 事件字段 / 取值 / 门禁 | `run.py` 产出 ↔ `report.py` 网页 ↔ `notify_lark.py` 推送 ↔ `bot/cards.py` 交互卡 ↔ 月历 / `calendar_events` |
 | 合约公司行动 / 3% 门槛 / 参考价 | `contract_policy.py`、行情快照缓存、pending/rounds、网页、定时 Lark、Bot 今日/本周/新公告/临近/日历/查代码、`CHANGELOG.md` |
-| SEC filing 分类 / 事件相关性 | `config.describe_8k`、`run.py` new/conflict/gap/calendar、SEC 原文表、网站、定时 Lark、Bot 风险/今日/本周/临近/查代码/PNG 日历 |
+| SEC filing 分类 / 事件相关性 | `config.describe_8k`、`sources._sec_filing_note_relevance`、`run.py` new/conflict/gap/calendar、SEC 原文表、网站、定时 Lark、Bot 风险/今日/本周/临近/查代码/PNG 日历 |
 | 分红核对链接 / 官方宣告 | `refs.json`、单标的查询、今日/本周、临近催办、预测、日历、公告、网页、定时推送、确认留痕 |
 | 标的数 / 代码别名 / 数据源 / 时点 | `config.py`、Pages `ticker_aliases`、根 README、`about_card`、操作手册、群 briefing、workflow |
 | Railway / Bot 运行方式 | `bot/README.md`、环境变量、心跳、生产验证步骤 |
 | 快照 schema / 发布 / 状态缓存 | `run.py` provenance、网站/Bot 时效门禁、公开数据脱敏、Actions cache、Pages 原子发布、`tools/trigger.sh` |
 | 写回 / 审计 / 需求提报 | 核心文件与留痕文件是否都成功、失败文案、公开仓库隐私边界、Bot 卡片与 README |
+| 写操作权限 | `filing_resolve / confirm / forecast / request` 在取快照和写回前统一校验 Railway Secret `LARK_WRITE_ALLOWED_OPEN_IDS`；查询与审计不受影响 |
 
 ## 2. 分红引用契约（尤其容易漂移）
 
@@ -34,7 +35,9 @@
 - `reconcile.pick_value()` 是字段取值唯一真相；检查是否又出现了 `next((v.get(...` 的平行取值逻辑。
 - 公司行动展示与合约操作必须分离：现金分红、送股、拆股、合股等均按估算价格影响判断；`>3%` 才是 `required`，恰好 3% 和以下均为 `not_required`；缺价/日期、币种或证券单位不一致、过期价、未过金额门禁为 `review`，绝不能误写无需操作。
 - contract-only + `not_required` 仍应出现在日历/新公告/查代码，并明确「合约：本次无需操作」，但不得进入 `rounds` 或触发正式 @；现货+合约则保留现货催办。
-- SEC 8-K 只有可仅凭 Item 代码确定的结构性事项进入公司行动流；宽泛的 1.01 / 2.02 / 5.02 / 5.07 / 7.01 / 8.01 保留在 SEC 原文表但必须被 new/conflict/gap/calendar、网站、Lark 和 Bot 各入口过滤。
+- SEC 8-K / 8-K/A 只有可仅凭 Item 代码确定的结构性事项进入公司行动流；宽泛的 1.01 / 2.02 / 5.02 / 5.07 / 7.01 / 8.01 保留在 SEC 原文表但必须被 new/conflict/gap/calendar、网站、Lark 和 Bot 各入口过滤。6-K / 6-K/A 默认只留原文审计；只有强公司行动元数据提示才进入「公司行动条款核验」，且即使标的含现货也不得变成执行催办或正式 @。检查 Distribution Agreement、合并财务结果、债券赎回三个负例不会误入。
+- 公司行动条款核验必须能按完整稳定 `event_id` 用 `确认备案` / `排除备案` 结案；同日多份文件不可宽匹配。仅分红提示的 6-K 只有在 ticker、唯一事件和申报日=正式分红宣告日同时满足时才自动并入证据链；未解决项超过 30 天只发一次「未决归档、停止日报」通知，绝不能写成无需操作。结案/关联/归档都要在网站、digest、Lark 与 Bot 显示一次且不重复。
+- 所有事件日文案按类型验证：现金/送股分红用「除息」，拆股/合股用「生效」，filing 用「事件日」；网页、digest、定时 Lark、Bot 新公告/临近/查代码和旧 payload 防御层必须一致。
 
 ## 4. 本地自动检查（必须全绿）
 
@@ -61,15 +64,16 @@ python3 tools/validate_public_snapshot.py site_data.json
 - [ ] `refs.json` JSON 格式有效；不提交密钥、webhook、PAT 或 state/cache 临时文件。
 - [ ] `data/state.json` 保持未跟踪并由独立 cache 持久化；生产恢复不到非空历史 state 时必须 fail closed，不能整批重放。
 - [ ] 公开 Pages 快照通过递归脱敏检查；催办 open_id 只在 `LARK_ALERT_MENTION_OPEN_IDS` Secret，需求 commit 标题不含原文或身份。
+- [ ] Railway 已配置 `LARK_WRITE_ALLOWED_OPEN_IDS`；验证授权账号可写、未授权/缺 sender/未配置均拒绝，且拒绝回执不泄露白名单。
 - [ ] 检查 `git diff`，确保没有将历史审计日志当作“修复”回写。
 
 ## 6. 发布后验收（四个独立面）
 
-1. **GitHub Actions**：手动 Run workflow 或等待下一 ET 扫描窗口；分别确认 state 恢复校验、全量测试、Lark 投递、公开快照校验、`build` / `deploy`，不能只看 workflow 总体颜色。单纯 `git push` 不会立即刷新 Pages / 推送。
-2. **Pages**：打开根地址并检查 `data.json` 的 `schema_version=3`、`source_sha=main HEAD`、`run_id=本次 Action`、`delivery_status`、`generated_at_utc < valid_until_utc`；确认 `changelog[0]` 等于本次顶部条目后，才可称 Bot「最近更新」已刷新。资产覆盖应为现货 62 / 合约 39 / 共 81 / 监控 75，`ticker_aliases` 应包含 `BBX → BB`。不要手工修改构建产物 `site_data.json`。
-3. **定时推送**：下一次有内容的运行检查官方链接、第三方链接、预测/催办状态和 @ 名单；单源与合约门槛 review 应明确写「核验、勿执行」且不能触发正式催办 @；合约 ≤3% 应正常首报并写「本次无需操作」，但不得进入 30/14 日重复催办；15–29 天静默期不应收到只有统计没有明细的卡片。
-4. **Railway Bot**：先发 `关于`，确认数据 commit 与 Bot build commit 相同；测试 `帮助`、`风险`、`查 AAPL`、`查 BBX`（应返回 `BB`）、`查 BRK-B`、`查 SKHY`、`临近催办`、`观察预测`、`最近更新`。另用过期/坏 schema fixture 验证只返回红色故障卡，不得假报全绿。Pages 更新不代表 Railway 已更新。
+1. **GitHub Actions**：合入 `main` 会自动触发生产刷新（仍可手动 Run workflow 或等待 ET 扫描窗口）；分别确认 state 恢复校验、全量测试、Lark 投递、公开快照校验、`build` / `deploy`，不能只看 workflow 总体颜色。只推送功能分支不会刷新生产。
+2. **Pages**：打开根地址并检查 `data.json` 的 `schema_version=4`、`source_sha=main HEAD`、`run_id=本次 Action`、`delivery_status`、`generated_at_utc < valid_until_utc`；确认 `changelog[0]` 等于本次顶部条目后，才可称 Bot「最近更新」已刷新。资产覆盖应为现货 62 / 合约 39 / 共 81 / 监控 75，`ticker_aliases` 应包含 `BBX → BB`。不要手工修改构建产物 `site_data.json`。
+3. **定时推送**：下一次有内容的运行检查官方链接、第三方链接、预测/催办状态和 @ 名单；单源、公司行动条款与合约门槛三类核验应分别命名并明确「核验、勿执行」，且不能触发正式催办 @；合约 ≤3% 应正常首报并写「本次无需操作」，但不得进入 30/14 日重复催办；15–29 天静默期不应收到只有统计没有明细的卡片。
+4. **Railway Bot**：先发 `关于`，确认数据 commit 与 Bot build commit 相同；测试 `帮助`、`风险`、`查 AAPL`、`查 BBX`（应返回 `BB`）、`查 BRK-B`、`查 SKHY`、`临近催办`、`观察预测`、`最近更新`。用 fixture 验证 `确认备案` / `排除备案` 精确 event_id 路由与冲突输入 fail closed；不要为了 smoke 修改真实事件结论。另用过期/坏 schema fixture 验证只返回红色故障卡，不得假报全绿；用授权/未授权账号各测一次写操作，未授权路径不得调用任何 GitHub 写回。Pages 更新不代表 Railway 已更新。
 
 ## 一句话流程
 
-判定影响面 → 统一事件数据 → 自动检查 → 文档/CHANGELOG → 提交推送 → Run workflow → 同时验收 Actions、Pages、Lark 推送与 Railway Bot。
+判定影响面 → 统一事件数据 → 自动检查 → 文档/CHANGELOG → PR 合入 main → 自动生产 workflow → 同时验收 Actions、Pages、Lark 推送与 Railway Bot。

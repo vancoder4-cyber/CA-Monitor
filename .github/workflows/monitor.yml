@@ -3,6 +3,15 @@ name: CA Monitor
 # 定时使用 America/New_York，美股常规时段 9:30–16:00 ET,每个交易日扫 3 次:
 #   开盘后 9:35 ET、盘中 12:45 ET、收盘后 16:05 ET。
 on:
+  # 合入 main 后立即刷新 Pages / Lark，避免代码与问答 Bot 已更新、公开快照却仍
+  # 等下一次定时扫描。PR 的 CI 会在合并前先验证同一提交；这里负责生产发布。
+  push:
+    branches: [main]
+    # Bot 写回先追加审计日志、再提交真正的生效状态。只改日志/需求队列时不跑
+    # 整套生产监控；随后 acknowledged / forecast / filing resolution 的提交仍会触发。
+    paths-ignore:
+      - "data/ack_log.json"
+      - "requests.md"
   schedule:
     - cron: "35 9 * * 1-5"
       timezone: "America/New_York"

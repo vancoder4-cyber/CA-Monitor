@@ -13,7 +13,7 @@ FORBIDDEN_KEYS = {"by", "by_name", "open_id", "chat_id"}
 OPEN_ID_PATTERN = re.compile(r"\bou_[A-Za-z0-9]+\b")
 REQUIRED_LISTS = {
     "coverage", "pending", "forecasts", "calendar", "announced",
-    "recent_declares", "conflicts", "gaps", "changelog",
+    "recent_declares", "conflicts", "gaps", "filing_updates", "changelog",
 }
 
 
@@ -34,8 +34,8 @@ def _walk(value, path="$"):
 def validate(data, *, expected_sha="", expected_run_id=""):
     if not isinstance(data, dict):
         raise ValueError("snapshot root must be an object")
-    if data.get("schema_version") != 3:
-        raise ValueError(f"expected schema v3, got {data.get('schema_version')!r}")
+    if data.get("schema_version") != 4:
+        raise ValueError(f"expected schema v4, got {data.get('schema_version')!r}")
     for key in REQUIRED_LISTS:
         if not isinstance(data.get(key), list):
             raise ValueError(f"{key} must be a list")

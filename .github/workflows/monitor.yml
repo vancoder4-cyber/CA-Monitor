@@ -43,9 +43,23 @@ jobs:
       - name: 统一引用与正式化回归检查
         run: python tools/check_surface_consistency.py
 
-      # 跨运行持久化预警去重状态(用缓存,不提交到仓库)
-      - name: 恢复 state 缓存
-        uses: actions/cache@v4
+      # 去重状态使用独立且稳定的 cache version；以后增删行情/CIK 等辅助缓存路径时，
+      # 不得再让 state.json 因 path hash 改变而丢失并重放全部历史事件。
+      - name: 恢复核心去重状态
+        id: restore_core_state
+        uses: actions/cache/restore@v4
+        with:
+          path: data/state.json
+          key: ca-dedup-state-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ca-dedup-state-
+
+      # 2026-09-03 一次性兼容迁移：先尝试含参考价的新版旧 bundle；若不存在，
+      # 再尝试只有 state/cik 的旧 bundle。恢复成功后会在本轮末写入独立缓存。
+      - name: 迁移新版旧缓存
+        id: restore_legacy_bundle
+        if: steps.restore_core_state.outputs.cache-matched-key == ''
+        uses: actions/cache/restore@v4
         with:
           path: |
             data/state.json
@@ -54,6 +68,28 @@ jobs:
           key: ca-state-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             ca-state-
+
+      - name: 迁移早期旧缓存
+        if: steps.restore_core_state.outputs.cache-matched-key == '' && steps.restore_legacy_bundle.outputs.cache-matched-key == ''
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/state.json
+            data/cik_map.json
+          key: ca-state-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ca-state-
+
+      - name: 恢复辅助数据缓存
+        id: restore_support_cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/cik_map.json
+            data/reference_prices.json
+          key: ca-support-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ca-support-
 
       - name: 抓取 + 核对 + 生成面板 + 推 Lark
         env:
@@ -71,6 +107,21 @@ jobs:
           LARK_DASHBOARD_URL: ${{ vars.LARK_DASHBOARD_URL }}
           LARK_REQUIRED: "1"
         run: python run.py
+
+      # run.py 只有在生产投递成功后才退出 0；因此这里保存的 state 与已发送提醒一致。
+      - name: 保存核心去重状态
+        uses: actions/cache/save@v4
+        with:
+          path: data/state.json
+          key: ${{ steps.restore_core_state.outputs.cache-primary-key }}
+
+      - name: 保存辅助数据缓存
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/cik_map.json
+            data/reference_prices.json
+          key: ${{ steps.restore_support_cache.outputs.cache-primary-key }}
 
       - name: 准备 Pages 站点
         if: ${{ always() }}

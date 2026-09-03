@@ -322,8 +322,13 @@ def fetch_sec(ticker: str, lookback_days: int) -> SourceResult:
 
 
 # ---------------- 5) Nasdaq(免 key:按票分红 + 市场拆股日历)----------------
+def nasdaq_dividend_url(ticker: str) -> str:
+    asset_class = "etf" if C.asset_type(ticker) == "etf" else "stocks"
+    return f"https://api.nasdaq.com/api/quote/{ticker}/dividends?assetclass={asset_class}"
+
+
 def fetch_nasdaq_dividends(ticker: str) -> SourceResult:
-    url = f"https://api.nasdaq.com/api/quote/{ticker}/dividends?assetclass=stocks"
+    url = nasdaq_dividend_url(ticker)
     try:
         r = _get_retry(url, headers=_HDR_BROWSER, timeout=20)
         d = r.json().get("data") or {}

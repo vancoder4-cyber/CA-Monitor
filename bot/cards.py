@@ -225,7 +225,7 @@ def about_card(data, site_url):
     content = (
         "**CA问答助手** —— 公司行动(Corporate Actions)监控\n"
         f"盯 **现货({n_spot} 支)+ 合约范围({n_contract} 个)**标的中的 **{n_monitored} 个可监控证券**:分红 / 拆股·合股 / 并购 / 分拆 / 退市·代码变更。"
-        "合约里的 ETF(QQQ/EWY/DRAM)与 SKHY 股票纳入监控；商品(XAU/WTI/XAG/BRENTOIL/NATGAS/XCU)无公司行动，仅列入覆盖。\n\n"
+        "合约里的个股与 ETF(QQQ/EWY/DRAM/TQQQ/MVLL)均纳入监控；商品(XAU/WTI/XAG/BRENTOIL/NATGAS/XCU)无公司行动，仅列入覆盖。\n\n"
         "**数据源(8 源,多源交叉核对·零容忍)**\n"
         "yfinance · FMP · Alpha Vantage · Nasdaq · Tiingo · Alpaca · SEC EDGAR · FINX(TRKD-HS)\n\n"
         "**关键日**:每条事件展示 **宣告 · 登记 · 除息/生效 · 派发**(缺哪个不显示哪个)。\n\n"

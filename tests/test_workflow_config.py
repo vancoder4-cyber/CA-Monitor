@@ -24,6 +24,24 @@ class WorkflowConfigTests(unittest.TestCase):
         text = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn('LARK_REQUIRED: "1"', text)
 
+    def test_dedup_state_cache_is_isolated_from_supporting_data(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        core = text.split("- name: 恢复核心去重状态", 1)[1].split(
+            "- name: 迁移新版旧缓存", 1
+        )[0]
+        support = text.split("- name: 恢复辅助数据缓存", 1)[1].split(
+            "- name: 抓取 + 核对 + 生成面板 + 推 Lark", 1
+        )[0]
+
+        self.assertIn("path: data/state.json", core)
+        self.assertIn("ca-dedup-state-", core)
+        self.assertNotIn("reference_prices.json", core)
+        self.assertNotIn("cik_map.json", core)
+        self.assertIn("reference_prices.json", support)
+        self.assertIn("cik_map.json", support)
+        self.assertNotIn("state.json", support)
+        self.assertIn("actions/cache/save@v4", text)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -5,6 +5,74 @@ from business_time import today as business_today
 # 注意:不要在模块顶层 import ack —— ack 依赖 requests,而 CI 的「指令一致性检查」在装依赖**之前**
 # 就 import cards,顶层拉 ack 会 ModuleNotFoundError。ack 只在 _authoritative_link 的兜底分支惰性导入。
 ETYPE_CN = {"dividend": "分红", "split": "拆股", "filing": "并购/公告"}
+PUBLIC_DATA_SCHEMA_VERSION = 3
+_SNAPSHOT_REQUIRED_LISTS = (
+    "coverage", "pending", "forecasts", "calendar", "announced",
+    "recent_declares", "conflicts", "gaps", "changelog",
+)
+
+
+def validate_snapshot(data, today=None, now=None):
+    """校验 Pages→Bot 数据契约；返回空串表示可安全给出业务结论。"""
+    if not isinstance(data, dict):
+        return "Pages 返回的不是有效 JSON 对象"
+    if data.get("_snapshot_error"):
+        return str(data["_snapshot_error"])
+    if data.get("schema_version") != PUBLIC_DATA_SCHEMA_VERSION:
+        got = data.get("schema_version", "缺失")
+        return f"数据契约版本不一致（Bot 需要 v{PUBLIC_DATA_SCHEMA_VERSION}，当前为 {got}）"
+    for key in _SNAPSHOT_REQUIRED_LISTS:
+        if not isinstance(data.get(key), list):
+            return f"数据字段 {key} 缺失或格式错误"
+    if not isinstance(data.get("counts"), dict):
+        return "数据字段 counts 缺失或格式错误"
+    for key in ("generated", "generated_at_utc", "valid_until_utc", "business_date", "source_sha"):
+        if not data.get(key):
+            return f"数据缺少版本字段 {key}"
+    try:
+        snapshot_day = dt.date.fromisoformat(str(data["business_date"]))
+        current_day = today or business_today()
+        if snapshot_day > current_day:
+            return "数据业务日位于未来，时间口径异常"
+        # 计算快照之后已经跨过多少个美东工作日。周五→周一只算 1，允许；
+        # 周四→周一算 2，视为流水线至少漏跑一个工作日。
+        workdays = 0
+        cursor = snapshot_day
+        while cursor < current_day:
+            cursor += dt.timedelta(days=1)
+            if cursor.weekday() < 5:
+                workdays += 1
+        if workdays > 1:
+            return f"数据快照已过期（业务日仍停留在 {snapshot_day}）"
+        generated_at = dt.datetime.fromisoformat(
+            str(data["generated_at_utc"]).replace("Z", "+00:00")
+        )
+        valid_until = dt.datetime.fromisoformat(
+            str(data["valid_until_utc"]).replace("Z", "+00:00")
+        )
+        if generated_at.tzinfo is None or valid_until.tzinfo is None:
+            return "数据时间字段缺少时区"
+        if valid_until <= generated_at:
+            return "数据有效时点不晚于生成时间，快照契约异常"
+        current_time = now or dt.datetime.now(dt.timezone.utc)
+        if current_time.tzinfo is None:
+            current_time = current_time.replace(tzinfo=dt.timezone.utc)
+        if generated_at > current_time + dt.timedelta(minutes=10):
+            return "数据生成时间位于未来，服务器时钟异常"
+        if current_time > valid_until:
+            return f"数据已超过有效时点（{data['valid_until_utc']}）"
+    except (TypeError, ValueError):
+        return "数据时间字段格式错误"
+    return ""
+
+
+def unavailable_card(reason, site_url=""):
+    body = ("<font color='red'>当前无法取得可验证的公司行动快照，已停止输出“无风险 / "
+            "无需操作”等业务结论。</font>\n\n"
+            f"原因：{reason}\n\n请检查 GitHub Actions / Pages，恢复后再查询。")
+    return _card("⛔ 公司行动数据不可用", "red",
+                 [{"tag": "div", "text": {"tag": "lark_md", "content": body}}],
+                 site_url, "打开网页检查")
 
 
 def _etype_label(event):
@@ -90,20 +158,46 @@ COMMANDS = [
     {"key": "calendar", "kw": ["日历", "calendar", "cal"],              "name": "日历",   "desc": "当月公司行动月历(图)"},
     {"key": "coverage", "kw": ["覆盖", "资产", "标的", "coverage"],      "name": "覆盖",   "desc": "各标的在现货/合约的覆盖情况"},
     {"key": "lookup",   "kw": ["查代码", "查询", "代码", "查", "ticker", "lookup"], "name": "查代码", "desc": "@我 + 代码(如 AVGO)弹出该标的公司行动;只发『查代码』看用法"},
-    {"key": "confirm",  "kw": ["确认", "confirm", "已核对"],              "name": "确认",   "desc": "人工放行异常:确认 CODE [正确值] [日期] [备注] —— 解除金额门禁、停报警、按你给的值显示并留痕"},
-    {"key": "audit",    "kw": ["留痕", "审计", "audit", "log"], "name": "留痕",   "desc": "调取确认留痕:谁在何时确认了什么(可加代码只看某标的);要 Excel 用 tools/export_ack_log.py"},
-    {"key": "request",  "kw": ["需求", "提报", "反馈", "建议", "feature"], "name": "需求提报", "desc": "提需求:需求 你的想法 —— 汇总给负责人用于迭代"},
+    {"key": "confirm",  "kw": ["确认", "confirm", "已核对"],              "name": "确认",   "desc": "记录人工确认并留痕；异常列表即时标记，金额/3%产品结论由下一轮流水线按口径重算"},
+    {"key": "audit",    "kw": ["留痕", "审计", "audit", "log"], "name": "留痕",   "desc": "调取确认/预测观察留痕(可加代码只看某标的);要 Excel 用 tools/export_ack_log.py"},
+    {"key": "request",  "kw": ["需求", "提报", "反馈", "建议", "feature"], "name": "需求提报", "desc": "提需求:需求 你的想法 —— 匿名写入公开 GitHub，请勿填写敏感信息"},
 ]
 # 注:顺序即匹配优先级 + 展示顺序。帮助不含 "?"(无匹配时默认即回帮助),避免「…?」误判。
 
 def parse_command(text):
-    """按 COMMANDS 顺序匹配关键词,返回 key;无匹配返回 help。bot.py 复用此函数。"""
+    """识别指令；显式写操作优先于备注里的普通关键词。
+
+    例如 ``确认 ... 已比对公司公告`` 必须进入确认，而不能被备注中的“公告”
+    劫持。其余自然语言仍按 COMMANDS 顺序做宽松匹配。
+    """
     import re
     t = re.sub(r"@_user_\d+|@_all", "", text or "").strip().lower()
+    by_key = {command["key"]: command for command in COMMANDS}
+    for key in ("confirm", "forecast", "request", "audit", "lookup"):
+        for keyword in sorted(by_key[key]["kw"], key=len, reverse=True):
+            kw = keyword.lower()
+            # 中文没有天然词边界，用户常直接输入「确认AAPL」「观察AAPL」或
+            # 「需求提报……」。这些显式写操作只要位于消息开头就应锁定路由；
+            # 英文仍要求分隔符，避免把 watchlist / confirmation 当成指令。
+            if ((not kw.isascii() and t.startswith(kw)) or
+                    re.match(rf"^{re.escape(kw)}(?:\s|[:：,，、]|$)", t)):
+                return key
+    def contains_keyword(keyword):
+        kw = keyword.lower()
+        if kw.isascii():
+            return bool(re.search(rf"(?<![a-z0-9]){re.escape(kw)}(?![a-z0-9])", t))
+        return kw in t
+
     for c in COMMANDS:
-        if any(k.lower() in t for k in c["kw"]):
+        if any(contains_keyword(k) for k in c["kw"]):
             return c["key"]
     return "help"
+
+
+def _event_key(event):
+    return event.get("event_id") or (
+        event.get("ticker"), event.get("etype"), event.get("date")
+    )
 
 
 def _val(x):
@@ -240,6 +334,8 @@ def about_card(data, site_url):
     n_spot = sum(1 for x in cov if x.get("spot"))
     n_contract = sum(1 for x in cov if x.get("contract"))
     n_monitored = sum(1 for x in cov if x.get("monitored"))
+    data_sha = str(data.get("source_sha") or "unknown")[:12]
+    bot_sha = str(data.get("_bot_build_sha") or "unknown")[:12]
     content = (
         "**CA问答助手** —— 公司行动(Corporate Actions)监控\n"
         f"盯 **现货({n_spot} 支)+ 合约范围({n_contract} 个)**标的中的 **{n_monitored} 个可监控证券**:分红 / 拆股·合股 / 并购 / 分拆 / 退市·代码变更。"
@@ -262,14 +358,15 @@ def about_card(data, site_url):
         "**每次扫描都重报、一直挂着**,并显示「已挂 N 天」;超 3 天没人确认会在推送里 **@ 负责人**。"
         "消解方式:群里发 **确认 代码 [正确值] [日期] [备注]**(如 `确认 AAPL 0.26 2026-08-11`;"
         "拆/合股用完整比例，如 `确认 XYZ 1:10 2026-09-10`;同一标的多条不同值时必须带日期)"
-        "—— 确认后门禁解除、按你给的值显示。每次确认**只追加、不删**地写入留痕库(谁/何时/改值前后/核对来源/备注),"
+        "—— 确认会即时写入生效库并标记异常；金额与 3% 产品结论由下一轮流水线结合币种、单位和参考价重算，资料不足时仍保留核验提醒。"
+        "每次确认**只追加、不删**地写入留痕库(谁/何时/改值前后/核对来源/备注),"
         "群里发 **留痕** 可随时调取,离线表用 `tools/export_ack_log.py` 导 Excel。\n\n"
         "**核对链接**:并购/退市直达 SEC 原文；分红统一给 **官方本次公告/IR/SEC** + **StockAnalysis 交叉核对**。第三方可能滞后，不能作为正式化依据。\n\n"
         "**更新**:每交易日 3 次 —— 开盘后 9:35 / 盘中 12:45 / 收盘后 16:05(美东)。\n\n"
         "**提前预警**:已宣告或双源确认后先成为正式事项，再按现货流程/合约 3% 结论决定是否进入 **30/14** 催办；"
         "单源预测只按相同节奏推核验并明确『勿执行』。\n\n"
         f"**指令**(@我 + 关键词):{COMMAND_NAMES}\n\n"
-        f"_数据更新于 {gen}_"
+        f"_数据更新于 {gen} · Pages {data_sha} · Bot {bot_sha}_"
     )
     return _card("ℹ️ 关于 CA问答助手", "blue",
                  [{"tag": "div", "text": {"tag": "lark_md", "content": content}}],
@@ -307,17 +404,18 @@ def risk_card(data, site_url):
         and ("现货" in (e.get("products") or []) or
              (e.get("contract_action") or {}).get("status") in ("required", "review"))
     ]
-    contract_dividends = [
+    dividends = [
         e for e in cal
         if e.get("etype") == "dividend" and (e.get("date") or "") >= today
-        and (e.get("contract_action") or {}).get("status") in ("required", "review")
+        and ("现货" in (e.get("products") or []) or
+             (e.get("contract_action") or {}).get("status") in ("required", "review"))
     ]
     structurals = [e for e in cal if e["etype"] == "filing" and (e.get("date") or "") >= lo30]
     conflicts = data.get("conflicts", [])
-    n = len(contract_dividends) + len(splits) + len(structurals) + len(conflicts)
+    n = len(dividends) + len(splits) + len(structurals) + len(conflicts)
     template = "red" if n else "green"
     elems = [{"tag": "div", "text": {"tag": "lark_md",
-              "content": f"当日风控总览 · 合约分红动作/核验 **{len(contract_dividends)}** · 拆股 **{len(splits)}** · 并购/退市 **{len(structurals)}** · 数据冲突 **{len(conflicts)}**"}},
+              "content": f"当日风控总览 · 分红处理/核验 **{len(dividends)}** · 拆股 **{len(splits)}** · 并购/退市 **{len(structurals)}** · 数据冲突 **{len(conflicts)}**"}},
              {"tag": "hr"}]
 
     def sec(title, lines):
@@ -326,8 +424,8 @@ def risk_card(data, site_url):
             elems.append({"tag": "div", "text": {"tag": "lark_md",
                          "content": f"**{title}**\n" + "\n".join(lines[:20]) + more}})
 
-    sec("💸 合约现金分红(>3%需操作；缺价/缺值待核实)",
-        [_line(e, with_risk=True) for e in contract_dividends])
+    sec("💸 分红(现货照常处理；合约>3%需操作，缺价/缺值待核实)",
+        [_line(e, with_risk=True) for e in dividends])
     sec("✂️ 拆股/合股(>3%需操作；比例不足则待核实)",
         [_line(e, with_risk=True) for e in splits])
     sec("🤝 并购 / 退市(先核条款与价格影响)",
@@ -357,7 +455,7 @@ def _window_card(data, site_url, lo_days, hi_days, title, *, anchor_only=False):
     events = {}
     excluded_forecasts = set()
     for e in cal:
-        event_key = (e.get("ticker"), e.get("etype"), e.get("date"))
+        event_key = _event_key(e)
         if e.get("forecast"):
             # 「本周/今日」只统计正式事项；预测有独立的「观察预测」入口。
             keys = ((e.get("date"),) if anchor_only else
@@ -426,11 +524,11 @@ def upcoming_card(data, site_url):
          and x.get("follow_up_mode", "execution") != "none"),
         key=lambda x: x["days"],
     )
-    formal_sigs = {(x.get("ticker"), x.get("etype"), x.get("date")) for x in pend}
+    formal_sigs = {_event_key(x) for x in pend}
     forecasts = sorted(
         (x for x in data.get("forecasts", [])
          if isinstance(x.get("days"), int) and 0 <= x["days"] <= 14
-         and (x.get("ticker"), x.get("etype"), x.get("date")) not in formal_sigs),
+         and _event_key(x) not in formal_sigs),
         key=lambda x: x["days"],
     )
     items = sorted(
@@ -493,12 +591,8 @@ def forecast_card(data, site_url):
         prod = ("[" + "+".join(x["products"]) + "] ") if x.get("products") else ""
         srcs = ", ".join(x.get("srcs") or []) or "未知"
         watch = "👁 已人工标记观察" if x.get("watching") else "🔎 自动识别预测"
-        raw_value = x.get("value_display") or (
-            x.get("amount") if x.get("amount") is not None else x.get("ratio")
-        )
-        value = f" {raw_value}" if raw_value is not None else ""
-        line = (f"• {prod}**{x['ticker']}** {_etype_label(x)}{value} — "
-                f"<font color='orange'>{watch} · 不执行</font>\n"
+        line = (f"• {prod}**{x['ticker']}** {_etype_label(x)} — "
+                f"<font color='orange'>{watch} · 数值待核实 · 不执行</font>\n"
                 f"　预计 {_dates(x)} · 数据源:{srcs}\n"
                 "　👉 临近会按 30/14 天节奏推核验提醒；确认后转正式事项，再按产品动作结论决定是否催办")
         if x.get("watch_note"):
@@ -560,7 +654,9 @@ def changelog_card(data, site_url):
                      site_url, "打开网页面板")
     parts = []
     for e in chg[:3]:
-        items = "\n".join(f"　• {i}" for i in e["items"][:6])
+        # 同一版本的修复项必须完整展示；此前固定 [:6] 会把第 7 条（恰好是
+        # 去重缓存修复）静默藏掉，造成 Pages 有记录而 Bot 看不到。
+        items = "\n".join(f"　• {i}" for i in e["items"])
         parts.append(f"**{e['head']}**\n{items}")
     content = "\n\n".join(parts)
     if len(chg) > 3:
@@ -753,9 +849,11 @@ def request_card(ok, msg, text="", site_url=""):
     if ok:
         content = (f"✅ 需求已收到,谢谢!已汇总给负责人,会排进迭代评估。\n\n你的需求:{text}"
                    if text else "✅ 需求已收到,谢谢!")
+        content += "\n\n> 需求正文会进入公开 GitHub；系统不会保存你的 Lark 身份。"
         tpl = "green"
     elif text == "":
-        content = "用法:**需求 + 你的想法**,例如「需求 希望增加财报日提醒」。"
+        content = ("用法:**需求 + 你的想法**,例如「需求 希望增加财报日提醒」。\n\n"
+                   "> 内容会匿名写入公开 GitHub，请勿填写客户、账号、密钥等敏感信息。")
         tpl = "blue"
     else:
         content = f"⚠️ 提交未成功:{msg}"
@@ -774,7 +872,8 @@ def confirm_card(ok, msg, ticker=None, value=None, site_url="", date=None, etype
         dd = f"({date_label(etype)} {date})" if date else ""
         head = f"<font color='red'>{warn}</font>\n\n" if warn else ""
         content = (head + f"✅ 已记录确认:**{ticker}**{dd}{v}。\n"
-                   "金额门禁解除、停止报警;已写入留痕库(谁/何时/核对来源,发『留痕』可调取)。\n\n"
+                   "已写入生效库与留痕库；异常列表会即时标记。金额/比例门禁及 3% 产品结论"
+                   "将在下一轮流水线按币种、证券单位与参考价重算，资料不足时仍会保留核验提醒。\n\n"
                    "> 同一标的有多条**值不同**的异常时,请带上日期指定是哪一条,"
                    "例:`确认 AAPL 0.26 2026-08-11`、`确认 XYZ 1:10 2026-09-10`。\n"
                    "> 可在末尾加备注记录你核对了什么,例:`确认 AAPL 0.26 2026-08-11 已比对公司公告`。")
@@ -799,8 +898,8 @@ def _ago_bj(iso):
 
 
 def audit_card(log, site_url="", ticker=None):
-    """确认留痕:谁在何时把哪条改成了什么值 + 核对来源 + 备注。log 已按时间倒序。"""
-    title = f"📒 确认留痕 · {ticker}" if ticker else "📒 确认留痕(最近确认)"
+    """确认/观察留痕；log 已按时间倒序。"""
+    title = f"📒 审计留痕 · {ticker}" if ticker else "📒 审计留痕(最近记录)"
     if not log:
         tip = (f"暂无 **{ticker}** 的确认记录。" if ticker else "留痕库还没有记录 —— 尚无人工确认。") + \
               "\n每条『确认』都会自动落库(只追加不删),要离线表用 `tools/export_ack_log.py` 导 Excel。"
@@ -816,8 +915,12 @@ def audit_card(log, site_url="", ticker=None):
             vtxt += f"(原 {prev})"
         et = _etype_label(e)
         dlab = date_label(e.get("etype"))
-        head = (f"• {_ago_bj(e.get('at_bj'))}　**{e.get('ticker','')}** {et} "
-                f"{dlab} {e.get('date','') or ''} → {vtxt}　_by {who}_")
+        if e.get("action") == "watch_forecast":
+            head = (f"• {_ago_bj(e.get('at_bj'))}　👁 **{e.get('ticker','')}** {et} "
+                    f"预测观察 · {dlab} {e.get('date','') or ''}　_by {who}_")
+        else:
+            head = (f"• {_ago_bj(e.get('at_bj'))}　✅ **{e.get('ticker','')}** {et} "
+                    f"人工确认 · {dlab} {e.get('date','') or ''} → {vtxt}　_by {who}_")
         sub = []
         if e.get("source"):
             sub.append(f"[核对来源]({e['source']})")

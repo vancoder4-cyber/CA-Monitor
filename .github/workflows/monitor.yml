@@ -70,6 +70,7 @@ jobs:
             ca-state-
 
       - name: 迁移早期旧缓存
+        id: restore_legacy_state
         if: steps.restore_core_state.outputs.cache-matched-key == '' && steps.restore_legacy_bundle.outputs.cache-matched-key == ''
         uses: actions/cache/restore@v4
         with:
@@ -79,6 +80,18 @@ jobs:
           key: ca-state-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             ca-state-
+
+      - name: 验证核心去重状态
+        env:
+          CORE_CACHE_KEY: ${{ steps.restore_core_state.outputs.cache-matched-key }}
+          BUNDLE_CACHE_KEY: ${{ steps.restore_legacy_bundle.outputs.cache-matched-key }}
+          LEGACY_CACHE_KEY: ${{ steps.restore_legacy_state.outputs.cache-matched-key }}
+        run: |
+          if [[ -z "$CORE_CACHE_KEY" && -z "$BUNDLE_CACHE_KEY" && -z "$LEGACY_CACHE_KEY" ]]; then
+            echo "::error::未恢复任何历史去重状态；为避免整批历史事件重放，本轮停止。"
+            exit 1
+          fi
+          python tools/validate_state.py
 
       - name: 恢复辅助数据缓存
         id: restore_support_cache
@@ -105,8 +118,14 @@ jobs:
           LARK_WEBHOOK: ${{ secrets.LARK_WEBHOOK }}
           LARK_SECRET: ${{ secrets.LARK_SECRET }}
           LARK_DASHBOARD_URL: ${{ vars.LARK_DASHBOARD_URL }}
+          LARK_ALERT_MENTION_OPEN_IDS: ${{ secrets.LARK_ALERT_MENTION_OPEN_IDS }}
           LARK_REQUIRED: "1"
         run: python run.py
+
+      - name: 校验公开 Pages 数据契约与脱敏
+        run: >-
+          python tools/validate_public_snapshot.py site_data.json
+          --expected-sha "$GITHUB_SHA" --expected-run-id "$GITHUB_RUN_ID"
 
       # run.py 只有在生产投递成功后才退出 0；因此这里保存的 state 与已发送提醒一致。
       - name: 保存核心去重状态
@@ -124,7 +143,6 @@ jobs:
           key: ${{ steps.restore_support_cache.outputs.cache-primary-key }}
 
       - name: 准备 Pages 站点
-        if: ${{ always() }}
         run: |
           test -s dashboard.html
           test -s site_data.json
@@ -133,13 +151,12 @@ jobs:
           cp site_data.json public/data.json
 
       - uses: actions/upload-pages-artifact@v3
-        if: ${{ always() }}
         with:
           path: public
 
   deploy:
     needs: build
-    if: ${{ always() && needs.build.result != 'cancelled' }}
+    if: ${{ needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     environment:
       name: github-pages

@@ -108,9 +108,8 @@ python run.py build                       # 用缓存合并 → dashboard.html +
 1. **不做口径豁免** —— ADR 扣税、拆股回溯、四舍五入造成的差异照报。
 2. **每次扫描都重报**,不确认就一直挂;推送与官网显示「**已挂 N 天**」。
 3. 超过 `REVIEW_ESCALATE_DAYS`(默认 3 天)没人确认 → 推送顶部 **@ 负责人**升级。
-4. **消解方式**:群里发 `确认 代码 [正确值]`(如 `确认 AAPL 0.26`；拆/合股保留完整比例，如 `确认 XYZ 1:10 2026-09-10`)
-   → 门禁解除、停报警、按确认值显示,并留痕(谁确认、何时、以什么值为准)。
-   确认对**所有事件**生效(不只是冲突,单源事件也能人工放行)。
+4. **消解方式**:群里发 `确认 代码 正确值 日期`(如 `确认 AAPL 0.26 2026-08-11`；拆/合股保留完整比例，如 `确认 XYZ 1:10 2026-09-10`)
+   → 以「代码 + 事件类型 + 日期」精确写入生效库和留痕库，异常列表即时标记；金额/比例门禁及 3% 产品结论由下一轮流水线结合币种、证券单位与参考价重算。没有具体事件、日期或有效值的宽泛确认不会放行。
 
 ## 配置(`config.py`)
 
@@ -128,17 +127,19 @@ python run.py build                       # 用缓存合并 → dashboard.html +
 
 **一键触发 Action**:`./tools/trigger.sh`(触发 + 等跑完 + 核验网页刷新;需 `brew install gh && gh auth login`)。
 
-**可维护文件(改完提交即可)**:`refs.json`(官方 IR / 已核验事件 / 催办 @ 名单)、`CHANGELOG.md`(每次必记一条)、`UPDATE_CHECKLIST.md`(收尾检查清单)、`TODO.md`(内部技术待办/后续跟进)。`requests.md` 会在首次「需求」提报时自动创建。
+**可维护文件(改完提交即可)**:`refs.json`(官方 IR / 已核验事件)、`CHANGELOG.md`(每次必记一条)、`UPDATE_CHECKLIST.md`(收尾检查清单)、`TODO.md`(内部技术待办/后续跟进)。催办 @ 名单只放 GitHub Secret `LARK_ALERT_MENTION_OPEN_IDS`；`requests.md` 会在首次「需求」提报时自动创建，正文公开可见但不保存提报人的 Lark 身份。
 
 ## 密钥与安全
 
 - `.env` 含真实密钥,**已在 `.gitignore`,绝不要提交到 GitHub**。
 - 部署到生产时,优先用平台的 Secrets / 环境变量注入,而不是把 `.env` 打进镜像。
+- `LARK_ALERT_MENTION_OPEN_IDS` 只能放 GitHub Actions Secret，不得写入 `refs.json`、Pages、日志或文档。
+- 「需求提报」正文会匿名进入公开仓库，请勿填写客户、账号、密钥等敏感信息；确认/观察的审计身份仍需后续迁入私有存储，见 `TODO.md`。
 - 免费 key 申请:Alpha Vantage `alphavantage.co/support/#api-key`、FMP `site.financialmodelingprep.com`、Tiingo `tiingo.com`、Alpaca `alpaca.markets`(paper 账号,要 ID+Secret)。
 
 ## 定时运行（每交易日 3 次，按美东 ET）
 
-GitHub Actions 在开盘后 **09:35**、盘中 **12:45**、收盘后 **16:05**（美东）扫描；工作流同时登记 EDT/EST 两套 UTC cron，并用 ET 守门避免夏冬令时重复。`state.json` 自动去重，同一日的每日催办不会重复推。
+GitHub Actions 在开盘后 **09:35**、盘中 **12:45**、收盘后 **16:05**（美东）扫描；工作流直接使用 `timezone: America/New_York`，夏冬令时自动换算，不再依赖双 UTC cron 或运行时门禁。`state.json` 自动去重，同一日的每日催办不会重复推。
 
 ```bash
 # crontab(注意:cron 用服务器本地时区,下面按服务器=美东 ET 计;非 ET 请换算)
@@ -166,6 +167,7 @@ LARK_SECRET=（开了签名校验才填,否则留空）
 LARK_DASHBOARD_URL=https://你的面板地址/   # 可选,卡片底部按钮（Pages 根路径）
 LARK_NOTIFY_EMPTY=0   # 1=没预警也推一条
 LARK_REQUIRED=0       # 本地可选；GitHub Actions 生产固定为 1
+LARK_ALERT_MENTION_OPEN_IDS=ou_xxx,ou_yyy  # 仅放 Secret；正式催办需要 @ 的负责人
 ```
 
 之后每次 `python run.py` 跑完会自动把**执行催办 / 合约门槛核验 / 单源核验 / 新发现 / 冲突 / 空缺 / 预测状态及合约结论更新**整理成一张交互卡片推到群里(filing 带 SEC 原文链接,底部「打开面板」按钮)。公司行动照常报告，但仅合约且确认价格影响 ≤3% 的事项不会进入重复催办或触发 @，并明确写「合约：本次无需操作」。`state.json` 去重：30 天窗口首次知会一次，14 天内每天最多一次。生产环境的 webhook 缺失或返回错误会直接让 Action 失败，且不推进去重状态，以便下次重试。单独测试推送:`python notify_lark.py`。
@@ -174,19 +176,21 @@ LARK_REQUIRED=0       # 本地可选；GitHub Actions 生产固定为 1
 
 ## 云端托管:GitHub Actions + GitHub Pages
 
-`.github/workflows/monitor.yml` 已配好:每交易日 3 次（09:35 / 12:45 / 16:05 ET）自动抓取 → 核对 → 推 Lark → 把 `dashboard.html` 和 `site_data.json` 部署到 GitHub Pages（在线网页，自动更新）。调度直接使用 GitHub 原生 `timezone: America/New_York`，无需夏/冬令时双 cron 或运行时门禁，因此延迟排队不会再误跳过。Pages 数据缺失或 Lark 投递失败会让工作流变红；Lark 短暂失败时 Pages 仍会尝试刷新。
+`.github/workflows/monitor.yml` 已配好:每交易日 3 次（09:35 / 12:45 / 16:05 ET）自动抓取 → 核对 → 推 Lark → 把 `dashboard.html` 和 `site_data.json` 部署到 GitHub Pages（在线网页，自动更新）。调度直接使用 GitHub 原生 `timezone: America/New_York`，无需夏/冬令时双 cron 或运行时门禁，因此延迟排队不会再误跳过。生产采用原子发布：状态恢复、抓取、Lark 投递、公开数据校验任一步失败都会让工作流变红并保留上一版 Pages，不会出现网站与群提醒两个批次。
+
+Pages `data.json` 使用 **schema v3**，包含 `generated_at_utc`、`valid_until_utc`、`source_sha`、`run_id` 与 `delivery_status`。网站会显示 schema / commit / Action run，问答助手也会核对版本和时效；快照无效或超过有效时点时，两边都会显示红色故障提示并停止输出「无风险 / 无需操作」等业务结论。
 
 启用步骤(一次性):
 
 1. **加密钥**:repo → Settings → Secrets and variables → **Actions** → New repository secret,逐个加:
-   `ALPHAVANTAGE` `FMP` `TIINGO` `ALPACA_KEY_ID` `ALPACA_SECRET` `SEC_UA` `LARK_WEBHOOK`(开了签名校验再加 `LARK_SECRET`)。
+   `ALPHAVANTAGE` `FMP` `TIINGO` `ALPACA_KEY_ID` `ALPACA_SECRET` `SEC_UA` `LARK_WEBHOOK`(开了签名校验再加 `LARK_SECRET`)；正式催办需要 @ 时另加 `LARK_ALERT_MENTION_OPEN_IDS`。
 2. **启用 Pages**:repo → Settings → **Pages** → Source 选 **GitHub Actions**。
 3. (可选)加仓库变量 `LARK_DASHBOARD_URL` = 你的 Pages 网址(见下),Lark 卡片按钮就指向它。
 4. **手动触发一次**:repo → Actions → CA Monitor → Run workflow。跑完后网页地址为
    `https://vancoder4-cyber.github.io/CA-Monitor/`。
 
 > **提交到 GitHub 不会立即刷新 Pages 或 Lark**：工作流只在定时或手动 Run workflow 时运行。推送后请手动触发一次（或等待下一扫描窗口），并分别确认 `build` / `deploy` 和 Lark 投递结果；Railway 交互 Bot 也要确认已拉到同一提交/镜像。
-> ⚠️ 公开 Pages = 网址公开可见,持仓清单会公开。要私有请改用 Cloudflare Pages/Netlify 加访问控制。
+> ⚠️ 公开 Pages = 网址公开可见，资产覆盖、公司行动与运行版本信息都会公开。要私有请改用带访问控制的托管方式。
 
 ## CA问答助手 指令清单
 
@@ -208,18 +212,19 @@ LARK_REQUIRED=0       # 本地可选；GitHub Actions 生产固定为 1
 | 日历 | 日历 / calendar / cal | 当月公司行动月历(图) |
 | 覆盖 | 覆盖 / 资产 / 标的 / coverage | 各标的在现货/合约的覆盖情况 |
 | 查代码 | @我 + 代码(如 AVGO) / 查代码 / 查 | 单标的全量:分红/拆股关键日(宣告/登记/除息/派发+距今)、重大事件(并购/退市)+SEC原文、风控动作、运营提醒;只发『查代码』看用法说明 |
-| 确认 | 确认 / confirm / 已核对 | **人工放行异常**:`确认 CODE [正确值] [日期] [备注]` → 解除金额门禁、停报警、按你给的值显示,并**只追加不删**地写入留痕库(需配 GH_TOKEN)。同一标的有多条不同值的异常时**必须带日期**,如 `确认 AAPL 0.26 2026-08-11 已比对公司公告`；拆/合股使用完整 `新股数:旧股数`，如 `确认 XYZ 1:10 2026-09-10` |
+| 确认 | 确认 / confirm / 已核对 | `确认 CODE 正确值 日期 [备注]` → 按代码、类型和日期精确写入生效库及留痕库；异常列表即时标记，金额/3% 结论由下一轮流水线重算(需配 GH_TOKEN)。如 `确认 AAPL 0.26 2026-08-11 已比对公司公告`；拆/合股必须使用完整 `新股数:旧股数`，如 `确认 XYZ 1:10 2026-09-10` |
 | 留痕 | 留痕 / 审计 / 确认记录 / audit / log | **调取确认留痕**:谁在何时把哪条改成了什么值 + 核对来源 + 备注(可加代码只看某标的);离线表用 `tools/export_ack_log.py` 导 Excel |
-| 需求提报 | 需求 / 提报 / 反馈 / 建议 | `需求 你的想法` → 追加到仓库 requests.md 供负责人迭代(需配 GH_TOKEN) |
+| 需求提报 | 需求 / 提报 / 反馈 / 建议 | `需求 你的想法` → 以匿名编号追加到公开仓库 `requests.md`；请勿填写敏感信息(需配 GH_TOKEN) |
 
-### ⚠️ 维护规则:改指令必须四处同步(有检查机制)
+### ⚠️ 维护规则:改指令必须五处同步(有检查机制)
 
-**每次新增/修改指令,务必同步这四处,否则视为未完成:**
+**每次新增/修改指令,务必同步这五处,否则视为未完成:**
 
 1. `bot/cards.py` 的 **`COMMANDS`**(唯一来源)——加/改条目;
 2. `bot/bot.py` 的 **`on_message` dispatch**——加对应 `elif cmd == "<key>"` 分支;
 3. 上面这张 **指令清单**(README);
-4. 跑检查:**`python tools/check_commands.py`** —— 必须输出 `✅`。
+4. `bot/README.md` 的 Bot 指令表；
+5. 跑检查:**`python tools/check_commands.py`** —— 必须输出 `✅`。
 
 `check_commands.py` 会校验 COMMANDS / bot.py 分发 / HELP_TEXT / README / bot README 是否一致；`check_surface_consistency.py` 会用 Visa 官方宣告 fixture 校验网页、推送、交互 Bot 和月历均有同一套官方 + 第三方链接。二者都由 CI 强制执行。
 

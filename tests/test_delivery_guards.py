@@ -9,6 +9,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import notify_lark
+import reconcile as R
+import report
 import run
 
 
@@ -224,6 +226,302 @@ class LarkDeliveryTests(unittest.TestCase):
         self.assertEqual(1, text.count("**HD**"))
         self.assertIn("单源已转正式", text)
         self.assertNotIn("预测状态更新(自动追踪)", text)
+
+    @staticmethod
+    def _event(ticker, **extra):
+        return {
+            "ticker": ticker,
+            "etype": "dividend",
+            "date": "2026-09-10",
+            "days": 7,
+            "products": ["合约"],
+            "risk": [],
+            **extra,
+        }
+
+    @staticmethod
+    def _new_group(ticker):
+        group = R.EventGroup(
+            ticker=ticker,
+            etype="dividend",
+            anchor_date="2026-09-10",
+            by_source={"CompanyIR": {"amount": 1.0}},
+            status="confirmed",
+        )
+        group.value_display = "$1"
+        group.value_verified = True
+        group.risk = []
+        return group
+
+    @staticmethod
+    def _new_filing(event_id, *, relevant=True, note="merger agreement"):
+        group = R.EventGroup(
+            ticker="IBM",
+            etype="filing",
+            anchor_date="2026-09-10",
+            by_source={"SEC": {"url": f"https://sec.example/{event_id}", "note": note}},
+            status="confirmed",
+            note=note,
+        )
+        group.event_id = event_id
+        group.filing_relevant = relevant
+        group.value_display = ""
+        group.value_verified = True
+        group.risk = []
+        group.contract_action = {}
+        return group
+
+    def test_card_globally_dedupes_event_sections_by_priority(self):
+        alerts = _alerts()
+        round_event = self._event("AAPL", ops="execute")
+        forecast_update = self._event("HD", kind="declared", official=True)
+        contract_update = self._event("IBM", current_status="not_required")
+        announced = self._event("QCOM", decl="2026-09-01")
+        alerts["rounds"] = [round_event, dict(round_event)]
+        alerts["forecast_updates"] = [
+            {**round_event, "kind": "declared"},
+            forecast_update,
+            dict(forecast_update),
+        ]
+        alerts["contract_updates"] = [
+            {**round_event, "current_status": "required"},
+            {**forecast_update, "current_status": "required"},
+            contract_update,
+            dict(contract_update),
+        ]
+        alerts["announced"] = [round_event, forecast_update, contract_update,
+                               announced, dict(announced)]
+        alerts["new"] = [
+            self._new_group("AAPL"),
+            self._new_group("HD"),
+            self._new_group("IBM"),
+            self._new_group("QCOM"),
+            self._new_group("GME"),
+            self._new_group("GME"),
+        ]
+
+        with mock.patch.object(notify_lark, "_load_mentions", return_value=[]):
+            card = notify_lark._build_card(alerts, {"generated": "test"})
+        text = json.dumps(card, ensure_ascii=False)
+
+        for ticker in ("AAPL", "HD", "IBM", "QCOM", "GME"):
+            self.assertEqual(1, text.count(f"**{ticker}**"), ticker)
+        self.assertIn("新公告 **1**", text)
+        self.assertIn("执行催办 **1**", text)
+        self.assertIn("预测状态 **1**", text)
+        self.assertIn("合约结论 **1**", text)
+        self.assertIn("新发现 **1**", text)
+
+        visible = notify_lark._visible_alert_items(alerts)
+        self.assertEqual(
+            {"rounds": 1, "forecast_updates": 1, "contract_updates": 1,
+             "announced": 1, "new": 1},
+            {key: len(items) for key, items in visible.items()},
+        )
+
+    def test_notify_reports_visible_deduped_count(self):
+        alerts = _alerts()
+        event = self._event("IBM", ops="execute")
+        alerts["rounds"] = [event]
+        alerts["forecast_updates"] = [{**event, "kind": "declared"}]
+        alerts["contract_updates"] = [{**event, "current_status": "required"}]
+        alerts["announced"] = [{**event, "decl": "2026-09-01"}]
+        alerts["new"] = [self._new_group("IBM")]
+        with self._env(), \
+                mock.patch.object(notify_lark, "_load_mentions", return_value=[]), \
+                mock.patch.object(
+                    notify_lark.requests,
+                    "post",
+                    return_value=_Response(payload={"code": 0}),
+                ):
+            sent, info = notify_lark.notify(alerts, {"generated": "test"})
+        self.assertTrue(sent)
+        self.assertIn("已推送 1 条", info)
+
+    def test_filing_event_id_preserves_distinct_same_day_documents(self):
+        alerts = _alerts()
+        first_id = "IBM|filing|2026-09-10|aaa111"
+        second_id = "IBM|filing|2026-09-10|bbb222"
+        alerts["rounds"] = [self._event(
+            "IBM", etype="filing", event_id=first_id, ops="execute",
+        )]
+        # 同一文件在低优先级区块被吸收；同日第二份 SEC 文件必须独立保留。
+        alerts["forecast_updates"] = [self._event(
+            "IBM", etype="filing", event_id=first_id, kind="promoted",
+        )]
+        alerts["new"] = [
+            self._new_filing(first_id, note="first merger filing"),
+            self._new_filing(second_id, note="second merger filing"),
+        ]
+
+        visible = notify_lark._visible_alert_items(alerts)
+        self.assertEqual(1, len(visible["rounds"]))
+        self.assertEqual(0, len(visible["forecast_updates"]))
+        self.assertEqual(1, len(visible["new"]))
+        self.assertEqual(second_id, visible["new"][0].event_id)
+
+        with mock.patch.object(notify_lark, "_load_mentions", return_value=[]):
+            text = json.dumps(
+                notify_lark._build_card(alerts, {"generated": "test"}),
+                ensure_ascii=False,
+            )
+        self.assertEqual(2, text.count("**IBM**"))
+        self.assertIn("执行催办 **1**", text)
+        self.assertIn("新发现 **1**", text)
+
+    def test_routine_filing_is_filtered_again_at_delivery_boundary(self):
+        alerts = _alerts()
+        event_id = "IBM|filing|2026-09-10|routine"
+        routine_dict = self._event(
+            "IBM", etype="filing", event_id=event_id,
+            filing_relevant=False, ops="must never render",
+        )
+        routine_group = self._new_filing(
+            event_id, relevant=False, note="routine 10-Q filing",
+        )
+        routine_group.conflicts = ["must never render"]
+        routine_group.gaps = ["must never render"]
+        alerts["rounds"] = [routine_dict]
+        alerts["forecast_updates"] = [{**routine_dict, "kind": "updated"}]
+        alerts["contract_updates"] = [{**routine_dict, "current_status": "not_required"}]
+        alerts["announced"] = [{**routine_dict, "decl": "2026-09-01"}]
+        alerts["new"] = [routine_group]
+        alerts["conflicts"] = [routine_group]
+        alerts["gaps"] = [routine_group]
+        alerts["forecasts"] = [routine_dict]
+        alerts["review"] = {
+            "open": 2, "conflicts": 1, "gaps": 1,
+            "overdue": 2, "max_age": 99, "escalate_days": 3,
+        }
+
+        visible = notify_lark._visible_alert_items(alerts)
+        self.assertTrue(all(not items for items in visible.values()))
+        with mock.patch.object(notify_lark, "_load_mentions", return_value=["ou_owner"]):
+            card_text = json.dumps(
+                notify_lark._build_card(alerts, {"generated": "test"}),
+                ensure_ascii=False,
+            )
+        self.assertNotIn("待人工确认 2 条", card_text)
+        self.assertNotIn("<at id=ou_owner></at>", card_text)
+        with self._env(), mock.patch.object(notify_lark.requests, "post") as post:
+            sent, info = notify_lark.notify(alerts, {"generated": "test"})
+        self.assertFalse(sent)
+        self.assertIn("无预警内容", info)
+        post.assert_not_called()
+
+    def test_unknown_structural_filing_is_not_filtered(self):
+        alerts = _alerts()
+        unknown = self._new_filing(
+            "IBM|filing|2026-09-10|unknown", relevant=None,
+            note="unknown structural action",
+        )
+        alerts["new"] = [unknown]
+        visible = notify_lark._visible_alert_items(alerts)
+        self.assertEqual([unknown], visible["new"])
+
+    def test_structural_round_does_not_call_filing_date_an_effective_date(self):
+        dates = notify_lark._dates({
+            "etype": "filing", "date": "2026-09-10",
+            "decl": None, "record": None, "pay": None,
+        })
+        self.assertEqual("事件日 2026-09-10", dates)
+        self.assertNotIn("生效", dates)
+
+    def test_contract_message_fallback_keeps_no_action_and_review_copy(self):
+        alerts = _alerts()
+        alerts["announced"] = [
+            self._event(
+                "IBM", decl="2026-09-01", risk=[],
+                contract_action={
+                    "status": "not_required",
+                    "message": "合约：本次无需操作｜现金分红影响未超过 3%",
+                },
+            ),
+            self._event(
+                "ARM", date="2026-09-11", decl="2026-09-02", risk=[],
+                contract_action={
+                    "status": "review",
+                    "message": "合约：待核实｜缺少可靠参考价，暂不能判定是否操作",
+                },
+            ),
+        ]
+        text = json.dumps(
+            notify_lark._build_card(alerts, {"generated": "test"}),
+            ensure_ascii=False,
+        )
+        self.assertIn("合约：本次无需操作", text)
+        self.assertIn("合约：待核实", text)
+
+    def test_no_action_event_cannot_be_mislabeled_as_execution_round(self):
+        alerts = _alerts()
+        event_id = "IBM|dividend|2026-09-10"
+        no_action = self._event(
+            "IBM", event_id=event_id, follow_up_mode="none",
+            contract_action={
+                "status": "not_required",
+                "message": "合约：本次无需操作｜现金分红影响未超过 3%",
+            },
+        )
+        alerts["rounds"] = [{**no_action, "ops": "must never execute"}]
+        alerts["announced"] = [{**no_action, "decl": "2026-09-01"}]
+
+        with mock.patch.object(notify_lark, "_load_mentions", return_value=["ou_owner"]):
+            card = notify_lark._build_card(alerts, {"generated": "test"})
+        text = json.dumps(card, ensure_ascii=False)
+        self.assertIn("执行催办 **0**", text)
+        self.assertIn("新公告 **1**", text)
+        self.assertIn("合约：本次无需操作", text)
+        self.assertNotIn("must never execute", text)
+        self.assertNotIn("<at id=ou_owner></at>", text)
+
+        website_visible = report._visible_alert_items(alerts)
+        self.assertEqual([], website_visible["rounds"])
+        self.assertEqual(1, len(website_visible["announced"]))
+
+    def test_announced_only_card_is_blue_and_uses_visible_count(self):
+        alerts = _alerts()
+        alerts["announced"] = [self._event("QCOM", decl="2026-09-01")]
+        card = notify_lark._build_card(alerts, {"generated": "test"})
+        text = json.dumps(card, ensure_ascii=False)
+        self.assertEqual("blue", card["card"]["header"]["template"])
+        self.assertIn("新公告 **1**", text)
+
+    def test_required_contract_update_mentions_owner_without_round(self):
+        alerts = _alerts()
+        alerts["contract_updates"] = [
+            self._event(
+                "IBM",
+                current_status="required",
+                risk=["合约：需操作｜价格影响严格超过 3%"],
+            )
+        ]
+        with mock.patch.object(notify_lark, "_load_mentions", return_value=["ou_owner"]):
+            card = notify_lark._build_card(alerts, {"generated": "test"})
+        text = json.dumps(card, ensure_ascii=False)
+        self.assertIn("<at id=ou_owner></at>", text)
+        self.assertIn("有合约结论更新为需操作", text)
+        self.assertIn("现已达到 >3% 合约操作门槛", text)
+
+    def test_required_update_still_mentions_when_higher_priority_section_absorbs_it(self):
+        alerts = _alerts()
+        event_id = "IBM|dividend|2026-09-10"
+        alerts["forecast_updates"] = [self._event(
+            "IBM", event_id=event_id, kind="updated",
+            previous_date="2026-09-09", previous_amount=0.1,
+            risk=["合约：需操作｜现金分红影响严格超过 3%"],
+        )]
+        alerts["contract_updates"] = [self._event(
+            "IBM", event_id=event_id, current_status="required",
+            risk=["合约：需操作｜现金分红影响严格超过 3%"],
+        )]
+        with mock.patch.object(notify_lark, "_load_mentions", return_value=["ou_owner"]):
+            card = notify_lark._build_card(alerts, {"generated": "test"})
+        text = json.dumps(card, ensure_ascii=False)
+        self.assertIn("<at id=ou_owner></at>", text)
+        self.assertIn("有合约结论更新为需操作", text)
+        self.assertIn("预测状态 **1**", text)
+        self.assertIn("合约结论 **0**", text)
+        self.assertNotIn("合约操作结论更新", text)
 
 
 class ReminderCadenceTests(unittest.TestCase):

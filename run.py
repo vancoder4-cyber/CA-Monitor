@@ -8,7 +8,7 @@
 
 状态文件 data/state.json:已见事件签名(新发现判定)+ 已触发预警轮次(去重)。
 """
-import os, sys, json, re, datetime as dt
+import os, sys, json, re, hashlib, datetime as dt
 import requests
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -29,6 +29,42 @@ def _now_label():
     et = business_now()
     bj = et.astimezone(dt.timezone(dt.timedelta(hours=8)))
     return f"{et.strftime('%Y-%m-%d %H:%M')} ET / {bj.strftime('%H:%M')} 北京"
+
+
+def _provenance_meta():
+    """生成供 Pages、问答助手和发布验收共同使用的机器可读版本信息。"""
+    now_utc = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+    now_et = business_now(now_utc)
+    # GitHub 定时任务可能排队；允许下一计划扫描点后 4 小时宽限。超过这个
+    # 明确时点，网站与 Bot 必须显示数据不可用，不能只因 business_date 相同
+    # 就在一天内持续“假绿”。
+    slots = ((9, 35), (12, 45), (16, 5))
+    next_run = None
+    for hour, minute in slots:
+        candidate = now_et.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if candidate > now_et:
+            next_run = candidate
+            break
+    if next_run is None:
+        day = now_et.date() + dt.timedelta(days=1)
+        while day.weekday() >= 5:
+            day += dt.timedelta(days=1)
+        next_run = now_et.replace(
+            year=day.year, month=day.month, day=day.day,
+            hour=slots[0][0], minute=slots[0][1], second=0, microsecond=0,
+        )
+    valid_until = (next_run + dt.timedelta(hours=4)).astimezone(dt.timezone.utc)
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    run_id = os.environ.get("GITHUB_RUN_ID", "")
+    run_url = f"https://github.com/{repo}/actions/runs/{run_id}" if repo and run_id else ""
+    return {
+        "schema_version": C.PUBLIC_DATA_SCHEMA_VERSION,
+        "generated_at_utc": now_utc.isoformat().replace("+00:00", "Z"),
+        "valid_until_utc": valid_until.isoformat().replace("+00:00", "Z"),
+        "source_sha": os.environ.get("GITHUB_SHA", "") or "local",
+        "run_id": run_id,
+        "run_url": run_url,
+    }
 CACHE = os.path.join(DATA, "cache")
 os.makedirs(CACHE, exist_ok=True)
 STATE_PATH = os.path.join(DATA, "state.json")
@@ -40,23 +76,8 @@ OUT_SITEDATA = os.path.join(HERE, "site_data.json")  # 供交互机器人读取(
 
 
 def load_changelog():
-    """解析 CHANGELOG.md -> [{head, items:[...]}, ...](最新在前)。"""
-    path = os.path.join(HERE, "CHANGELOG.md")
-    if not os.path.exists(path):
-        return []
-    entries, cur = [], None
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            s = line.rstrip()
-            if s.startswith("## "):
-                if cur:
-                    entries.append(cur)
-                cur = {"head": s[3:].strip(), "items": []}
-            elif s.startswith("- ") and cur is not None:
-                cur["items"].append(s[2:].strip())
-    if cur:
-        entries.append(cur)
-    return entries
+    """复用网页解析器，保证 Pages/Bot 与网站的更新日志层级完全一致。"""
+    return RP.load_changelog(os.path.join(HERE, "CHANGELOG.md"))
 
 
 def load_acknowledged():
@@ -372,9 +393,11 @@ def attach_event_references(target, refs, sec8k):
 
 def _product_fields(g):
     return {
+        "event_id": getattr(g, "event_id", ""),
         "contract_action": getattr(g, "contract_action", {}),
         "follow_up_mode": getattr(g, "follow_up_mode", "execution"),
         "reminder_state_suffix": getattr(g, "reminder_state_suffix", ""),
+        "filing_relevant": getattr(g, "filing_relevant", None),
         "risk": getattr(g, "risk", []),
     }
 
@@ -460,6 +483,7 @@ def attach_product_action(g, reference_price, today, forecast=False):
     else:
         # Alpaca / FINX “其它公司行动”没有足够条款时必须 review，不能当普通备案 no-op。
         filing_relevant = None
+    g.filing_relevant = filing_relevant
     subtype = CP.action_subtype(g.by_source, g.etype)
     g.selected_amount = amount
     g.selected_ratio = ratio
@@ -491,11 +515,18 @@ def attach_product_action(g, reference_price, today, forecast=False):
         today=today,
     )
     g.value_verified = bool(value_verified and not (g.conflicts and not ack_value_verified))
-    mode = CP.follow_up_mode(g.ticker, decision)
+    # 预测无论是否含现货都只能核验，不能因为现货默认流程被误标为 execution。
+    mode = "verification" if forecast else CP.follow_up_mode(g.ticker, decision)
     g.contract_action = decision
     g.follow_up_mode = mode
     g.reminder_state_suffix = CP.reminder_state_suffix(g.ticker, decision, mode)
-    g.risk = C.risk_note(g.ticker, g.etype, decision)
+    g.risk = C.risk_note(
+        g.ticker,
+        g.etype,
+        decision,
+        forecast=forecast,
+        filing_relevant=filing_relevant,
+    )
     return decision
 
 
@@ -533,9 +564,10 @@ def load_state():
             st.setdefault("declared", {})   # sig -> 已推送过的宣告日
             st.setdefault("forecast_status", {})  # 自动单源 + 人工观察的状态，供升级/改期/失效通知去重
             st.setdefault("contract_action_status", {})  # sig -> 合约门槛上次结论
+            st.setdefault("filing_signature_version", 1)
             return st
     return {"seen": {}, "fired_rounds": {}, "declared": {}, "forecast_status": {},
-            "contract_action_status": {}}
+            "contract_action_status": {}, "filing_signature_version": 1}
 
 
 def save_state(st):
@@ -566,8 +598,36 @@ def deliver_then_save(alerts, meta, state):
     return sent, info
 
 
-def sig(g):
+def legacy_sig(g):
+    """旧版签名；仅用于无重放迁移。"""
     return f"{g.ticker}|{g.etype}|{g.anchor_date}"
+
+
+def sig(g):
+    """稳定事件 ID。
+
+    分红/拆股一天通常只有一个经济事件，沿用旧签名。filing 同日可能有多份
+    不同 SEC 文件（生产曾出现同日 3 份），因此加入来源 URL/表格信息指纹，
+    避免后到文件被旧的 ticker+date 去重键吞掉。
+    """
+    base = legacy_sig(g)
+    if getattr(g, "etype", "") != "filing":
+        return base
+    by_source = getattr(g, "by_source", {}) or {}
+    # SEC 原文 URL（含 accession）是 filing 的稳定身份；后续补到 Alpaca/FINX
+    # 来源时不能改变 ID 并重放同一事件。没有原文 URL 的供应商事项才退回到
+    # 类型/描述指纹，同日不同描述仍保持独立。
+    sec_fields = by_source.get("SEC") or {}
+    sec_url = sec_fields.get("url") or ""
+    identity = ({"sec_url": sec_url} if sec_url else {
+        "form": sec_fields.get("form") or "",
+        "items": sec_fields.get("items") or "",
+        "note": getattr(g, "note", "") or "",
+    })
+    digest = hashlib.sha256(
+        json.dumps(identity, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:12]
+    return f"{base}|{digest}"
 
 
 # ---------------- FETCH ----------------
@@ -662,6 +722,16 @@ def build():
     seen, fired, declared = state["seen"], state["fired_rounds"], state["declared"]
     forecast_state = state["forecast_status"]
     contract_state = state["contract_action_status"]
+
+    # filing 从 ticker+date 升级为带文件指纹的 ID。首次上线时把当前缓存里已经
+    # 见过的文件继承旧 seen，避免签名升级导致历史 8-K 整批重放；之后同日出现
+    # 新 URL/表格会得到新 ID 并正常首报。
+    if state.get("filing_signature_version", 1) < 2:
+        for _groups in all_groups.values():
+            for _g in _groups:
+                if _g.etype == "filing" and legacy_sig(_g) in seen:
+                    seen.setdefault(sig(_g), seen[legacy_sig(_g)])
+        state["filing_signature_version"] = 2
     today_d = business_today()
     today = today_d.isoformat()
     cutoff30 = (today_d - dt.timedelta(days=30)).isoformat()
@@ -678,6 +748,7 @@ def build():
         first_time_ticker = getattr(C, "BASELINE_NEW_TICKERS", False) and tk not in known_tickers
         for g in groups:
             s = sig(g)
+            g.event_id = s
             if s not in seen:
                 seen[s] = today
                 if not first_time_ticker:
@@ -722,12 +793,15 @@ def build():
                                       "products": C.product_tags(g.ticker),
                                       **_product_fields(g)})
 
-            if g.is_future and g.etype != "filing" and g.days_to is not None:
-                # 持续展示所有正式未来事件；只有产品动作门槛命中的项目才进入周期提醒。
+            if (g.is_future and g.days_to is not None and
+                    (g.etype != "filing" or getattr(g, "filing_relevant", None) is not False)):
+                # 持续展示所有正式未来公司行动；普通 SEC 备案只留在原文表，
+                # 结构性/未知公司行动则按中央产品结论进入执行或核验节奏。
                 _decl = _pk("declaration_date")
                 # 正式跟踪判定：已逐项核验的 CompanyIR、已取得宣告日，或 ≥2 源一致。
                 # 普通单源且无宣告日仍是预测，只能进入核验提醒，不能让运营执行。
-                _confirmed = (_official or bool(_decl) or len(g.by_source) >= 2)
+                _confirmed = (g.etype == "filing" or _official or bool(_decl) or
+                              len(g.by_source) >= 2)
                 event = {"ticker": g.ticker, "etype": g.etype, "date": g.anchor_date,
                          "days": g.days_to, "status": g.status,
                          "decl": _decl, "record": _pk("record_date"),
@@ -825,18 +899,59 @@ def build():
                     if reminder:
                         round_alerts.append(reminder)
 
-    # 观察项若直到预计日仍未得到任何匹配事件，明确通知「预测失效」而不是悄悄消失。
+    # 手工观察是一等预测事项：即使供应商当前完全没有对应 event group，也要在
+    # Pages/Bot 中可见、按 30/14 天节奏核验，并在预计日过后主动失效；不能成为
+    # 写入成功却永远看不见的“黑洞记录”。
     for watch in watches:
         wk = forecast_key(watch)
         if wk in matched_watch_keys or watch.get("status", "watching") != "watching":
             continue
         prev = forecast_state.get(wk) or {}
-        if (watch.get("date", "") < today and prev.get("status") == "watching"):
+        watch_date = watch.get("date", "")
+        if watch_date < today and prev.get("status") != "expired":
             forecast_updates.append({"ticker": watch.get("ticker"), "etype": watch.get("etype"),
-                                     "date": watch.get("date"), "kind": "expired",
+                                     "date": watch_date, "event_id": wk, "kind": "expired",
                                      "watching": True, "watch_note": watch.get("note", ""),
                                      "srcs": [], "products": C.product_tags(watch.get("ticker", ""))})
-            forecast_state[wk] = {"status": "expired", "date": watch.get("date"), "last_seen": today}
+            forecast_state[wk] = {"status": "expired", "date": watch_date, "last_seen": today,
+                                  "ticker": watch.get("ticker"), "etype": watch.get("etype")}
+            continue
+        if watch_date < today:
+            continue
+        try:
+            watch_days = (dt.date.fromisoformat(watch_date) - today_d).days
+        except (TypeError, ValueError):
+            continue
+        ticker = watch.get("ticker", "")
+        etype = watch.get("etype") or "dividend"
+        decision = CP.evaluate(
+            ticker, etype, value_verified=False, forecast=True, today=today_d,
+        )
+        manual_event = {
+            "ticker": ticker, "etype": etype, "date": watch_date,
+            "event_id": wk, "days": watch_days, "status": "single",
+            "decl": None, "record": None, "pay": None,
+            "amount": None, "ratio": None, "subtype": "",
+            "event_label": CP.event_label(etype), "amount_currency": "",
+            "amount_unit": "", "value_display": "", "value_verified": False,
+            "amt_srcs": 0, "acked": False, "official": False,
+            "first": watch.get("at") or today, "confirmed": False,
+            "forecast": True, "manual_watch": True, "srcs": [],
+            "products": C.product_tags(ticker), "contract_action": decision,
+            "follow_up_mode": "verification", "reminder_state_suffix": "verification",
+            "filing_relevant": None,
+            "risk": C.risk_note(ticker, etype, decision, forecast=True),
+            "watching": True, "watch_note": watch.get("note", ""),
+        }
+        forecasts.append(manual_event)
+        forecast_sigs.add(wk)
+        forecast_state[wk] = {
+            "status": "watching", "date": watch_date, "amount": None,
+            "last_seen": today, "ticker": ticker, "etype": etype, "automatic": False,
+        }
+        reminder = schedule_event_reminder(manual_event, wk, fired, today)
+        if reminder:
+            round_alerts.append(reminder)
 
     # 统一「首发日」:分红宣告日(declaration date)→ 否则监控首次发现日
     for tk, groups in all_groups.items():
@@ -847,7 +962,9 @@ def build():
 
     cutoff = (today_d - dt.timedelta(days=30)).isoformat()
     new_events = [g for g in new_events
-                  if (g.anchor_date or "") >= cutoff and sig(g) not in forecast_sigs]
+                  if (g.anchor_date or "") >= cutoff and sig(g) not in forecast_sigs
+                  and not (g.etype == "filing" and
+                           getattr(g, "filing_relevant", None) is False)]
     new_events.sort(key=lambda g: g.anchor_date or "", reverse=True)
     round_alerts.sort(key=lambda x: x["days"])
     conflicts.sort(key=lambda g: g.anchor_date or "", reverse=True)
@@ -927,7 +1044,7 @@ def build():
                         e["ratio"] = ratio
                         e["value_display"] = CP.value_display("split", ratio=ratio)
             disputed = _disputed.get(
-                f"{e.get('ticker')}|{e.get('etype')}|{e.get('date')}"
+                e.get("event_id") or f"{e.get('ticker')}|{e.get('etype')}|{e.get('date')}"
             )
             if disputed:
                 e["disputed"] = True
@@ -985,7 +1102,14 @@ def build():
               "gaps": gaps, "pending": pending, "announced": announced, "resolved": resolved,
               "forecasts": forecasts, "forecast_updates": forecast_updates,
               "contract_updates": contract_updates, "review": review_summary}
-    meta = {"generated": _now_label(), "business_date": today}
+    meta = {"generated": _now_label(), "business_date": today, **_provenance_meta()}
+
+    # 生产采用原子发布：先确认 Lark 已送达（或本地合法静默）并保存去重状态，
+    # 再生成可发布站点。投递失败会抛错，旧 Pages 保持不变，避免网站与群提醒
+    # 显示两个不同批次的事实。
+    sent, delivery_info = deliver_then_save(alerts, meta, state)
+    meta["delivery_status"] = "sent" if sent else "legal_skip"
+    meta["delivery_info"] = delivery_info
 
     # 单页站点:日历 + 预警面板(标签切换)
     with open(OUT_HTML, "w", encoding="utf-8") as f:
@@ -997,7 +1121,10 @@ def build():
     # 月历事件(供交互机器人画当月月历):近 45 天~未来 80 天内的分红/拆股/并购退市
     cal_lo = (today_d - dt.timedelta(days=45)).isoformat()
     cal_hi = (today_d + dt.timedelta(days=80)).isoformat()
-    forecast_event_keys = {(x.get("ticker"), x.get("etype"), x.get("date")) for x in forecasts}
+    forecast_event_keys = {
+        x.get("event_id") or f"{x.get('ticker')}|{x.get('etype')}|{x.get('date')}"
+        for x in forecasts
+    }
     calendar_events = []
     for tk, groups in all_groups.items():
         for g in groups:
@@ -1005,7 +1132,9 @@ def build():
             if not (cal_lo <= ad <= cal_hi):
                 continue
             if g.etype == "filing":
-                if not any(k in (g.note or "") for k in ("并购", "退市", "分拆", "证券变更", "要约")):
+                # 只过滤中央判定已明确是普通备案的记录。Alpaca/FINX 的英文
+                # merger/spin_off/name_change 及未知结构性行动必须持续留在日历供核验。
+                if getattr(g, "filing_relevant", None) is False:
                     continue
             elif g.etype not in ("dividend", "split"):
                 continue
@@ -1020,7 +1149,7 @@ def build():
                      "decl": _ck("declaration_date"),
                      "first": getattr(g, "first_announced", None),
                      "status": g.status, **_product_fields(g),
-                     "forecast": (g.ticker, g.etype, ad) in forecast_event_keys,
+                     "forecast": sig(g) in forecast_event_keys,
                      "url": (g.by_source.get("SEC") or {}).get("url", "") if g.etype == "filing" else "",
                      "srcs": sorted(g.by_source.keys()),
                      "products": C.product_tags(g.ticker)}
@@ -1086,8 +1215,7 @@ def build():
 
     # 发布给交互机器人读取的数据(随 Pages 一起部署为 data.json)
     site_data = {
-        "generated": meta["generated"],
-        "business_date": today,
+        **meta,
         "changelog": load_changelog(),
         "coverage": coverage,
         "counts": {"pending": len(pending), "forecasts": len(forecasts), "new": len(new_events),
@@ -1095,7 +1223,11 @@ def build():
                    "announced": len(announced)},
         "announced": announced,
         "recent_declares": recent_declares,
-        "resolved": resolved,
+        # Pages 是公开数据；保留业务结果与时间，但不发布确认人的 open_id。
+        "resolved": [
+            {key: value for key, value in item.items() if key not in ("by", "by_name")}
+            for item in resolved
+        ],
         "refs": ir_map,
         "ticker_aliases": ticker_aliases,
         "pending": pending,
@@ -1113,8 +1245,6 @@ def build():
     print("\n" + "=" * 50 + "\n" + digest + "\n" + "=" * 50)
     print(f"\n站点(日历+面板): {OUT_HTML}\nDigest: {OUT_DIGEST}")
 
-    # 生产投递失败时不写 state，下次继续重试而不是静默吞掉预警。
-    deliver_then_save(alerts, meta, state)
     return alerts
 
 

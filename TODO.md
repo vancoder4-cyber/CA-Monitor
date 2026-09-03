@@ -6,8 +6,14 @@
 
 ## 发布闭环
 
-- [ ] **Railway Bot 版本可见性**：下一次 Bot 发版时，在 Railway 增加可见的 build/commit 标识，或在 `关于`卡片显示当前 Bot build。验收必须同时检查 Actions、Pages 和 Railway，而不是只看其中一个。
 - [ ] **自动化生产 smoke**：在不发送真实群消息的前提下，增加可选 smoke，读取生产 `data.json` 并验证当前范围为现货 62 / 合约 39 / 覆盖 81 / 监控 75、`SKHY` 与 Bot aliases 已发布、仅从现货移除后以合约重上的标的显示正确；历史 Visa fixture 仅在本地引用契约测试中保留。
+- [ ] **工作流 dead-man 告警**：网站/Bot 已会在 `valid_until_utc` 后 fail closed；仍需增加一个独立于本 workflow 的外部监控，在计划扫描未启动或 Pages 长时间未刷新时主动通知负责人。
+- [ ] **状态 schema 与回滚迁移**：为 `state.json` 增加明确 schema 版本和 N-1 迁移/回滚测试；禁止回滚到只读取旧 `ca-state-*` bundle 的 workflow，避免找不到独立 core cache 后重放历史。
+
+## 私有审计存储
+
+- [ ] **迁移确认/观察留痕**：`data/ack_log.json`、`data/acknowledged.json`、`data/forecast_watch.json` 仍是公开仓库中的写回文件，包含确认人身份与自由备注。迁入私有数据库或私有仓库后，再从公开 Git 历史中清理并轮换可能暴露的标识；在迁移完成前禁止填写客户或账户等敏感信息。
+- [ ] **需求队列私有化评估**：当前新需求仅用匿名编号且不保存 Lark 身份，但正文仍进入公开 `requests.md`。若要支持敏感业务需求，改用私有工单系统并设置数据保留/删除权限。
 
 ## 官方事件与核对来源
 

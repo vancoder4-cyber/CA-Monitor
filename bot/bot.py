@@ -13,6 +13,7 @@ import re
 import sys
 import json
 import time
+import datetime as dt
 import threading
 import subprocess
 import requests
@@ -86,11 +87,25 @@ def get_user_name(open_id):
 def fetch_data():
     try:
         r = requests.get(DATA_URL, timeout=15)
-        if r.status_code == 200:
-            return apply_forecasts(apply_acks(r.json()))
+        if r.status_code != 200:
+            return {"_snapshot_error": f"Pages data.json HTTP {r.status_code}"}
+        try:
+            payload = r.json()
+        except Exception as e:
+            return {"_snapshot_error": f"Pages data.json 不是有效 JSON：{e}"}
+        problem = cards.validate_snapshot(payload)
+        if problem:
+            return {"_snapshot_error": problem}
+        payload["_bot_build_sha"] = (
+            os.environ.get("RAILWAY_GIT_COMMIT_SHA")
+            or os.environ.get("GIT_COMMIT_SHA")
+            or os.environ.get("SOURCE_VERSION")
+            or "unknown"
+        )
+        return apply_forecasts(apply_acks(payload))
     except Exception as e:
         print("fetch data.json err:", e)
-    return {}
+        return {"_snapshot_error": f"Pages data.json 请求失败：{e}"}
 
 
 def apply_acks(d):
@@ -118,7 +133,7 @@ def apply_acks(d):
             d[key] = [g for g in lst
                       if (g.get("ticker"), g.get("etype"), g.get("date")) not in ackset]
     # 待执行/日历/新公告只叠加确认标记；数值门禁和产品动作等待流水线统一重算。
-    for key in ("pending", "calendar", "announced"):
+    for key in ("pending", "calendar", "announced", "recent_declares"):
         for x in d.get(key, []) or []:
             if (x.get("ticker"), x.get("etype"), x.get("date")) in ackset:
                 x["acked"] = True
@@ -143,10 +158,24 @@ def apply_forecasts(d):
     except Exception as e:
         print("apply_forecasts get_forecasts err:", e)
         watches = []
-    watchset = {(w.get("ticker"), w.get("etype"), w.get("date"))
-                for w in watches
-                if w.get("status", "watching") == "watching"
-                and cards.is_monitored_ticker(d, w.get("ticker"))}
+    business_date = cards._business_date(d)
+    watchmap = {}
+    for w in watches:
+        if not isinstance(w, dict) or w.get("status", "watching") != "watching":
+            continue
+        ticker, etype, date = w.get("ticker"), w.get("etype"), w.get("date")
+        if not (isinstance(ticker, str) and isinstance(etype, str)
+                and isinstance(date, str) and cards.is_monitored_ticker(d, ticker)):
+            continue
+        try:
+            # forecast_watch.json 是只追加的历史记录；预计日已过的观察由流水线
+            # 负责发「失效」通知，Bot 叠加层不得把它重新显示成活动预测。
+            if dt.date.fromisoformat(date) < business_date:
+                continue
+        except ValueError:
+            continue
+        watchmap[(ticker, etype, date)] = w
+    watchset = set(watchmap)
     if not watchset:
         return d
     forecasts = list(d.get("forecasts") or [])
@@ -162,8 +191,54 @@ def apply_forecasts(d):
     for x in forecasts:
         if (x.get("ticker"), x.get("etype"), x.get("date")) in watchset:
             x["watching"] = True
+    published = forecasts + pending
+    for field in ("calendar", "announced", "recent_declares"):
+        published.extend(d.get(field, []) or [])
+    existing = {(x.get("ticker"), x.get("etype"), x.get("date")) for x in published}
+    coverage = {x.get("ticker"): x for x in d.get("coverage", [])}
+    for key, watch in watchmap.items():
+        # 正式化后的事件仍可能保留 watching=True（用于发「预测转正式」状态
+        # 更新）；日期小幅改动时也不能把旧预计日再次合成为第二条预测。
+        ticker, etype, date = key
+        shifted_match = False
+        for event in published:
+            if not (event.get("watching") and event.get("ticker") == ticker
+                    and event.get("etype") == etype and event.get("date")):
+                continue
+            try:
+                shifted_match = abs(
+                    (dt.date.fromisoformat(event["date"]) - dt.date.fromisoformat(date)).days
+                ) <= 14
+            except (TypeError, ValueError):
+                shifted_match = False
+            if shifted_match:
+                break
+        if key in existing or shifted_match:
+            continue
+        try:
+            days = (dt.date.fromisoformat(date) - business_date).days
+        except (TypeError, ValueError):
+            continue
+        cov = coverage.get(ticker) or {}
+        products = (["现货"] if cov.get("spot") else []) + (["合约"] if cov.get("contract") else [])
+        risks = []
+        if cov.get("spot"):
+            risks.append("现货：预测待核实｜公司行动未证实前不执行持仓、成本或订单调整")
+        if cov.get("contract"):
+            risks.append("合约：待核实｜公司行动本身仍是预测，未证实前不得执行")
+        forecasts.append({
+            "ticker": ticker, "etype": etype, "date": date, "event_id": "|".join(key),
+            "days": days, "forecast": True, "confirmed": False, "manual_watch": True,
+            "watching": True, "watch_note": watch.get("note", ""), "srcs": [],
+            "products": products, "amount": None, "ratio": None, "value_display": "",
+            "value_verified": False, "follow_up_mode": "verification", "risk": risks,
+            "contract_action": {"status": "review"} if cov.get("contract") else {"status": "not_applicable"},
+        })
     d["pending"] = pending
     d["forecasts"] = forecasts
+    if isinstance(d.get("counts"), dict):
+        d["counts"]["pending"] = len(pending)
+        d["counts"]["forecasts"] = len(forecasts)
     return d
 
 
@@ -218,6 +293,7 @@ def parse_command(text):
 
 
 def on_message(data: P2ImMessageReceiveV1):
+    chat_id = None
     try:
         msg = data.event.message
         mid = msg.message_id
@@ -257,6 +333,21 @@ def on_message(data: P2ImMessageReceiveV1):
             pass
         cmd = parse_command(text)
         d = fetch_data()
+        clean_command = re.sub(r"@_user_\d+|@_all", "", text or "").strip().lower()
+        explicit_help = any(
+            ((not kw.isascii() and clean_command.startswith(kw.lower())) or
+             re.match(rf"^{re.escape(kw.lower())}(?:\s|[:：,，、]|$)", clean_command))
+            for command in cards.COMMANDS if command["key"] == "help"
+            for kw in command["kw"]
+        )
+        snapshot_problem = cards.validate_snapshot(d)
+        # 帮助、需求提报和审计留痕不依赖 Pages 快照；其余业务查询/写回必须
+        # fail closed，不能把网络错误或旧 schema 冒充成“当前无风险”。
+        if snapshot_problem and not (
+            cmd in ("request", "audit") or (cmd == "help" and explicit_help)
+        ):
+            send_card(chat_id, cards.unavailable_card(snapshot_problem, SITE_URL))
+            return
         refs_ir = (d.get("refs") if isinstance(d, dict) and isinstance(d.get("refs"), dict) else None)
         ticker = cards.find_ticker(text, d)
         # 查代码:显式『查』指令,或直接发了一个已覆盖的代码(未命中其它指令时)
@@ -273,11 +364,13 @@ def on_message(data: P2ImMessageReceiveV1):
                 send_card(chat_id, cards.forecast_card(d, SITE_URL))
                 return
             etype = "dividend"
+            event_src_url = ""
             for key in ("forecasts", "pending", "calendar"):
                 hit = next((x for x in d.get(key, []) or []
                             if x.get("ticker") == ticker and x.get("date") == date), None)
                 if hit:
                     etype = hit.get("etype") or etype
+                    event_src_url = hit.get("src_url") or hit.get("url") or ""
                     break
             note = clean
             for kw in ("观察", "预测", "等待宣告", "watch"):
@@ -287,7 +380,8 @@ def on_message(data: P2ImMessageReceiveV1):
             by_name = get_user_name(sender_oid)
             print(f"[msg] chat={chat_id} -> forecast {ticker} {etype} @{date}")
             ok, msg = ack.add_forecast(ticker, etype, date, by=sender_oid or "",
-                                       by_name=by_name, note=note, refs_ir=refs_ir)
+                                       by_name=by_name, note=note, refs_ir=refs_ir,
+                                       src_url=event_src_url)
             send_card(chat_id, cards.forecast_mark_card(ok, msg, ticker, date, SITE_URL))
             return
         if cmd == "confirm":
@@ -372,17 +466,37 @@ def on_message(data: P2ImMessageReceiveV1):
             except (TypeError, ValueError):
                 pass
             by_name = get_user_name(sender_oid)
+            event_src_url = ""
+            for key in ("conflicts", "pending", "calendar", "gaps"):
+                hit = next((x for x in d.get(key, []) or []
+                            if x.get("ticker") == ticker and x.get("etype") == etype
+                            and x.get("date") == date), None)
+                if hit:
+                    event_src_url = hit.get("src_url") or hit.get("url") or ""
+                    break
             ok, msg = ack.add_ack(ticker, value, etype, date,
-                                  by=sender_oid or "", by_name=by_name, note=note, refs_ir=refs_ir)
+                                  by=sender_oid or "", by_name=by_name, note=note,
+                                  refs_ir=refs_ir, src_url=event_src_url)
             send_card(chat_id, cards.confirm_card(ok, msg, ticker, value, SITE_URL, date, etype, warn))
             return
         if cmd == "audit":
             # 留痕库:拉最近确认记录(可只看某个标的)。经 GH API 读 data/ack_log.json
             log = ack.get_ack_log(limit=200)
-            if ticker:
-                log = [e for e in log if e.get("ticker") == ticker]
-            print(f"[msg] chat={chat_id} -> audit ticker={ticker} n={len(log)}")
-            send_card(chat_id, cards.audit_card(log[:15], SITE_URL, ticker))
+            audit_ticker = ticker
+            if not audit_ticker:
+                # 审计入口刻意不依赖 Pages：快照故障时仍能查留痕，已退出当前
+                # coverage 的历史代码也应可筛选，不能退化成返回全部记录。
+                known_log_tickers = {str(e.get("ticker") or "").upper() for e in log}
+                tokens = re.findall(r"[A-Za-z][A-Za-z0-9.-]*", text or "")
+                audit_ticker = next(
+                    (token.upper() for token in tokens if token.upper() in known_log_tickers),
+                    None,
+                )
+            if audit_ticker:
+                log = [e for e in log
+                       if str(e.get("ticker") or "").upper() == audit_ticker]
+            print(f"[msg] chat={chat_id} -> audit ticker={audit_ticker} n={len(log)}")
+            send_card(chat_id, cards.audit_card(log[:15], SITE_URL, audit_ticker))
             return
         if cmd == "request":
             req = re.sub(r"@_user_\d+|@_all", "", text or "").strip()
@@ -428,6 +542,14 @@ def on_message(data: P2ImMessageReceiveV1):
             send_calendar_image(chat_id, d)
     except Exception as e:
         print("on_message error:", e)
+        if chat_id:
+            try:
+                send_card(chat_id, cards.unavailable_card(
+                    "问答助手处理消息时发生内部错误；本次未输出业务结论，请稍后重试。",
+                    SITE_URL,
+                ))
+            except Exception as send_error:
+                print("on_message error card failed:", send_error)
 
 
 def _heartbeat_loop():

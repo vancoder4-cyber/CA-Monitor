@@ -5,6 +5,10 @@ API key 建议用环境变量覆盖(见 get_keys),避免明文留在代码里。
 """
 import os
 
+# Pages ``data.json`` 与独立部署的问答助手之间的公开数据契约版本。
+# 改动会影响 Bot 消费语义的字段时必须递增，并同步 bot/cards.py。
+PUBLIC_DATA_SCHEMA_VERSION = 3
+
 # ---- 极简 .env 加载(无需第三方依赖)----
 def _load_dotenv():
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -295,12 +299,27 @@ RISK_NOTES = {
     },
 }
 
-def risk_note(ticker, etype, contract_action=None):
-    """按产品归属拼出动作提示；合约结论必须来自统一门槛判定。"""
+def risk_note(ticker, etype, contract_action=None, *, forecast=False,
+              filing_relevant=None):
+    """按产品归属拼出动作提示；合约结论必须来自统一门槛判定。
+
+    ``forecast`` 与 ``filing_relevant`` 由 run.py 的中央判定传入，避免网页、
+    推送和问答助手各自猜测后出现“未证实、不执行”却又要求执行的矛盾。
+    """
     notes = RISK_NOTES.get(etype, {})
     out = []
-    if ticker in SPOT_TICKERS and notes.get("spot"):
-        out.append(notes["spot"])
+    if ticker in SPOT_TICKERS:
+        if forecast:
+            out.append("现货：预测待核实｜公司行动未证实前不执行持仓、成本或订单调整")
+        elif etype == "filing":
+            if filing_relevant is True:
+                out.append(notes.get("spot", "现货：待核实结构性公司行动条款"))
+            elif filing_relevant is False:
+                out.append("现货：本次无需操作｜普通备案不属于公司行动处理事项")
+            else:
+                out.append("现货：待核实｜未知结构性事项需先确认条款，不得直接下架或暂停交易")
+        elif notes.get("spot"):
+            out.append(notes["spot"])
     if ticker in CONTRACT_TICKERS:
         message = (contract_action or {}).get("message")
         out.append(message or "合约：待核实｜尚未生成 3% 价格影响判定，暂不能确认是否操作")

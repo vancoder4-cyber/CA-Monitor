@@ -236,7 +236,9 @@ def main():
     must(VISA_URL in pushed and STOCKANALYSIS_URL in pushed, "定时推送未使用统一双链接")
 
     digest = report.build_text_digest(
-        {**alerts, "forecast_updates": [{**event, "kind": "declared"}]},
+        # 单独验证预测正式化格式；同一事件若同时进入 round，产品规则会按
+        # round > forecast_update 全局去重，由 round 吸收升级语义。
+        {**alerts, "rounds": [], "forecast_updates": [{**event, "kind": "declared"}]},
         {"generated": "fixture"},
     )
     must("公司官方宣告" in digest and "预测失效" not in digest,

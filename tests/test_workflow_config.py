@@ -23,6 +23,7 @@ class WorkflowConfigTests(unittest.TestCase):
     def test_production_requires_lark_delivery(self):
         text = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn('LARK_REQUIRED: "1"', text)
+        self.assertIn("LARK_ALERT_MENTION_OPEN_IDS: ${{ secrets.LARK_ALERT_MENTION_OPEN_IDS }}", text)
 
     def test_dedup_state_cache_is_isolated_from_supporting_data(self):
         text = WORKFLOW.read_text(encoding="utf-8")
@@ -41,6 +42,13 @@ class WorkflowConfigTests(unittest.TestCase):
         self.assertIn("cik_map.json", support)
         self.assertNotIn("state.json", support)
         self.assertIn("actions/cache/save@v4", text)
+
+    def test_failed_build_cannot_publish_pages_and_state_is_validated(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        self.assertNotIn("always()", text)
+        self.assertIn("python tools/validate_state.py", text)
+        self.assertIn("python tools/validate_public_snapshot.py", text)
+        self.assertIn("needs.build.result == 'success'", text)
 
 
 if __name__ == "__main__":

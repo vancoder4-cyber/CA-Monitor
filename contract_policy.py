@@ -191,7 +191,7 @@ def evaluate(ticker, etype, *, amount=None, ratio=None, subtype="", reference_pr
     if disputed or not value_verified:
         return _base(
             "review",
-            "合约：待核实｜金额或比例尚未通过门禁，暂不能判定是否操作",
+            "合约：待核实｜金额或比例尚未通过门禁（含单源未交叉验证），暂不能判定是否操作",
             **common,
         )
 

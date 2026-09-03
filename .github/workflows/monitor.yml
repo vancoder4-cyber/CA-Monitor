@@ -70,6 +70,7 @@ jobs:
             ca-state-
 
       - name: 迁移早期旧缓存
+        id: restore_legacy_state
         if: steps.restore_core_state.outputs.cache-matched-key == '' && steps.restore_legacy_bundle.outputs.cache-matched-key == ''
         uses: actions/cache/restore@v4
         with:
@@ -79,6 +80,14 @@ jobs:
           key: ca-state-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             ca-state-
+
+      # 生产去重状态既不在新缓存、也不在两版历史缓存时，宁可失败告警，不能把
+      # 仓库里的旧基线当作空状态运行并向群里重放全部历史事件。
+      - name: 去重状态缺失时停止生产推送
+        if: steps.restore_core_state.outputs.cache-matched-key == '' && steps.restore_legacy_bundle.outputs.cache-matched-key == '' && steps.restore_legacy_state.outputs.cache-matched-key == ''
+        run: |
+          echo "::error::未恢复 data/state.json；为防止历史告警整批重放，本轮停止。请先恢复缓存或人工建立基线。"
+          exit 1
 
       - name: 恢复辅助数据缓存
         id: restore_support_cache

@@ -41,6 +41,10 @@ class WorkflowConfigTests(unittest.TestCase):
         self.assertIn("cik_map.json", support)
         self.assertNotIn("state.json", support)
         self.assertIn("actions/cache/save@v4", text)
+        self.assertIn("去重状态缺失时停止生产推送", text)
+        self.assertIn("steps.restore_core_state.outputs.cache-matched-key", text)
+        self.assertIn("steps.restore_legacy_bundle.outputs.cache-matched-key", text)
+        self.assertIn("steps.restore_legacy_state.outputs.cache-matched-key", text)
 
 
 if __name__ == "__main__":

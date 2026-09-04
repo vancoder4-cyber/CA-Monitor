@@ -236,5 +236,19 @@
     "source": "https://investor.tsmc.com/english/dividends",
     "note": "2026/09/16 [Vincent Guo]",
     "action": "confirm"
+  },
+  {
+    "at_bj": "2026-09-04T15:09:55+08:00",
+    "at_utc": "2026-09-04T07:09:55+00:00",
+    "ticker": "TSM",
+    "etype": "dividend",
+    "date": "2026-03-17",
+    "value": "0.955",
+    "prev_value": null,
+    "by_name": "",
+    "by": "ou_05b39ad8ca3ef55e64d4af0ef956c88c",
+    "source": "https://investor.tsmc.com/english/dividends",
+    "note": "2026/09/16 [Vincent Guo]",
+    "action": "confirm"
   }
 ]

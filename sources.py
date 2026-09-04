@@ -245,6 +245,8 @@ def _ratio_from_float(f):
         return None
     # 不能 round 成整数：1.05 是 21:20（约 4.76% 价格影响），不是 1:1。
     frac = Fraction(str(value)).limit_denominator(1_000_000)
+    if frac <= 0:
+        return None
     return f"{frac.numerator}:{frac.denominator}"
 
 
@@ -257,6 +259,8 @@ def _ratio_from_pair(new, old):
     if ratio <= 0:
         return None
     ratio = ratio.limit_denominator(1_000_000)
+    if ratio <= 0:
+        return None
     return f"{ratio.numerator}:{ratio.denominator}"
 
 

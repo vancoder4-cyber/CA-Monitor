@@ -133,6 +133,8 @@ def apply_acks(d):
     except Exception as e:
         print("apply_acks get_acks err:", e)
         acks = []
+    acks = [a for a in acks if isinstance(a, dict) and
+            ack.is_valid_confirmation_value(a.get("value"), a.get("etype"))]
     if not acks:
         return d
     # 生效键必须包含事件类型；同日可能同时发生现金分红和拆股。
@@ -521,9 +523,19 @@ def on_message(data: P2ImMessageReceiveV1):
             mdate = re.search(r"\d{4}-\d{2}-\d{2}", clean)
             date = mdate.group(0) if mdate else None
             rest = clean.replace(date, "") if date else clean
+            # 值必须紧跟在实际输入的代码后面。否则备注里的 `8-K` / 年份等数字
+            # 会被误当成确认金额，形成看似有值、实际无值的生效记录。
+            value_input = rest
+            aliases = {str(k).upper(): str(v).upper()
+                       for k, v in (d.get("ticker_aliases") or {}).items()}
+            for token in re.finditer(r"[A-Za-z][A-Za-z0-9.-]*", rest or ""):
+                raw_ticker = token.group(0).upper()
+                if ticker and aliases.get(raw_ticker, raw_ticker) == ticker:
+                    value_input = rest[token.end():]
+                    break
             # 完整保留拆/合股 new:old；否则 `1:10` 会被静默截成 `1`，
             # 下游再误解成 1:1，直接影响 3% 操作门槛。
-            value, value_token = ack.parse_confirm_value(rest)
+            value, value_token = ack.parse_confirm_value(value_input, at_start=True)
 
             # 备注:去掉指令词/代码/值之后剩下的自由文字(如「已比对公司 8-K」)
             note = rest
@@ -577,6 +589,23 @@ def on_message(data: P2ImMessageReceiveV1):
                 send_card(chat_id, cards.confirm_card(
                     False,
                     "只有拆股/合股事件可使用 `新股数:旧股数`，例如 `确认 XYZ 1:10 2026-09-10`。",
+                    ticker=ticker,
+                    site_url=SITE_URL,
+                ))
+                return
+            valid_value = ack.is_valid_confirmation_value(
+                value, etype, allow_legacy_split_factor=False
+            )
+            if etype == "split" and not (
+                    value_token and (":" in value_token or "：" in value_token)
+                    and not re.match(r"\s*(?:USD|\$)", value_token, re.I)):
+                valid_value = False
+            if not valid_value:
+                requirement = ("有效的正数比例 `新股数:旧股数`，例如 `1:10`"
+                               if etype == "split" else "大于 0 的有效金额，例如 `0.26`")
+                send_card(chat_id, cards.confirm_card(
+                    False,
+                    f"缺少{requirement}。空值、0、负数或无效格式不会写入，也不会消除冲突/空缺。",
                     ticker=ticker,
                     site_url=SITE_URL,
                 ))

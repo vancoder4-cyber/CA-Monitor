@@ -8,7 +8,7 @@
 
 状态文件 data/state.json:已见事件签名(新发现判定)+ 已触发预警轮次(去重)。
 """
-import os, sys, json, re, hashlib, datetime as dt
+import os, sys, json, re, hashlib, datetime as dt, math
 import requests
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -270,12 +270,34 @@ def filing_overrides():
 
 
 def _ack_match(acks, ticker, etype, date):
-    """只接受同标的+同类型+同日期的确认；旧宽键不得误放行另一种公司行动。"""
+    """只接受精确事件且值有效的确认；旧宽键/空值不得放行异常。"""
     for a in acks:
-        if (a.get("ticker") == ticker and a.get("etype") == etype
+        value = a.get("value") if isinstance(a, dict) else None
+        value_valid = False
+        if etype == "split":
+            normalized = S.normalize_ratio(value)
+            try:
+                new, old = (int(part) for part in normalized.split(":"))
+                value_valid = new > 0 and old > 0
+            except (AttributeError, TypeError, ValueError):
+                value_valid = False
+        elif (etype == "dividend" and not isinstance(value, bool)
+              and re.fullmatch(r"\+?\d+(?:\.\d+)?", str(value).strip())):
+            try:
+                numeric = float(value)
+                value_valid = math.isfinite(numeric) and numeric > 0
+            except (TypeError, ValueError):
+                value_valid = False
+        if (value_valid and a.get("ticker") == ticker and a.get("etype") == etype
                 and a.get("date") == date):
             return a
     return None
+
+
+def _ack_display_value(ack, etype):
+    """旧 split factor 只在读取时兼容；对外始终显示完整 new:old。"""
+    value = (ack or {}).get("value")
+    return S.normalize_ratio(value) if etype == "split" else value
 
 
 def build_sec8k_index(all_groups):
@@ -1451,7 +1473,8 @@ def build():
             a = _ack_match(acks, g.ticker, g.etype, g.anchor_date)
             if a:
                 resolved.append({"ticker": g.ticker, "etype": g.etype, "date": g.anchor_date,
-                                 "value": a.get("value"), "by": a.get("by"), "at": a.get("at"),
+                                 "value": _ack_display_value(a, g.etype),
+                                 "by": a.get("by"), "at": a.get("at"),
                                  "detail": "; ".join(g.conflicts)})
                 _res_seen.add((g.ticker, g.etype, g.anchor_date))
             else:
@@ -1463,7 +1486,8 @@ def build():
             if a:
                 if (g.ticker, g.etype, g.anchor_date) not in _res_seen:
                     resolved.append({"ticker": g.ticker, "etype": g.etype, "date": g.anchor_date,
-                                     "value": a.get("value"), "by": a.get("by"), "at": a.get("at"),
+                                     "value": _ack_display_value(a, g.etype),
+                                     "by": a.get("by"), "at": a.get("at"),
                                      "detail": "; ".join(g.gaps)})
                     _res_seen.add((g.ticker, g.etype, g.anchor_date))
             else:
@@ -1485,13 +1509,10 @@ def build():
 
     def _apply_display_value_contract(events):
         for e in events:
-            for ack in acks:
-                if ack.get("value") in (None, ""):
-                    continue
-                if (e.get("ticker") != ack.get("ticker") or
-                        e.get("etype") != ack.get("etype") or
-                        e.get("date") != ack.get("date")):
-                    continue
+            ack = _ack_match(
+                acks, e.get("ticker"), e.get("etype"), e.get("date")
+            )
+            if ack:
                 if e.get("etype") == "dividend":
                     try:
                         value = float(ack["value"])

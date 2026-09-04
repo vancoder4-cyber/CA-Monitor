@@ -172,6 +172,8 @@ class ContractPolicyUnitTests(unittest.TestCase):
         self.assertEqual("3:2", sources._ratio_from_float(1.5))
         self.assertEqual("2:3", sources._ratio_from_float(2 / 3))
         self.assertEqual("1:10", sources.normalize_ratio("1：10"))
+        self.assertIsNone(sources.normalize_ratio("0.0000001"))
+        self.assertIsNone(sources.normalize_ratio("1:10000000"))
         self.assertEqual(("1:10", "1：10"), bot_ack.parse_confirm_value("确认 IBM 1：10"))
 
     def test_split_ack_preserves_full_reverse_split_ratio(self):
@@ -289,6 +291,20 @@ class ContractPolicyUnitTests(unittest.TestCase):
         self.assertEqual("1:10", run._ack_match(acks, "IBM", "split", EVENT_DATE)["value"])
         self.assertIsNone(run._ack_match(acks, "IBM", "dividend", EVENT_DATE))
 
+    def test_ack_matching_rejects_nonfinite_and_unrepresentable_values(self):
+        for etype, value in (
+            ("dividend", "NaN"), ("dividend", "Infinity"),
+            ("dividend", "1e2"), ("dividend", "1_000"),
+            ("dividend", "1e10000"), ("dividend", "1e-10000"),
+            ("split", "0.0000001"), ("split", "1:10000000"),
+        ):
+            with self.subTest(etype=etype, value=value):
+                stored = [{
+                    "ticker": "IBM", "etype": etype, "date": EVENT_DATE,
+                    "value": value,
+                }]
+                self.assertIsNone(run._ack_match(stored, "IBM", etype, EVENT_DATE))
+
     def test_empty_ack_or_date_only_official_source_cannot_bypass_value_gate(self):
         group = reconcile.EventGroup(
             ticker="IBM", etype="dividend", anchor_date=EVENT_DATE,
@@ -371,7 +387,7 @@ def _group(amount):
 
 class ContractPolicyBuildTests(unittest.TestCase):
     def _build(self, amount, *, spot, prior_action_status=None, group_data=None,
-               legacy_fired=False):
+               legacy_fired=False, acks=None):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
@@ -406,7 +422,7 @@ class ContractPolicyBuildTests(unittest.TestCase):
             mock.patch.object(run, "business_today", return_value=TODAY),
             mock.patch.object(reconcile, "business_today", return_value=TODAY),
             mock.patch.object(run, "load_refs", return_value={"ir_dividend": {}}),
-            mock.patch.object(run, "load_acknowledged", return_value=[]),
+            mock.patch.object(run, "load_acknowledged", return_value=acks or []),
             mock.patch.object(run, "load_forecast_watches", return_value=[]),
             mock.patch.object(run.notify_lark, "notify", return_value=(False, "test skip")),
             mock.patch.object(C, "TICKERS", ["IBM"]),
@@ -474,6 +490,64 @@ class ContractPolicyBuildTests(unittest.TestCase):
         )
         self.assertIn("合约：本次无需操作", promoted_lark)
         self.assertIn("合约：本次无需操作", report.build_text_digest(promoted_alerts, {"generated": "test"}))
+
+    def test_build_keeps_conflict_and_gap_when_stored_ack_has_no_valid_value(self):
+        group = _group(2.0)
+        group["by_source"]["Tiingo"]["amount"] = 4.0
+        group["conflicts"] = ["amount: Alpaca=2.0, Tiingo=4.0"]
+        group["gaps"] = ["pay_date: missing"]
+        group["status"] = "conflict"
+        for invalid in (None, "", 0, "-1", "NaN"):
+            with self.subTest(value=invalid):
+                stored = [{
+                    "ticker": "IBM", "etype": "dividend", "date": EVENT_DATE,
+                    "value": invalid,
+                }]
+                alerts, data, _, _, _ = self._build(
+                    2.0, spot=False, group_data=group, acks=stored,
+                )
+                self.assertEqual(1, len(alerts["conflicts"]))
+                self.assertEqual(1, len(alerts["gaps"]))
+                self.assertEqual([], alerts["resolved"])
+                self.assertFalse(data["calendar"][0]["acked"])
+
+    def test_build_never_injects_nonfinite_ack_into_clean_event_or_public_json(self):
+        for invalid in ("NaN", "Infinity", "-1", 0):
+            with self.subTest(value=invalid):
+                stored = [{
+                    "ticker": "IBM", "etype": "dividend", "date": EVENT_DATE,
+                    "value": invalid,
+                }]
+                alerts, data, _, _, _ = self._build(2.0, spot=False, acks=stored)
+                self.assertEqual(2.0, alerts["pending"][0]["amount"])
+                self.assertEqual(2.0, data["calendar"][0]["amount"])
+                # 严格 JSON 编码是 Pages/Bot 客户端的真实契约；NaN/Infinity 不可出现。
+                json.dumps(data, allow_nan=False)
+
+    def test_build_keeps_legacy_split_factors_but_publishes_canonical_ratios(self):
+        group = {
+            "ticker": "IBM", "etype": "split", "anchor_date": EVENT_DATE,
+            "by_source": {
+                "Alpaca": {"ex_date": EVENT_DATE, "ratio": "2:1", "subtype": "split"},
+                "Tiingo": {"ex_date": EVENT_DATE, "ratio": "3:1", "subtype": "split"},
+            },
+            "sources_ok": ["Alpaca", "Tiingo"], "status": "conflict",
+            "conflicts": ["ratio: Alpaca=2:1, Tiingo=3:1"], "gaps": [], "note": "",
+        }
+        for legacy_factor, expected in (("4", "4:1"), ("0.1", "1:10")):
+            with self.subTest(legacy_factor=legacy_factor):
+                stored = [{
+                    "ticker": "IBM", "etype": "split", "date": EVENT_DATE,
+                    "value": legacy_factor,
+                }]
+                alerts, data, _, _, _ = self._build(
+                    None, spot=False, group_data=group, acks=stored,
+                )
+                self.assertEqual([], alerts["conflicts"])
+                self.assertEqual(expected, alerts["resolved"][0]["value"])
+                self.assertEqual(expected, alerts["pending"][0]["ratio"])
+                self.assertEqual(expected, data["calendar"][0]["ratio"])
+                self.assertEqual("required", alerts["pending"][0]["contract_action"]["status"])
 
     def test_contract_only_high_impact_enters_contract_action_cadence(self):
         alerts, data, state, _, _ = self._build(4.0, spot=False)

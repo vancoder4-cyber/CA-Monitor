@@ -1,6 +1,6 @@
 # 公司行动预警面板(多源交叉核对)
 
-盯住一篮子标的(**现货 62 + 合约 39，共 81 个覆盖资产，其中 75 个可监控证券**)的公司行动(分红 / 拆股·合股 / 并购 / 分拆 / 退市),**8 源并行抓取 → 归一化 → 零容忍交叉核对 → 预测观察 / 报警 / 人工确认**。逻辑接近机构的 golden-copy 做法。
+盯住一篮子标的(**现货 62 + 合约 39，共 81 个覆盖资产，其中 75 个可监控证券**)的公司行动(分红 / 拆股·合股 / 并购 / 分拆 / 退市),**最多 8 类来源按各自覆盖与额度并行抓取 → 归一化 → 零容忍交叉核对 → 预测观察 / 报警 / 人工确认**。逻辑接近机构的 golden-copy 做法。
 
 四个核心设计:
 1. **零容忍**:同一事件多源比对,任一字段不一致或某源缺失就报警,**不做任何口径豁免**。
@@ -10,13 +10,15 @@
 
 产出:一屏看全的 HTML 面板(日历 + 预警 + 更新日志)+ Lark 推送 + @机器人问答。
 
+> **运营、产品、风控与值班人员请直接使用：[全量操作手册](OPERATIONS_MANUAL.md)**。手册覆盖每日 SOP、全部 16 个问答指令、现货/合约处理、3% 门槛、人工确认、老虎 API 字段映射、发布维护和故障排查；另有可直接发群的 [群内简版说明](docs/CA监控_群briefing.md) 和 [人工确认清单](docs/CA_人工确认清单.md)。
+
 ### 分红的官方化与核对链接（所有展示面一致）
 
 `run.py` 为每条分红预先生成同一份 `references`：**已逐项核验的官方本次公告/IR → SEC 本次宣告 8-K → 公司 IR 分红页 → SEC 公司备案**，并始终附 **StockAnalysis（交叉核对，可能滞后）**。网页、定时推送、单标的查询、临近催办、今日/本周、日历和新公告均消费这同一份数据；**Nasdaq 仅为采集源，绝不再作为唯一核对链接**。
 
 已经确认公司正式宣告、但采集源尚未补齐字段时，在 `refs.json` 的 `official_event_overrides` 登记该事件的官方 URL、核验日期和已确认字段。它会参与零容忍核对；与采集源不一致仍会报警，不会静默覆盖。已退出现货范围的 V 2026-08-11 分红保留为本地历史回归 fixture，不会再被发布为当前预警或覆盖标的。
 
-## 数据源(8 源,3 类角色)
+## 数据源（最多 8 类来源，3 类角色）
 
 | 源 | 角色 | Key | 覆盖 |
 |---|---|---|---|
@@ -130,7 +132,7 @@ python run.py build                       # 用缓存合并 → dashboard.html +
 
 **一键触发 Action**:`./tools/trigger.sh`(触发 + 等跑完 + 核验网页刷新;需 `brew install gh && gh auth login`)。
 
-**可维护文件(改完提交即可)**:`refs.json`(官方 IR / 已核验事件)、`data/filing_review_resolutions.json`(按稳定 event_id 记录 SEC 条款结论)、`CHANGELOG.md`(每次必记一条)、`UPDATE_CHECKLIST.md`(收尾检查清单)、`TODO.md`(内部技术待办/后续跟进)。催办 @ 名单只放 GitHub Secret `LARK_ALERT_MENTION_OPEN_IDS`；filing 生效库仅保存事件 ID、结论、时间和 SEC 来源，不保存 Lark open_id、姓名或自由备注；`requests.md` 会在首次「需求」提报时自动创建，正文公开可见但不保存提报人的 Lark 身份。
+**可维护文件(改完提交即可)**:`refs.json`(官方 IR / 已核验事件)、`data/filing_review_resolutions.json`(按稳定 event_id 记录 SEC 条款结论)、`OPERATIONS_MANUAL.md`(全量操作手册)、`CHANGELOG.md`(每次必记一条)、`UPDATE_CHECKLIST.md`(收尾检查清单)、`TODO.md`(内部技术待办/后续跟进)。催办 @ 名单只放 GitHub Secret `LARK_ALERT_MENTION_OPEN_IDS`；filing 生效库仅保存事件 ID、结论、时间和 SEC 来源，不保存 Lark open_id、姓名或自由备注；`requests.md` 会在首次「需求」提报时自动创建，正文公开可见但不保存提报人的 Lark 身份。
 
 ## 密钥与安全
 
@@ -141,9 +143,11 @@ python run.py build                       # 用缓存合并 → dashboard.html +
 - 「需求提报」正文会匿名进入公开仓库，请勿填写客户、账号、密钥等敏感信息；确认/观察的审计身份仍需后续迁入私有存储，见 `TODO.md`。
 - 免费 key 申请:Alpha Vantage `alphavantage.co/support/#api-key`、FMP `site.financialmodelingprep.com`、Tiingo `tiingo.com`、Alpaca `alpaca.markets`(paper 账号,要 ID+Secret)。
 
-## 定时运行（每交易日 3 次，按美东 ET）
+## 定时运行（美东周一至周五 3 次，按 ET）
 
 GitHub Actions 在开盘后 **09:35**、盘中 **12:45**、收盘后 **16:05**（美东）扫描；工作流直接使用 `timezone: America/New_York`，夏冬令时自动换算，不再依赖双 UTC cron 或运行时门禁。`state.json` 自动去重，同一日的每日催办不会重复推。
+
+> 当前 workflow 只按周一至周五调度，尚未接入美股交易所节假日日历；休市节假日仍可能运行。
 
 ```bash
 # crontab(注意:cron 用服务器本地时区,下面按服务器=美东 ET 计;非 ET 请换算)
@@ -181,9 +185,9 @@ LARK_WRITE_ALLOWED_OPEN_IDS=ou_xxx,ou_yyy  # 仅放 Railway Secret；可执行�
 
 ## 云端托管:GitHub Actions + GitHub Pages
 
-`.github/workflows/monitor.yml` 已配好:每交易日 3 次（09:35 / 12:45 / 16:05 ET）自动抓取 → 核对 → 推 Lark → 把 `dashboard.html` 和 `site_data.json` 部署到 GitHub Pages（在线网页，自动更新）。调度直接使用 GitHub 原生 `timezone: America/New_York`，无需夏/冬令时双 cron 或运行时门禁，因此延迟排队不会再误跳过。生产采用原子发布：状态恢复、抓取、Lark 投递、公开数据校验任一步失败都会让工作流变红并保留上一版 Pages，不会出现网站与群提醒两个批次。
+`.github/workflows/monitor.yml` 已配好:美东周一至周五 3 次（09:35 / 12:45 / 16:05 ET）自动抓取 → 核对 → 推 Lark → 把 `dashboard.html` 和 `site_data.json` 部署到 GitHub Pages（在线网页，自动更新）。调度直接使用 GitHub 原生 `timezone: America/New_York`，无需夏/冬令时双 cron 或运行时门禁，因此延迟排队不会再误跳过。状态恢复、抓取、Lark 投递、公开数据校验任一步失败都会让工作流变红并保留上一版 Pages；但 Lark 投递发生在后续公开快照校验和 cache 保存之前，因此若后续步骤失败，群里可能已收到卡片。重跑前必须先核对群消息，避免重复推送。
 
-Pages `data.json` 使用 **schema v4**，包含 `generated_at_utc`、`valid_until_utc`、`source_sha`、`run_id` 与 `delivery_status`。v4 固化了公司行动条款核验、合约门槛核验与执行催办的分流语义。网站会显示 schema / commit / Action run，问答助手也会核对版本和时效；快照无效或超过有效时点时，两边都会显示红色故障提示并停止输出「无风险 / 无需操作」等业务结论。
+Pages `data.json` 使用 **schema v4**，包含 `generated_at_utc`、`valid_until_utc`、`source_sha`、`run_id` 与 `delivery_status`。v4 固化了公司行动条款核验、合约门槛核验与执行催办的分流语义。网站顶部显示生成时间、schema、commit 和新鲜度提示，完整 provenance 应直接核对 `data.json`；问答助手会对版本、必要字段和时效做硬门禁。网站时间异常时会显示红色警告但仍可能保留旧内容，操作员必须停止采信；Bot 则停止输出「无风险 / 无需操作」等业务结论。
 
 启用步骤(一次性):
 
@@ -222,17 +226,20 @@ Pages `data.json` 使用 **schema v4**，包含 `generated_at_utc`、`valid_unti
 | 留痕 | 留痕 / 审计 / 确认记录 / audit / log | 调取金额确认、预测观察和匿名备案结论记录(可加代码只看某标的)；离线表用 `tools/export_ack_log.py` 导 Excel |
 | 需求提报 | 需求 / 提报 / 反馈 / 建议 | `需求 你的想法` → 以匿名编号追加到公开仓库 `requests.md`；请勿填写敏感信息(需配 GH_TOKEN) |
 
-### ⚠️ 维护规则:改指令必须五处同步(有检查机制)
+### ⚠️ 维护规则:改指令必须六处同步(有检查机制)
 
-**每次新增/修改指令,务必同步这五处,否则视为未完成:**
+**每次新增/修改指令,务必同步这六处,否则视为未完成:**
 
 1. `bot/cards.py` 的 **`COMMANDS`**(唯一来源)——加/改条目;
 2. `bot/bot.py` 的 **`on_message` dispatch**——加对应 `elif cmd == "<key>"` 分支;
 3. 上面这张 **指令清单**(README);
 4. `bot/README.md` 的 Bot 指令表；
-5. 跑检查:**`python tools/check_commands.py`** —— 必须输出 `✅`。
+5. `OPERATIONS_MANUAL.md` 的完整指令表；
+6. `CHANGELOG.md` 的本次用户可见变化；
 
-`check_commands.py` 会校验 COMMANDS / bot.py 分发 / HELP_TEXT / README / bot README 是否一致；`check_surface_consistency.py` 会用 Visa 官方宣告 fixture 校验网页、推送、交互 Bot 和月历均有同一套官方 + 第三方链接。二者都由 CI 强制执行。
+最后跑检查:**`python tools/check_commands.py`** —— 必须输出 `✅`。
+
+`check_commands.py` 会精确校验 COMMANDS、bot.py 分发、HELP_TEXT 和操作手册第 9 节的指令集合，并确认 README / Bot README 提及全部指令；说明文字和关键词变化仍须人工按 `UPDATE_CHECKLIST.md` 复核。`check_surface_consistency.py` 会用 Visa 官方宣告 fixture 校验网页、推送、交互 Bot 和月历均有同一套官方 + 第三方链接。二者都由 CI 强制执行。
 
 ### ⚠️ 更新日志规则:每次修复完成时必须立即记录
 

@@ -113,5 +113,14 @@
     "by": "ou_05b39ad8ca3ef55e64d4af0ef956c88c",
     "by_name": "",
     "at": "2026-07-26T18:15:02+00:00"
+  },
+  {
+    "ticker": "TSM",
+    "value": "0.742067",
+    "etype": "dividend",
+    "date": "2026-06-11",
+    "by": "ou_05b39ad8ca3ef55e64d4af0ef956c88c",
+    "by_name": "",
+    "at": "2026-09-04T07:09:18+00:00"
   }
 ]

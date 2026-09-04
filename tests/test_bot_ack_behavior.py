@@ -55,6 +55,59 @@ class AckReferenceTests(unittest.TestCase):
         self.assertEqual(("SEC·公司备案", 2), (label, tier))
 
 
+class AckValueGateTests(unittest.TestCase):
+    def test_valid_positive_amount_and_split_formats_are_accepted(self):
+        for value, etype in (("0.26", "dividend"), ("1:10", "split"),
+                             ("1：10", "split"), ("4", "split"), ("0.1", "split")):
+            with self.subTest(value=value, etype=etype):
+                self.assertTrue(ack.is_valid_confirmation_value(value, etype))
+
+    def test_empty_nonpositive_nonfinite_and_malformed_values_are_rejected(self):
+        for value, etype in (
+            (None, "dividend"), ("", "dividend"), (0, "dividend"),
+            ("-0.26", "dividend"), ("NaN", "dividend"), ("Infinity", "dividend"),
+            ("1e2", "dividend"), ("1_000", "dividend"),
+            ("1e10000", "dividend"), ("1e-10000", "dividend"),
+            (None, "split"), ("1:0", "split"), ("-1:10", "split"),
+            ("+1:+10", "split"),
+            ("1:", "split"), ("abc", "split"), ("1:10000000", "split"),
+            ("0.0000001", "split"), ("1:10", "dividend"),
+        ):
+            with self.subTest(value=value, etype=etype):
+                self.assertFalse(ack.is_valid_confirmation_value(value, etype))
+
+    def test_start_scoped_parser_does_not_take_number_from_operator_note(self):
+        self.assertEqual(
+            (None, None),
+            ack.parse_confirm_value(" 已比对公司 8-K", at_start=True),
+        )
+        self.assertEqual(
+            ("0.26", " $0.26"),
+            ack.parse_confirm_value(" $0.26 已比对公司 8-K", at_start=True),
+        )
+        self.assertEqual(("1", "1"), ack.parse_confirm_value("1, note", at_start=True))
+        self.assertEqual(("1:10", "1-10"), ack.parse_confirm_value("1-10", at_start=True))
+        self.assertEqual(("1:10", "1 for 10"), ack.parse_confirm_value("1 for 10", at_start=True))
+        for text in ("1e2", "1,000", "8-K checked"):
+            with self.subTest(text=text):
+                self.assertEqual((None, None), ack.parse_confirm_value(text, at_start=True))
+
+    @mock.patch.object(ack, "GH_TOKEN", "test-token")
+    @mock.patch.object(ack, "_get_file")
+    @mock.patch.object(ack, "_put_file")
+    def test_writeback_rejects_invalid_value_before_any_github_io(self, put_file, get_file):
+        for value, etype in ((None, "dividend"), ("", "dividend"),
+                             ("0", "dividend"), ("1:0", "split"),
+                             ("4", "split"), ("1-10", "split"),
+                             ("1 for 10", "split")):
+            with self.subTest(value=value, etype=etype):
+                ok, message = ack.add_ack("IBM", value, etype, "2026-09-10")
+                self.assertFalse(ok)
+                self.assertIn("本次未写入任何状态", message)
+        get_file.assert_not_called()
+        put_file.assert_not_called()
+
+
 class AckPartialWriteTests(unittest.TestCase):
     @mock.patch.object(ack, "GH_TOKEN", "test-token")
     @mock.patch.object(ack, "_get_file")

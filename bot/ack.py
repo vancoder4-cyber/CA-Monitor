@@ -13,7 +13,10 @@ import json
 import base64
 import datetime as dt
 import hashlib
+import math
 import re
+from decimal import Decimal, InvalidOperation
+from fractions import Fraction
 
 import requests
 
@@ -30,17 +33,71 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _ETF_TICKERS = {"QQQ", "EWY", "DRAM", "TQQQ", "MVLL"}
 
 
-def parse_confirm_value(text):
+def parse_confirm_value(text, *, at_start=False):
     """返回 (规范值, 原始命中文本)；拆/合股比例必须完整保留 new:old。"""
     raw = text or ""
+    start = r"^\s*(?:USD|\$)?\s*" if at_start else r"(?<![\d.])"
+    end = r"(?=$|\s|[，、；;]|,(?!\d))"
     ratio = re.search(
-        r"(?<![\d.])(\d+(?:\.\d+)?)\s*[:：]\s*(\d+(?:\.\d+)?)(?![\d.])",
-        raw,
+        start + r"([+-]?\d+(?:\.\d+)?)\s*(?::|：|-|for)\s*"
+                r"([+-]?\d+(?:\.\d+)?)" + end,
+        raw, re.I,
     )
     if ratio:
         return f"{ratio.group(1)}:{ratio.group(2)}", ratio.group(0)
-    number = re.search(r"\d+(?:\.\d+)?", raw)
-    return (number.group(0), number.group(0)) if number else (None, None)
+    number = re.search(start + r"([+-]?\d+(?:\.\d+)?)" + end, raw, re.I)
+    return (number.group(1), number.group(0)) if number else (None, None)
+
+
+def is_valid_confirmation_value(value, etype, *, allow_legacy_split_factor=True):
+    """确认值门禁：现金/送股必须是正数，拆合股须为正比例或历史单因子。"""
+    if isinstance(value, bool) or value is None:
+        return False
+    text = str(value).strip().replace("：", ":")
+    if not text:
+        return False
+
+    def _positive(raw):
+        try:
+            number = Decimal(raw)
+        except (InvalidOperation, TypeError, ValueError):
+            return False
+        return number.is_finite() and number > 0
+
+    if etype == "dividend":
+        if not re.fullmatch(r"\+?\d+(?:\.\d+)?", text):
+            return False
+        try:
+            as_float = float(text)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        return _positive(text) and math.isfinite(as_float) and as_float > 0
+    if etype != "split":
+        return False
+    ratio = re.fullmatch(
+        r"(-?\d+(?:\.\d+)?)\s*(?::|-|for)\s*(-?\d+(?:\.\d+)?)",
+        text,
+        re.I,
+    )
+    if ratio:
+        if not allow_legacy_split_factor and ":" not in text:
+            return False
+        new, old = ratio.group(1), ratio.group(2)
+        if not (_positive(new) and _positive(old)):
+            return False
+        normalized = (Fraction(new) / Fraction(old)).limit_denominator(1_000_000)
+        return normalized.numerator > 0
+    # 兼容存量 acknowledged.json 中的 4 / 10 等单一 split factor。
+    if not allow_legacy_split_factor:
+        return False
+    if not _positive(text):
+        return False
+    try:
+        as_float = float(text)
+        normalized = Fraction(text).limit_denominator(1_000_000)
+    except (ValueError, ZeroDivisionError, OverflowError):
+        return False
+    return math.isfinite(as_float) and as_float > 0 and normalized.numerator > 0
 
 
 def _headers():
@@ -180,6 +237,10 @@ def get_ack_log(limit=None):
 def add_ack(ticker, value=None, etype=None, date=None, by="lark", by_name="", note="", *,
             refs_ir=None, src_url=""):
     """记录一条确认。写两处:留痕库(只追加)+ 生效值(去重)。返回 (ok, msg)。"""
+    if (not ticker or not etype or not date or
+            not is_valid_confirmation_value(value, etype, allow_legacy_split_factor=False)):
+        return False, ("确认必须包含具体事件及有效的正数金额；拆股/合股请提供正数比例"
+                       " `新股数:旧股数`（例如 `1:10`）。本次未写入任何状态。")
     if not GH_TOKEN:
         return False, "未配置 GH_TOKEN —— 请在 Railway 加一个对本仓库 Contents 有写权限的细粒度 PAT"
     try:

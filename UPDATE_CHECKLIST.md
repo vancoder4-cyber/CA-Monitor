@@ -6,12 +6,12 @@
 
 | 改了什么 | 必须同步检查 |
 |---|---|
-| 指令 / Bot 文案 | `bot/cards.py`、`bot/bot.py`、根 `README.md`、`bot/README.md`、`CHANGELOG.md` |
+| 指令 / Bot 文案 | `bot/cards.py`、`bot/bot.py`、根 `README.md`、`bot/README.md`、`OPERATIONS_MANUAL.md`、`CHANGELOG.md` |
 | 事件字段 / 取值 / 门禁 | `run.py` 产出 ↔ `report.py` 网页 ↔ `notify_lark.py` 推送 ↔ `bot/cards.py` 交互卡 ↔ 月历 / `calendar_events` |
 | 合约公司行动 / 3% 门槛 / 参考价 | `contract_policy.py`、行情快照缓存、pending/rounds、网页、定时 Lark、Bot 今日/本周/新公告/临近/日历/查代码、`CHANGELOG.md` |
 | SEC filing 分类 / 事件相关性 | `config.describe_8k`、`sources._sec_filing_note_relevance`、`run.py` new/conflict/gap/calendar、SEC 原文表、网站、定时 Lark、Bot 风险/今日/本周/临近/查代码/PNG 日历 |
 | 分红核对链接 / 官方宣告 | `refs.json`、单标的查询、今日/本周、临近催办、预测、日历、公告、网页、定时推送、确认留痕 |
-| 标的数 / 代码别名 / 数据源 / 时点 | `config.py`、Pages `ticker_aliases`、根 README、`about_card`、操作手册、群 briefing、workflow |
+| 标的数 / 代码别名 / 数据源 / 时点 | `config.py`、Pages `ticker_aliases`、根 README、`about_card`、`OPERATIONS_MANUAL.md`、群 briefing、workflow |
 | Railway / Bot 运行方式 | `bot/README.md`、环境变量、心跳、生产验证步骤 |
 | 快照 schema / 发布 / 状态缓存 | `run.py` provenance、网站/Bot 时效门禁、公开数据脱敏、Actions cache、Pages 原子发布、`tools/trigger.sh` |
 | 写回 / 审计 / 需求提报 | 核心文件与留痕文件是否都成功、失败文案、公开仓库隐私边界、Bot 卡片与 README |
@@ -48,7 +48,7 @@ python3 tools/check_surface_consistency.py
 python3 -m py_compile run.py reconcile.py contract_policy.py sources.py report.py notify_lark.py bot/cards.py bot/ack.py bot/bot.py
 if test -s data/state.json; then python3 tools/validate_state.py data/state.json; else echo "local state absent; production Action will restore and validate it"; fi
 bash -n tools/trigger.sh
-python3 run.py build       # 有缓存时验证真实产物；会跳过未配置的 Lark webhook
+env LARK_WEBHOOK='' LARK_SECRET='' LARK_REQUIRED=0 python3 run.py build  # 隔离 checkout；仍可能更新本地 state
 python3 tools/validate_public_snapshot.py site_data.json
 ```
 
@@ -56,11 +56,13 @@ python3 tools/validate_public_snapshot.py site_data.json
 
 `data/state.json` 不再跟踪到 Git，因此清洁 checkout 没有该文件是正常状态。本地只在已恢复非空状态时运行校验；生产必须由 GitHub Actions 的「恢复核心去重状态 → 验证核心去重状态」步骤 fail closed。
 
+本地构建前必须显式清空 Lark 变量，避免根目录 `.env` 触发真实群推送；即便关闭 Lark，build 仍可能推进本地 state，必须使用隔离 checkout 或先备份。
+
 ## 5. 文档与提交
 
 - [ ] 本次每一项修复、用户可见变更、规则/配置/数据修订或文案调整，都已在完成时立即写入 `CHANGELOG.md` 顶部；这是任务完成条件，不得等到 push 再补。只读查询且仓库无变化时可免。
 - [ ] 最终交付前检查 `git diff -- CHANGELOG.md`，确认条目使用真实当天日期并准确覆盖本次变更。
-- [ ] 根 README、`bot/README.md`、`TODO.md` 与本次事实一致；运营文档和群 briefing 同步。
+- [ ] 根 README、`bot/README.md`、`OPERATIONS_MANUAL.md`、`TODO.md` 与本次事实一致；运营文档和群 briefing 同步。
 - [ ] `refs.json` JSON 格式有效；不提交密钥、webhook、PAT 或 state/cache 临时文件。
 - [ ] `data/state.json` 保持未跟踪并由独立 cache 持久化；生产恢复不到非空历史 state 时必须 fail closed，不能整批重放。
 - [ ] 公开 Pages 快照通过递归脱敏检查；催办 open_id 只在 `LARK_ALERT_MENTION_OPEN_IDS` Secret，需求 commit 标题不含原文或身份。
@@ -70,6 +72,7 @@ python3 tools/validate_public_snapshot.py site_data.json
 ## 6. 发布后验收（四个独立面）
 
 1. **GitHub Actions**：合入 `main` 会自动触发生产刷新（仍可手动 Run workflow 或等待 ET 扫描窗口）；分别确认 state 恢复校验、全量测试、Lark 投递、公开快照校验、`build` / `deploy`，不能只看 workflow 总体颜色。只推送功能分支不会刷新生产。
+   - 若失败发生在 Lark 投递之后，群里可能已经收到消息但 cache/Pages 尚未保存；重跑前先核对群消息。若仅 `deploy` 失败，优先只重跑失败 job，避免整轮重复推送。
 2. **Pages**：打开根地址并检查 `data.json` 的 `schema_version=4`、`source_sha=main HEAD`、`run_id=本次 Action`、`delivery_status`、`generated_at_utc < valid_until_utc`；确认 `changelog[0]` 等于本次顶部条目后，才可称 Bot「最近更新」已刷新。资产覆盖应为现货 62 / 合约 39 / 共 81 / 监控 75，`ticker_aliases` 应包含 `BBX → BB`。不要手工修改构建产物 `site_data.json`。
 3. **定时推送**：下一次有内容的运行检查官方链接、第三方链接、预测/催办状态和 @ 名单；单源、公司行动条款与合约门槛三类核验应分别命名并明确「核验、勿执行」，且不能触发正式催办 @；合约 ≤3% 应正常首报并写「本次无需操作」，但不得进入 30/14 日重复催办；15–29 天静默期不应收到只有统计没有明细的卡片。
 4. **Railway Bot**：先发 `关于`，确认数据 commit 与 Bot build commit 相同；测试 `帮助`、`风险`、`查 AAPL`、`查 BBX`（应返回 `BB`）、`查 BRK-B`、`查 SKHY`、`临近催办`、`观察预测`、`最近更新`。用 fixture 验证 `确认备案` / `排除备案` 精确 event_id 路由与冲突输入 fail closed；不要为了 smoke 修改真实事件结论。另用过期/坏 schema fixture 验证只返回红色故障卡，不得假报全绿；用授权/未授权账号各测一次写操作，未授权路径不得调用任何 GitHub 写回。Pages 更新不代表 Railway 已更新。

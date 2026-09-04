@@ -260,7 +260,8 @@ class BotOverlayTests(unittest.TestCase):
         data["gaps"] = [dict(matched), dict(other_type)]
         data["counts"].update({"conflicts": 2, "gaps": 2})
 
-        with mock.patch.object(bot.ack, "get_acks", return_value=[dict(matched)]):
+        with mock.patch.object(
+                bot.ack, "get_acks", return_value=[{**matched, "value": "0.26"}]):
             result = bot.apply_acks(data)
 
         for field in ("pending", "calendar", "announced", "recent_declares"):
@@ -270,6 +271,26 @@ class BotOverlayTests(unittest.TestCase):
         self.assertEqual([other_type], result["gaps"])
         self.assertEqual(1, result["counts"]["conflicts"])
         self.assertEqual(1, result["counts"]["gaps"])
+
+    def test_invalid_ack_never_marks_event_or_hides_conflict_and_gap(self):
+        for invalid in (None, "", "0", "-1", "NaN"):
+            with self.subTest(value=invalid):
+                data = _snapshot()
+                event = {"ticker": "AAPL", "etype": "dividend", "date": "2026-09-10"}
+                data["pending"] = [dict(event)]
+                data["conflicts"] = [dict(event)]
+                data["gaps"] = [dict(event)]
+                data["counts"].update({"conflicts": 1, "gaps": 1})
+                stored = [{**event, "value": invalid}]
+
+                with mock.patch.object(bot.ack, "get_acks", return_value=stored):
+                    result = bot.apply_acks(data)
+
+                self.assertNotIn("acked", result["pending"][0])
+                self.assertEqual([event], result["conflicts"])
+                self.assertEqual([event], result["gaps"])
+                self.assertEqual(1, result["counts"]["conflicts"])
+                self.assertEqual(1, result["counts"]["gaps"])
 
     def test_future_manual_watch_is_immediately_visible(self):
         data = _snapshot()
@@ -539,6 +560,87 @@ class WriteAuthorizationTests(unittest.TestCase):
                 handlers.pop(expected).assert_called_once()
                 for handler in handlers.values():
                     handler.assert_not_called()
+
+
+class ConfirmValueCommandTests(unittest.TestCase):
+    @staticmethod
+    def _incoming(text):
+        message = SimpleNamespace(
+            message_id=f"confirm-value-{hash(text)}", chat_id="chat", chat_type="p2p",
+            mentions=[], content=json.dumps({"text": text}),
+        )
+        return SimpleNamespace(event=SimpleNamespace(
+            message=message,
+            sender=SimpleNamespace(sender_id=SimpleNamespace(open_id="ou_test")),
+        ))
+
+    def test_on_message_rejects_missing_or_invalid_value_without_writeback(self):
+        data = _snapshot()
+        data["pending"] = [
+            {"ticker": "AAPL", "etype": "dividend", "date": "2026-09-10"},
+        ]
+        for text in (
+            "确认 AAPL 2026-09-10",
+            "确认 AAPL 2026-09-10 已比对公司 8-K",
+            "确认 AAPL 0 2026-09-10",
+            "确认 AAPL -0.26 2026-09-10",
+            "确认 AAPL 1e2 2026-09-10",
+            "确认 AAPL 1,000 2026-09-10",
+        ):
+            with self.subTest(text=text):
+                bot._seen.clear()
+                with mock.patch.dict(os.environ, {"LARK_WRITE_ALLOWED_OPEN_IDS": "ou_test"}), \
+                        mock.patch.object(bot, "fetch_data", return_value=copy.deepcopy(data)), \
+                        mock.patch.object(bot.cards, "validate_snapshot", return_value=""), \
+                        mock.patch.object(bot.ack, "add_ack") as add_ack, \
+                        mock.patch.object(bot, "send_card") as send_card:
+                    bot.on_message(self._incoming(text))
+
+                add_ack.assert_not_called()
+                rendered = json.dumps(send_card.call_args.args[1], ensure_ascii=False)
+                self.assertIn("确认未成功", rendered)
+                self.assertIn("不会写入", rendered)
+                self.assertIn("不会消除冲突/空缺", rendered)
+
+        split_data = _snapshot()
+        split_data["pending"] = [
+            {"ticker": "AAPL", "etype": "split", "date": "2026-09-10"},
+        ]
+        for text in ("确认 AAPL 4 2026-09-10", "确认 AAPL 1-10 2026-09-10",
+                     "确认 AAPL 1 for 10 2026-09-10",
+                     "确认 AAPL $1:10 2026-09-10",
+                     "确认 AAPL USD 1:10 2026-09-10"):
+            with self.subTest(text=text):
+                bot._seen.clear()
+                with mock.patch.dict(os.environ, {"LARK_WRITE_ALLOWED_OPEN_IDS": "ou_test"}), \
+                        mock.patch.object(bot, "fetch_data", return_value=split_data), \
+                        mock.patch.object(bot.cards, "validate_snapshot", return_value=""), \
+                        mock.patch.object(bot.ack, "add_ack") as add_ack, \
+                        mock.patch.object(bot, "send_card") as send_card:
+                    bot.on_message(self._incoming(text))
+                add_ack.assert_not_called()
+                self.assertIn(
+                    "新股数:旧股数",
+                    json.dumps(send_card.call_args.args[1], ensure_ascii=False),
+                )
+
+    def test_on_message_preserves_full_reverse_split_ratio(self):
+        data = _snapshot()
+        data["pending"] = [
+            {"ticker": "AAPL", "etype": "split", "date": "2026-09-10"},
+        ]
+        bot._seen.clear()
+        with mock.patch.dict(os.environ, {"LARK_WRITE_ALLOWED_OPEN_IDS": "ou_test"}), \
+                mock.patch.object(bot, "fetch_data", return_value=data), \
+                mock.patch.object(bot.cards, "validate_snapshot", return_value=""), \
+                mock.patch.object(bot, "get_user_name", return_value="Operator"), \
+                mock.patch.object(bot.ack, "add_ack", return_value=(True, "ok")) as add_ack, \
+                mock.patch.object(bot, "send_card"):
+            bot.on_message(self._incoming("确认 AAPL 1:10 2026-09-10 已核对公告"))
+
+        self.assertEqual("1:10", add_ack.call_args.args[1])
+        self.assertEqual("split", add_ack.call_args.args[2])
+        self.assertEqual("2026-09-10", add_ack.call_args.args[3])
 
 
 if __name__ == "__main__":

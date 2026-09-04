@@ -222,5 +222,19 @@
     "source": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&ticker=KLAC&type=&dateb=&owner=include&count=40",
     "note": "1拆股ex,已核SEC 8-K(5/7宣告)",
     "action": "confirm"
+  },
+  {
+    "at_bj": "2026-09-04T15:09:18+08:00",
+    "at_utc": "2026-09-04T07:09:18+00:00",
+    "ticker": "TSM",
+    "etype": "dividend",
+    "date": "2026-06-11",
+    "value": "0.742067",
+    "prev_value": null,
+    "by_name": "",
+    "by": "ou_05b39ad8ca3ef55e64d4af0ef956c88c",
+    "source": "https://investor.tsmc.com/english/dividends",
+    "note": "2026/09/16 [Vincent Guo]",
+    "action": "confirm"
   }
 ]

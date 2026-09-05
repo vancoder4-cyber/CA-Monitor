@@ -108,7 +108,7 @@ event_id 结构为 `TICKER|filing|YYYY-MM-DD|12位十六进制指纹`；不要�
 - [ ] 留痕中有正确记录。
 - [ ] GitHub 写回后的生产 Action 已运行。
 - [ ] Pages schema v4、source SHA、run id、delivery 和有效期正常。
-- [ ] 定时推送没有同一卡重复或错误 @。
+- [ ] 定时推送没有同一卡重复或错误 @；现货/合约/双覆盖标的分别命中对应负责人组。
 - [ ] `查 CODE` 显示同一官方来源、日期和值。
 
 完整流程见 [CA Monitor 全量操作手册](../OPERATIONS_MANUAL.md)。

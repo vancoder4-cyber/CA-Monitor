@@ -94,9 +94,21 @@ def _sec_url(g):
     return (g.by_source.get("SEC") or {}).get("url", "")
 
 
-def _load_mentions():
-    """从私密环境变量读取催办 @ 名单；不得把员工 open_id 放进公开仓库。"""
-    raw = os.environ.get("LARK_ALERT_MENTION_OPEN_IDS", "").strip()
+def _stable_unique(values):
+    """稳定去重，确保同一负责人横跨现货/合约时只被 @ 一次。"""
+    seen = set()
+    result = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def _load_mentions(env_name="LARK_ALERT_MENTION_OPEN_IDS"):
+    """从私密环境变量读取 @ 名单；不得把员工 open_id 放进公开仓库。"""
+    raw = os.environ.get(env_name, "").strip()
     if not raw:
         return []
     try:
@@ -105,10 +117,58 @@ def _load_mentions():
         return []
     if not isinstance(values, list):
         return []
-    return [
+    return _stable_unique([
         value for value in (str(item).strip() for item in values)
         if value == "all" or re.fullmatch(r"ou_[A-Za-z0-9]+", value)
-    ]
+    ])
+
+
+def _event_products(event, *, force_contract=False):
+    """读取事件产品归属；旧 payload 缺字段时回退到当前统一资产范围。"""
+    if isinstance(event, dict):
+        products = event.get("products") or []
+        ticker = event.get("ticker", "")
+    else:
+        products = getattr(event, "products", None) or []
+        ticker = getattr(event, "ticker", "")
+    if isinstance(products, str):
+        products = [products]
+    products = {product for product in products if product in {"现货", "合约"}}
+    if not products:
+        products = set(C.product_tags(ticker))
+    if force_contract:
+        products.add("合约")
+    return products
+
+
+def _mentions_for_events(events, *, force_contract=False):
+    """按事件的现货/合约覆盖面选择负责人，双覆盖时合并并稳定去重。
+
+    两个分组 Secret 尚未配置时，旧的全局 Secret 作为逐组回退，便于无中断
+    迁移；待生产完成分组配置后即可移除旧 Secret。
+    """
+    events = list(events or [])
+    if not events:
+        return []
+
+    need_spot = False
+    need_contract = False
+    has_unknown = False
+    for event in events:
+        products = _event_products(event, force_contract=force_contract)
+        need_spot = need_spot or "现货" in products
+        need_contract = need_contract or "合约" in products
+        has_unknown = has_unknown or not ({"现货", "合约"} & products)
+
+    legacy = _load_mentions()
+    mentions = []
+    if need_spot:
+        mentions.extend(_load_mentions("LARK_ALERT_SPOT_MENTION_OPEN_IDS") or legacy)
+    if need_contract:
+        mentions.extend(_load_mentions("LARK_ALERT_CONTRACT_MENTION_OPEN_IDS") or legacy)
+    if has_unknown:
+        mentions.extend(legacy)
+    return _stable_unique(mentions)
 
 
 def _at_tags(open_ids):
@@ -364,7 +424,10 @@ def _build_card(alerts, meta, dashboard_url=""):
     # 正式 @ 不只覆盖 cadence round；合约结论刚跨成 required 时即使当前没有
     # 新 round、或明细按全局优先级合并进「预测状态」区，也必须让负责人看到。
     # 所有正式事项合并成一条 @，避免重复提醒。
-    _mentions = _load_mentions()
+    _mentions = _stable_unique(
+        _mentions_for_events(formal_rounds + required_filing_updates)
+        + _mentions_for_events(required_contract_updates, force_contract=True)
+    )
     if (formal_rounds or required_contract_updates or required_filing_updates) and _mentions:
         if required_filing_updates:
             kinds = []
@@ -459,15 +522,17 @@ def _build_card(alerts, meta, dashboard_url=""):
     _esc = _rv.get("escalate_days", 3)
     # review summary 是上游快照；展示和 @ 必须以本卡实际保留的异常项重算，
     # 否则被 routine-filing 防线过滤的旧项仍可能留下幽灵计数/误 @。
-    _review_ages = [
-        getattr(item, "age_days", 0) or 0
-        for item in visible_conflicts + visible_gaps
-    ]
+    _review_items = visible_conflicts + visible_gaps
+    _review_ages = [getattr(item, "age_days", 0) or 0 for item in _review_items]
     _review_open = n_conf + n_gap
     _review_overdue = sum(1 for age in _review_ages if age >= _esc)
     _review_max_age = max(_review_ages) if _review_ages else 0
     if _review_open:
-        _m = _load_mentions()
+        _overdue_items = [
+            item for item in _review_items
+            if (getattr(item, "age_days", 0) or 0) >= _esc
+        ]
+        _m = _mentions_for_events(_overdue_items)
         head = (f"🙋 **待人工确认 {_review_open} 条**"
                 f"(冲突 {n_conf} · 空缺 {n_gap})"
                 f"　最久已挂 **{_review_max_age} 天**")

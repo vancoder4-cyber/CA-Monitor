@@ -187,6 +187,128 @@ class LarkDeliveryTests(unittest.TestCase):
         self.assertTrue(sent)
         self.assertIn("已推送", info)
 
+    def test_mention_parser_accepts_csv_or_json_and_stably_dedupes(self):
+        with mock.patch.dict(os.environ, {
+            "CSV_IDS": "ou_first, invalid ou_second ou_first",
+            "JSON_IDS": '["ou_second", "all", "ou_second"]',
+            "BROKEN_IDS": "[not-json",
+        }, clear=True):
+            self.assertEqual(
+                ["ou_first", "ou_second"],
+                notify_lark._load_mentions("CSV_IDS"),
+            )
+            self.assertEqual(
+                ["ou_second", "all"],
+                notify_lark._load_mentions("JSON_IDS"),
+            )
+            self.assertEqual([], notify_lark._load_mentions("BROKEN_IDS"))
+
+    def test_formal_mentions_route_by_spot_contract_and_both(self):
+        env = {
+            "LARK_ALERT_MENTION_OPEN_IDS": "",
+            "LARK_ALERT_SPOT_MENTION_OPEN_IDS": "ou_spota,ou_spotb",
+            "LARK_ALERT_CONTRACT_MENTION_OPEN_IDS": "ou_contracta,ou_contractb",
+        }
+
+        def render(products):
+            alerts = _alerts()
+            alerts["rounds"] = [{
+                "ticker": "TEST", "etype": "dividend", "date": "2030-01-01",
+                "days": 7, "products": products, "ops": "execute",
+            }]
+            return json.dumps(
+                notify_lark._build_card(alerts, {"generated": "test"}),
+                ensure_ascii=False,
+            )
+
+        with mock.patch.dict(os.environ, env, clear=True):
+            spot = render(["现货"])
+            contract = render(["合约"])
+            both = render(["现货", "合约"])
+
+        for oid in ("ou_spota", "ou_spotb"):
+            self.assertIn(f"<at id={oid}></at>", spot)
+            self.assertNotIn(f"<at id={oid}></at>", contract)
+            self.assertEqual(1, both.count(f"<at id={oid}></at>"))
+        for oid in ("ou_contracta", "ou_contractb"):
+            self.assertNotIn(f"<at id={oid}></at>", spot)
+            self.assertIn(f"<at id={oid}></at>", contract)
+            self.assertEqual(1, both.count(f"<at id={oid}></at>"))
+
+    def test_explicit_event_products_are_authoritative_before_registry_fallback(self):
+        self.assertEqual(
+            {"合约"},
+            notify_lark._event_products({"ticker": "AAPL", "products": ["合约"]}),
+        )
+        self.assertEqual(
+            {"现货"},
+            notify_lark._event_products({"ticker": "AAPL", "products": []}),
+        )
+
+    def test_required_contract_update_routes_to_contract_owners_without_round(self):
+        alerts = _alerts()
+        alerts["contract_updates"] = [{
+            "ticker": "TEST", "etype": "dividend", "date": "2030-01-01",
+            "days": 7, "products": [], "current_status": "required", "risk": [],
+        }]
+        with mock.patch.dict(os.environ, {
+            "LARK_ALERT_MENTION_OPEN_IDS": "",
+            "LARK_ALERT_SPOT_MENTION_OPEN_IDS": "ou_spot",
+            "LARK_ALERT_CONTRACT_MENTION_OPEN_IDS": "ou_contract",
+        }, clear=True):
+            text = json.dumps(
+                notify_lark._build_card(alerts, {"generated": "test"}),
+                ensure_ascii=False,
+            )
+        self.assertIn("<at id=ou_contract></at>", text)
+        self.assertNotIn("<at id=ou_spot></at>", text)
+
+    def test_role_lists_fall_back_to_legacy_global_secret(self):
+        alerts = _alerts()
+        alerts["rounds"] = [{
+            "ticker": "TEST", "etype": "dividend", "date": "2030-01-01",
+            "days": 7, "products": ["现货", "合约"], "ops": "execute",
+        }]
+        with mock.patch.dict(os.environ, {
+            "LARK_ALERT_MENTION_OPEN_IDS": "ou_legacy",
+            "LARK_ALERT_SPOT_MENTION_OPEN_IDS": "",
+            "LARK_ALERT_CONTRACT_MENTION_OPEN_IDS": "",
+        }, clear=True):
+            text = json.dumps(
+                notify_lark._build_card(alerts, {"generated": "test"}),
+                ensure_ascii=False,
+            )
+        self.assertEqual(1, text.count("<at id=ou_legacy></at>"))
+
+    def test_overdue_review_mentions_union_for_only_the_overdue_products(self):
+        spot = self._new_group("AAPL")
+        spot.conflicts = ["amount mismatch"]
+        spot.age_days = 4
+        contract = self._new_group("IBM")
+        contract.gaps = ["missing record date"]
+        contract.age_days = 5
+        not_overdue = self._new_group("AMZN")
+        not_overdue.conflicts = ["not overdue"]
+        not_overdue.age_days = 1
+        alerts = _alerts()
+        alerts["conflicts"] = [spot, not_overdue]
+        alerts["gaps"] = [contract]
+        alerts["review"] = {"escalate_days": 3}
+
+        with mock.patch.dict(os.environ, {
+            "LARK_ALERT_MENTION_OPEN_IDS": "",
+            "LARK_ALERT_SPOT_MENTION_OPEN_IDS": "ou_spot",
+            "LARK_ALERT_CONTRACT_MENTION_OPEN_IDS": "ou_contract",
+        }, clear=True):
+            text = json.dumps(
+                notify_lark._build_card(alerts, {"generated": "test"}),
+                ensure_ascii=False,
+            )
+
+        self.assertEqual(1, text.count("<at id=ou_spot></at>"))
+        self.assertEqual(1, text.count("<at id=ou_contract></at>"))
+        self.assertIn("有 **2** 条异常超过 3 天", text)
+
     def test_single_source_round_is_a_non_executable_verification_reminder(self):
         alerts = _alerts()
         alerts["forecasts"] = [{"ticker": "HD"}]

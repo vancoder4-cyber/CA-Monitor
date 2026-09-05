@@ -65,7 +65,7 @@ python3 tools/validate_public_snapshot.py site_data.json
 - [ ] 根 README、`bot/README.md`、`OPERATIONS_MANUAL.md`、`TODO.md` 与本次事实一致；运营文档和群 briefing 同步。
 - [ ] `refs.json` JSON 格式有效；不提交密钥、webhook、PAT 或 state/cache 临时文件。
 - [ ] `data/state.json` 保持未跟踪并由独立 cache 持久化；生产恢复不到非空历史 state 时必须 fail closed，不能整批重放。
-- [ ] 公开 Pages 快照通过递归脱敏检查；催办 open_id 只在 `LARK_ALERT_MENTION_OPEN_IDS` Secret，需求 commit 标题不含原文或身份。
+- [ ] 公开 Pages 快照通过递归脱敏检查；现货/合约催办 open_id 只在 `LARK_ALERT_SPOT_MENTION_OPEN_IDS` / `LARK_ALERT_CONTRACT_MENTION_OPEN_IDS` Secret（旧全局 Secret 仅作迁移兜底），需求 commit 标题不含原文或身份。
 - [ ] Railway 已配置 `LARK_WRITE_ALLOWED_OPEN_IDS`；验证授权账号可写、未授权/缺 sender/未配置均拒绝，且拒绝回执不泄露白名单。
 - [ ] 检查 `git diff`，确保没有将历史审计日志当作“修复”回写。
 

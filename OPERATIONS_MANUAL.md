@@ -445,11 +445,13 @@ python3 tools/export_ack_log.py
 
 ### 11.2 @ 规则
 
-- 正式执行项可以 @ `LARK_ALERT_MENTION_OPEN_IDS` 中的负责人。
-- 字段冲突/空缺超过升级天数可 @。
+- 正式执行项按资产覆盖面选择负责人：现货取 `LARK_ALERT_SPOT_MENTION_OPEN_IDS`，合约取 `LARK_ALERT_CONTRACT_MENTION_OPEN_IDS`；同时覆盖现货+合约时合并两组并去重。
+- 字段冲突/空缺超过升级天数时，也按超期事项的产品归属选择负责人；同一卡片含多个产品时取负责人并集。
 - 单源预测、条款核验、门槛核验本身不作为正式执行 @。
 - 合约 `≤3%` 不触发重复催办或正式 @。
+- 现货+合约标的即使合约侧结论为无需操作，只要现货侧仍构成正式执行事项，仍按双产品标的规则 @ 两组负责人；卡片会同时写明合约无需操作。
 - `not_required → required` 等关键状态迁移即使不处于常规提醒轮次，也应主动推送并按需 @。
+- 旧 `LARK_ALERT_MENTION_OPEN_IDS` 仅在对应分组 Secret 未配置时逐组兜底；完成生产迁移后应移除，避免职责边界退回全局名单。
 
 ### 11.3 投递与去重
 
@@ -608,7 +610,9 @@ git diff --check
 - `FINX_USER` / `FINX_PASS` / `FINX_BASE`（可选）
 - `LARK_WEBHOOK`
 - `LARK_SECRET`（启用签名时）
-- `LARK_ALERT_MENTION_OPEN_IDS`
+- `LARK_ALERT_SPOT_MENTION_OPEN_IDS`
+- `LARK_ALERT_CONTRACT_MENTION_OPEN_IDS`
+- `LARK_ALERT_MENTION_OPEN_IDS`（仅迁移期兜底）
 
 仓库变量可配置 `LARK_DASHBOARD_URL`。
 
@@ -625,7 +629,7 @@ git diff --check
 ### 14.3 安全红线
 
 - `.env`、PAT、Webhook、App Secret 不得提交到 GitHub。
-- 两个 open_id 名单用途不同，不得复用：一个负责被 @，一个负责写权限。
+- 现货/合约两组催办名单与写权限名单用途不同，三者不得复用；旧全局催办名单仅作迁移兜底。
 - 不得把 allowlist 发布到 Pages、日志、卡片或文档。
 - 公开 Pages 会暴露覆盖范围、事件和运行版本；需要私有访问时应更换托管方案。
 - 当前确认/观察写回仍会把操作员身份与自由备注写进公开 Git 文件，旧 `ack_log/acknowledged/forecast_watch` 也存在同类历史数据；只有 filing 结论按匿名业务状态保存。完成私有存储迁移前，确认、观察和需求文本都禁止写客户、账户或其它敏感信息。

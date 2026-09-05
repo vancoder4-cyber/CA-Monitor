@@ -35,6 +35,8 @@ class WorkflowConfigTests(unittest.TestCase):
     def test_production_requires_lark_delivery(self):
         text = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn('LARK_REQUIRED: "1"', text)
+        self.assertIn("LARK_ALERT_SPOT_MENTION_OPEN_IDS: ${{ secrets.LARK_ALERT_SPOT_MENTION_OPEN_IDS }}", text)
+        self.assertIn("LARK_ALERT_CONTRACT_MENTION_OPEN_IDS: ${{ secrets.LARK_ALERT_CONTRACT_MENTION_OPEN_IDS }}", text)
         self.assertIn("LARK_ALERT_MENTION_OPEN_IDS: ${{ secrets.LARK_ALERT_MENTION_OPEN_IDS }}", text)
 
     def test_dedup_state_cache_is_isolated_from_supporting_data(self):

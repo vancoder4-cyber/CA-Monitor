@@ -132,13 +132,13 @@ python run.py build                       # 用缓存合并 → dashboard.html +
 
 **一键触发 Action**:`./tools/trigger.sh`(触发 + 等跑完 + 核验网页刷新;需 `brew install gh && gh auth login`)。
 
-**可维护文件(改完提交即可)**:`refs.json`(官方 IR / 已核验事件)、`data/filing_review_resolutions.json`(按稳定 event_id 记录 SEC 条款结论)、`OPERATIONS_MANUAL.md`(全量操作手册)、`CHANGELOG.md`(每次必记一条)、`UPDATE_CHECKLIST.md`(收尾检查清单)、`TODO.md`(内部技术待办/后续跟进)。催办 @ 名单只放 GitHub Secret `LARK_ALERT_MENTION_OPEN_IDS`；filing 生效库仅保存事件 ID、结论、时间和 SEC 来源，不保存 Lark open_id、姓名或自由备注；`requests.md` 会在首次「需求」提报时自动创建，正文公开可见但不保存提报人的 Lark 身份。
+**可维护文件(改完提交即可)**:`refs.json`(官方 IR / 已核验事件)、`data/filing_review_resolutions.json`(按稳定 event_id 记录 SEC 条款结论)、`OPERATIONS_MANUAL.md`(全量操作手册)、`CHANGELOG.md`(每次必记一条)、`UPDATE_CHECKLIST.md`(收尾检查清单)、`TODO.md`(内部技术待办/后续跟进)。现货/合约催办 @ 名单只放各自的 GitHub Secret；filing 生效库仅保存事件 ID、结论、时间和 SEC 来源，不保存 Lark open_id、姓名或自由备注；`requests.md` 会在首次「需求」提报时自动创建，正文公开可见但不保存提报人的 Lark 身份。
 
 ## 密钥与安全
 
 - `.env` 含真实密钥,**已在 `.gitignore`,绝不要提交到 GitHub**。
 - 部署到生产时,优先用平台的 Secrets / 环境变量注入,而不是把 `.env` 打进镜像。
-- `LARK_ALERT_MENTION_OPEN_IDS` 只能放 GitHub Actions Secret，不得写入 `refs.json`、Pages、日志或文档。
+- `LARK_ALERT_SPOT_MENTION_OPEN_IDS` / `LARK_ALERT_CONTRACT_MENTION_OPEN_IDS` 只能放 GitHub Actions Secret，不得写入 `refs.json`、Pages、日志或文档；旧 `LARK_ALERT_MENTION_OPEN_IDS` 只作迁移期逐组兜底。
 - `LARK_WRITE_ALLOWED_OPEN_IDS` 只能放 Railway Secret，不得复用催办 @ 名单或发布到 Pages；发送人缺失、未配置或未命中均拒绝写回。
 - 「需求提报」正文会匿名进入公开仓库，请勿填写客户、账号、密钥等敏感信息；确认/观察的审计身份仍需后续迁入私有存储，见 `TODO.md`。
 - 免费 key 申请:Alpha Vantage `alphavantage.co/support/#api-key`、FMP `site.financialmodelingprep.com`、Tiingo `tiingo.com`、Alpaca `alpaca.markets`(paper 账号,要 ID+Secret)。
@@ -175,7 +175,9 @@ LARK_SECRET=（开了签名校验才填,否则留空）
 LARK_DASHBOARD_URL=https://你的面板地址/   # 可选,卡片底部按钮（Pages 根路径）
 LARK_NOTIFY_EMPTY=0   # 1=没预警也推一条
 LARK_REQUIRED=0       # 本地可选；GitHub Actions 生产固定为 1
-LARK_ALERT_MENTION_OPEN_IDS=ou_xxx,ou_yyy  # 仅放 Secret；正式催办需要 @ 的负责人
+LARK_ALERT_SPOT_MENTION_OPEN_IDS=ou_xxx,ou_yyy      # 仅放 Secret；现货正式催办负责人
+LARK_ALERT_CONTRACT_MENTION_OPEN_IDS=ou_xxx,ou_yyy  # 仅放 Secret；合约正式催办负责人
+LARK_ALERT_MENTION_OPEN_IDS=                         # 可选；旧版全局名单，仅作迁移兜底
 LARK_WRITE_ALLOWED_OPEN_IDS=ou_xxx,ou_yyy  # 仅放 Railway Secret；可执行确认/观察/备案结论/需求写回的操作员
 ```
 
@@ -192,7 +194,7 @@ Pages `data.json` 使用 **schema v4**，包含 `generated_at_utc`、`valid_unti
 启用步骤(一次性):
 
 1. **加密钥**:repo → Settings → Secrets and variables → **Actions** → New repository secret,逐个加:
-   `ALPHAVANTAGE` `FMP` `TIINGO` `ALPACA_KEY_ID` `ALPACA_SECRET` `SEC_UA` `LARK_WEBHOOK`(开了签名校验再加 `LARK_SECRET`)；正式催办需要 @ 时另加 `LARK_ALERT_MENTION_OPEN_IDS`。
+   `ALPHAVANTAGE` `FMP` `TIINGO` `ALPACA_KEY_ID` `ALPACA_SECRET` `SEC_UA` `LARK_WEBHOOK`(开了签名校验再加 `LARK_SECRET`)；正式催办需要 @ 时另加 `LARK_ALERT_SPOT_MENTION_OPEN_IDS` / `LARK_ALERT_CONTRACT_MENTION_OPEN_IDS`。现货事件只取现货组、合约事件只取合约组、两边覆盖的标的合并两组并去重。
 2. **启用 Pages**:repo → Settings → **Pages** → Source 选 **GitHub Actions**。
 3. (可选)加仓库变量 `LARK_DASHBOARD_URL` = 你的 Pages 网址(见下),Lark 卡片按钮就指向它。
 4. **手动触发一次**:repo → Actions → CA Monitor → Run workflow。跑完后网页地址为

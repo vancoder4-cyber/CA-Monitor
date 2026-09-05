@@ -127,6 +127,9 @@ jobs:
           LARK_WEBHOOK: ${{ secrets.LARK_WEBHOOK }}
           LARK_SECRET: ${{ secrets.LARK_SECRET }}
           LARK_DASHBOARD_URL: ${{ vars.LARK_DASHBOARD_URL }}
+          LARK_ALERT_SPOT_MENTION_OPEN_IDS: ${{ secrets.LARK_ALERT_SPOT_MENTION_OPEN_IDS }}
+          LARK_ALERT_CONTRACT_MENTION_OPEN_IDS: ${{ secrets.LARK_ALERT_CONTRACT_MENTION_OPEN_IDS }}
+          # 迁移期兜底；两个分组 Secret 均完成生产配置后可删除。
           LARK_ALERT_MENTION_OPEN_IDS: ${{ secrets.LARK_ALERT_MENTION_OPEN_IDS }}
           LARK_REQUIRED: "1"
         run: python run.py
